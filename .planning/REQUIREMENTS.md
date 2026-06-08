@@ -120,17 +120,51 @@ Explicitamente excluído. Documentado para evitar scope creep.
 
 ## Traceability
 
-Qual fase cobre qual requisito. Preenchido durante a criação do roadmap.
+Qual fase cobre qual requisito. Cada requisito v1 mapeia para exatamente uma fase.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| (a preencher pelo roadmapper) | — | Pending |
+| TERM-01 | Phase 1 | Pending |
+| WT-01 | Phase 2 | Pending |
+| WT-02 | Phase 2 | Pending |
+| WT-03 | Phase 2 | Pending |
+| RAM-01 | Phase 2 | Pending |
+| PAR-01 | Phase 3 | Pending |
+| PAR-02 | Phase 3 | Pending |
+| PAR-03 | Phase 3 | Pending |
+| LAYOUT-01 | Phase 3 | Pending |
+| RAM-02 | Phase 3 | Pending |
+| RAM-03 | Phase 3 | Pending |
+| STATUS-01 | Phase 4 | Pending |
+| STATUS-02 | Phase 4 | Pending |
+| STATUS-03 | Phase 4 | Pending |
+| RAM-04 | Phase 4 | Pending |
+| AGENT-01 | Phase 5 | Pending |
+| UI-01 | Phase 5 | Pending |
+| UI-02 | Phase 5 | Pending |
+| ENV-01 | Phase 6 | Pending |
+| ENV-02 | Phase 6 | Pending |
+| CONT-01 | Phase 7 | Pending |
+| CONT-02 | Phase 7 | Pending |
+| CONT-03 | Phase 7 | Pending |
+| CONT-04 | Phase 7 | Pending |
+| CONT-05 | Phase 7 | Pending |
+| REVIEW-01 | Phase 8 | Pending |
+| REVIEW-02 | Phase 8 | Pending |
+| REVIEW-03 | Phase 8 | Pending |
+| GIT-01 | Phase 8 | Pending |
+| DIST-01 | Phase 9 | Pending |
+| DIST-02 | Phase 9 | Pending |
+| DIST-03 | Phase 9 | Pending |
+| DIST-04 | Phase 9 | Pending |
+
+**Nota cross-cutting:** RAM management é tecido entre as fases — RAM-01 (agent-half) na Phase 2, RAM-02/03 (ResourceMonitor + visibilidade + caps) na Phase 3, RAM-04 (auto-suspend) na Phase 4; a metade de containers amadurece na Phase 7. Cada RAM-REQ é "owned" por uma única fase (acima), mas a feature evolui ao longo do roadmap.
 
 **Coverage:**
 - v1 requirements: 33 total
-- Mapped to phases: 0 (pré-roadmap)
-- Unmapped: 33 ⚠️ (será resolvido na criação do roadmap)
+- Mapped to phases: 33 ✓
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-06-08*
-*Last updated: 2026-06-08 after initial definition*
+*Last updated: 2026-06-08 after roadmap creation (traceability mapped)*
