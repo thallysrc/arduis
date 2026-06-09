@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.thallys.Arduis</id>
+  <name>arduis</name>
+  <summary>Orquestra agentes de IA em paralelo sobre git worktrees</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="io.github.thallys">
+    <name>Thallys</name>
+  </developer>
+  <description>
+    <p>
+      arduis é um app desktop GNOME para orquestrar múltiplos agentes de IA
+      (Claude Code e outros) em paralelo, cada um na sua git worktree, com
+      terminais reais embutidos via VTE.
+    </p>
+    <p>Degrau 1: janela GTK4 com um terminal VTE rodando o shell do host.</p>
+  </description>
+  <launchable type="desktop-id">io.github.thallys.Arduis.desktop</launchable>
+  <content_rating type="oars-1.1"/>
+</component>

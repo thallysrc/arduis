@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=arduis
+Comment=Orquestra agentes de IA em paralelo sobre git worktrees
+Exec=arduis
+Icon=io.github.thallys.Arduis
+Terminal=false
+Type=Application
+Categories=Development;Utility;
+Keywords=terminal;agents;worktree;claude;
