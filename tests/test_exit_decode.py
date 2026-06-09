@@ -16,6 +16,10 @@ def _raw_status_for_exit(code: int) -> int:
 def _raw_status_for_signal(signum: int) -> int:
     pid = os.fork()
     if pid == 0:  # child
+        # Restore the default disposition so the signal actually terminates
+        # the process (Python installs a SIGINT handler that would otherwise
+        # raise KeyboardInterrupt and exit with code 2, not die by signal).
+        signal.signal(signum, signal.SIG_DFL)
         os.kill(os.getpid(), signum)
         os._exit(0)  # unreachable if the signal lands
     _, status = os.waitpid(pid, 0)
