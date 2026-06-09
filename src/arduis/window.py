@@ -187,6 +187,11 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         # C-Space prefix state machine (PAR-03/D-09/D-10): armed by Ctrl+Space.
         self._prefix_armed = False
+        # ~2s off-loop RAM poll source id (RAM-03); removed on close.
+        self._ram_source: int | None = None
+        # The aggregate RAM footer + per-row RAM sub-line labels (Plan 03-05).
+        self._footer_label: Gtk.Label | None = None
+        self._subline_by_sid: dict[str, Gtk.Label] = {}
 
         self._install_css()
 
@@ -254,6 +259,11 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         # Resolve the launch repo asynchronously (D-03). Enables + on success.
         self._resolve_repo_root()
+
+        # ~2s off-loop RAM poll (RAM-03/D-14): writes live process-group RSS onto
+        # each active session and refreshes the row sub-lines + aggregate footer.
+        # Removed in _on_close_request so no poll outlives the window.
+        self._ram_source = GLib.timeout_add_seconds(2, self._poll_ram)
 
     # --- CSS provider (UI-SPEC Color) ---------------------------------------
 
@@ -460,6 +470,7 @@ class ArduisWindow(Adw.ApplicationWindow):
             child = nxt
         self._sid_by_row.clear()
         self._row_by_sid.clear()
+        self._subline_by_sid.clear()
 
         # Pinned main row (D-07): the $HOME scratch shell, not a session.
         self._listbox.append(
@@ -498,6 +509,8 @@ class ArduisWindow(Adw.ApplicationWindow):
         sub.add_css_class("arduis-row-subline")
         text.append(sub)
         outer.append(text)
+        # Keep a handle so the ~2s RAM poll can refresh the sub-line in place.
+        self._subline_by_sid[sid] = sub
 
         if not active:
             row.add_css_class("arduis-row-hibernated")
@@ -764,15 +777,68 @@ class ArduisWindow(Adw.ApplicationWindow):
     # --- + New-worktree dialog (D-06) ---------------------------------------
 
     def _on_new_worktree_clicked(self, _button) -> None:
-        """Fetch local branches, then present the type-or-pick dialog (D-06)."""
+        """Cap-gate (RAM-02/D-16), then fetch branches + present the dialog (D-06)."""
         if not self._repo_root:
             return  # button should be insensitive, but guard anyway
 
+        # RAM-02/D-15/D-16: BLOCK at the active-agent cap and force a hibernate
+        # BEFORE any worktree is added/spawned — never silent-allow, never
+        # create-hibernated. Proceed only once a worktree is freed.
+        if caps.at_cap(self._store.all()):
+            self._prompt_hibernate_then(self._begin_new_worktree)
+            return
+        self._begin_new_worktree()
+
+    def _begin_new_worktree(self) -> None:
+        """Fetch local branches, then present the type-or-pick dialog (D-06)."""
         def _branches_done(status, out, _err):
             existing = parse_local_branches(out) if status == 0 else []
             self._present_new_worktree_dialog(existing)
 
         run_git_async(argv_list_local_branches(self._repo_root), _branches_done, self._runner)
+
+    def _prompt_hibernate_then(self, proceed) -> None:
+        """Cap-reached gate (D-16): pick an active worktree to hibernate, then run ``proceed``.
+
+        Presents the UI-SPEC prompt with a chooser of active branches. On a pick we
+        run the existing hibernate path on that session, THEN call ``proceed`` to
+        resume the original creation. On cancel, creation is aborted.
+        """
+        active = [s for s in self._store.all() if s.state == SessionState.ACTIVE]
+        if not active:
+            # No active worktree to free (e.g. cap == 0) — just proceed.
+            proceed()
+            return
+
+        n = caps.active_count(self._store.all())
+        dialog = Adw.AlertDialog(
+            heading=f"Você está com {n} agentes ativos",
+            body="Hiberne uma worktree para liberar RAM antes de abrir outra.",
+        )
+        chooser = Gtk.DropDown.new_from_strings([s.branch for s in active])
+        dialog.set_extra_child(chooser)
+        dialog.add_response("cancel", "Cancelar")
+        dialog.add_response("hibernate", "Hibernar e continuar")
+        dialog.set_response_appearance("hibernate", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("hibernate")
+        dialog.set_close_response("cancel")
+
+        def _on_response(_dlg, response):
+            if response != "hibernate":
+                return  # cancel — abort creation, never silent-allow
+            idx = chooser.get_selected()
+            if idx < 0 or idx >= len(active):
+                return
+            session = active[idx]
+            # Run the existing hibernate path on the chosen session (D-16).
+            if session.pid:
+                self._teardown_pgid(session.pid)
+            hibernate_fields(session)
+            self._rebuild_sidebar()
+            proceed()  # cap freed — resume the original creation
+
+        dialog.connect("response", _on_response)
+        dialog.present(self)
 
     def _present_new_worktree_dialog(self, existing: list[str]) -> None:
         """Type-or-pick branch dialog: typing a new name = new branch (D-06)."""
@@ -935,6 +1001,45 @@ class ArduisWindow(Adw.ApplicationWindow):
         # The pane's shell ended (e.g. user typed `exit`); leave the leaf/dir.
         return
 
+    # --- ~2s off-loop RAM poll (RAM-03/D-12/D-14) ---------------------------
+
+    def _poll_ram(self) -> bool:
+        """Write live process-group RSS onto each active session; refresh the UI.
+
+        Runs on the GLib main loop every ~2s (NOT a thread — CLAUDE.md). Bounded to
+        the 5–12 active groups (sub-ms, Assumption A1); hibernated/pgid-None sessions
+        are skipped (Pitfall 3) and per-pid errors are swallowed inside
+        ``group_rss_kb``. Returns ``SOURCE_CONTINUE`` so the timeout keeps firing.
+        """
+        for session in self._store.all():
+            if session.state != SessionState.ACTIVE or session.pgid is None:
+                continue  # skip hibernated / not-yet-spawned (Pitfall 3)
+            session.rss_kb = resource_monitor.group_rss_kb(session.pgid)
+            label = self._subline_by_sid.get(session.session_id)
+            if label is not None:
+                label.set_text(
+                    f"claude · {resource_monitor.format_ram_kb(session.rss_kb)}"
+                )
+        self._update_footer()
+        return GLib.SOURCE_CONTINUE
+
+    def _update_footer(self) -> None:
+        """Render ``N agentes ativos · <total> RAM`` (active count in green)."""
+        if self._footer_label is None:
+            return
+        sessions = self._store.all()
+        n = caps.active_count(sessions)
+        total = sum(
+            s.rss_kb
+            for s in sessions
+            if s.state == SessionState.ACTIVE and s.rss_kb is not None
+        )
+        total_str = resource_monitor.format_ram_kb(total if total else None)
+        self._footer_label.set_markup(
+            f'<span foreground="{_DOT_ACTIVE}" weight="bold">{n} agentes ativos</span>'
+            f" · {total_str} RAM"
+        )
+
     # --- canvas reflection: model tree -> Gtk.Paned widgets (D-01) ----------
 
     def _reflect_layout(self) -> None:
@@ -1067,6 +1172,10 @@ class ArduisWindow(Adw.ApplicationWindow):
 
     def _on_close_request(self, *_):
         """No-orphan teardown across ALL panes (D-13): scratch shell + sessions."""
+        # Stop the ~2s RAM poll first so no source outlives the window (RAM-03).
+        if self._ram_source is not None:
+            GLib.source_remove(self._ram_source)
+            self._ram_source = None
         if self._shell_pid:
             self._teardown_pgid(self._shell_pid)
         for session in self._store.all():
