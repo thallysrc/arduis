@@ -34,7 +34,10 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Ctrl+C interrupts a host subprocess and Ctrl+Z/`fg` job control work
   4. Exit codes and signals are decoded correctly (`os.waitstatus_to_exitcode`); closing the window kills the host `zsh`/agent with no orphans
   5. Runs on Ubuntu 24.04 (system `gir1.2-vte-3.91` 0.76) and Arch (`vte4` 0.84) under real Wayland; code targets the VTE 0.76 API floor; `HostRunner` is a no-op seam (direct spawn) with the Flatpak path stubbed but unused
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [ ] 01-01-PLAN.md — GTK-free tested seams + Wave-0 infra: HostRunner (no-op/Flatpak-stub), Dracula palette, exit-status decode, spawn argv builder, pytest config
+- [ ] 01-02-PLAN.md — GTK wiring: refactor draft into arduis package, spawn host zsh via the seam, apply palette, no-orphan close-request teardown, native run.sh, manual acceptance checklist
 **UI hint**: yes
 
 ### Phase 2: Core Loop (new worktree → env → agent)
@@ -152,7 +155,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Terminal | 0/TBD | Not started | - |
+| 1. Terminal | 0/2 | Planned | - |
 | 2. Core Loop | 0/TBD | Not started | - |
 | 3. Parallel + Sidebar + RAM | 0/TBD | Not started | - |
 | 4. Attention Detection | 0/TBD | Not started | - |
