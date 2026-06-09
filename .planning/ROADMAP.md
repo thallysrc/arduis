@@ -49,7 +49,11 @@ Plans:
   2. A terminal opens in the new worktree directory with the default agent (`claude`) already running
   3. Picking an already-checked-out branch is handled gracefully (focus existing / clear message) — never `--force`d
   4. User can hibernate a worktree (agent process killed, directory kept) and resume it later, freeing the agent's RAM
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+- [ ] 02-00-PLAN.md — Wave 0: RED test scaffolds (tests/test_worktree.py + tests/test_session.py) pinning the GTK-free domain contract
+- [ ] 02-01-PLAN.md — GREEN GTK-free domain: worktree.py git-argv/parse builders + serializable SessionStore + swarm/ seam
+- [ ] 02-02-PLAN.md — GTK wiring: git_service async runner, Adw.TabView + New-worktree dialog, spawn+feed claude, Hibernate/Resume, manual acceptance
 **UI hint**: yes
 
 ### Phase 3: Parallel Worktrees + Sidebar + RAM Groundwork
@@ -156,7 +160,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Terminal | 0/2 | Planned | - |
-| 2. Core Loop | 0/TBD | Not started | - |
+| 2. Core Loop | 0/3 | Planned | - |
 | 3. Parallel + Sidebar + RAM | 0/TBD | Not started | - |
 | 4. Attention Detection | 0/TBD | Not started | - |
 | 5. Agent Swap + Keys + Themes | 0/TBD | Not started | - |
