@@ -1,31 +1,35 @@
 """ArduisWindow — GTK4/libadwaita window hosting the core loop.
 
-Phase 2 rewires the Phase-1 single-terminal window into an ``Adw.TabView`` /
-``Adw.TabBar`` whose ``+`` button opens the "New worktree" dialog, creates a
-worktree via ``git worktree add`` (async, off the GTK loop through
-``git_service.run_git_async``), opens a tab whose VTE terminal spawns
-``zsh -l -i`` in the worktree dir and feeds ``b"claude\\n"``, and adds a
-right-click Hibernate/Resume menu that reuses the Phase-1 process-group
-teardown — generalized so closing the window leaves no orphan across N tabs.
+Phase 3 rewires the Phase-2 tab strip (the now-removed libadwaita tab view +
+tab bar) into the real v1 shell:
+a left **sidebar** (``Gtk.ListBox`` bound to the ``SessionStore`` plus a pinned
+``main`` scratch-shell row) + a right **nested ``GtkPaned`` canvas** that
+*reflects* the GTK-free ``LayoutModel`` (Plan 03-02). The tab strip is gone:
+several worktrees stay open at once, each in its own pane (PAR-01); selecting a
+sidebar row focuses its pane if visible, else swaps it into the focused pane
+(PAR-02 / D-06); creating a worktree splits the focused pane so the new agent
+appears beside it (D-03); the canvas is free split/drag with no visible tab bar
+(LAYOUT-01 / D-01). Hibernate/Resume move to the sidebar row's right-click menu
+(D-08), reusing the Phase-2 ``win.hibernate``/``win.resume`` actions verbatim.
 
-Layering: this is the ONLY presentation module that imports ``gi``. All
-branch/dir/argv logic stays in the GTK-free ``worktree.py``; the session model
-lives in ``session.py``; async git runs through ``git_service.py``. ``window.py``
-only orchestrates.
+ALL layout *logic* lives in the GTK-free ``arduis.layout.LayoutModel`` —
+``window.py`` only reflects the model tree into ``Gtk.Paned``/``Vte.Terminal``
+widgets. This is the only presentation module that imports ``gi``.
 
 Decisions wired here:
-- D-02: tab 0 is the unchanged Phase-1 ``$HOME`` scratch shell (no session).
-- D-03: ``+`` disabled with a hint when launched outside a git repo.
-- D-04/D-05: default-branch chain (origin -> local), sibling dir from worktree.py.
-- D-06: type-or-pick branch dialog.
-- D-07: porcelain pre-check — focus existing tab / clear abort, NEVER --force.
-- D-08: feed ``AGENT_FEED`` bytes after the spawn pid arrives (WT-03).
-- D-09: a failed/absent ``claude`` needs no handling — the shell stays usable.
-- D-10/D-11/D-12: hibernate kills the group + keeps the dir; resume cold-relaunches.
-- D-13: window-close tears down ALL active sessions (no orphans).
+- D-01: nested ``GtkPaned`` canvas replaces the tab strip (no visible tab bar).
+- D-02: sidebar (all worktrees) and pane canvas (a subset) are decoupled.
+- D-03: ``+New`` splits the focused pane before the spawn.
+- D-04 (discretion): closing a pane HIDES the worktree (leaf removed from the
+  layout, session stays ACTIVE in the store + sidebar) — no confirmation.
+- D-06: row select = focus-or-swap via ``resolve_selection``.
+- D-07: the ``$HOME`` scratch shell is a pinned ``main`` sidebar row (not a session).
+- D-08: Hibernate/Resume live on the sidebar row context menu.
+- D-10/D-11/D-12 (Phase-2): hibernate kills the group + keeps the dir; resume
+  cold-relaunches; window-close tears down ALL sessions (no orphans).
 
-Targets the VTE 0.76 API floor (D-03) so one codebase runs on Ubuntu (0.76)
-and Arch (0.84).
+Targets the VTE 0.76 API floor so one codebase runs on Ubuntu (0.76) and Arch
+(0.84). The RAM poll + cap enforcement + C-Space prefix keys land in Plan 03-05.
 """
 from __future__ import annotations
 
@@ -43,6 +47,7 @@ from arduis.host_runner import HostRunner  # noqa: E402
 from arduis.spawn import build_spawn_command, build_worktree_spawn  # noqa: E402
 from arduis.exit_status import decode_exit  # noqa: E402
 from arduis.git_service import run_git_async  # noqa: E402
+from arduis.layout import LayoutModel, LeafNode, SplitNode, resolve_selection  # noqa: E402
 from arduis.session import (  # noqa: E402
     AGENT_FEED,
     SessionState,
@@ -74,6 +79,62 @@ from arduis.theme import (  # noqa: E402
 _SIGKILL_GRACE_MS = 1500  # time between SIGHUP and the SIGKILL sweep (D-13)
 _NO_REPO_HINT = "Launch arduis inside a git repo to create worktrees"
 
+# The pinned $HOME scratch shell is a layout leaf but NOT a store session (D-07).
+_MAIN_SID = "main"
+
+_SIDEBAR_WIDTH = 248   # UI-SPEC: fixed-ish sidebar width
+_PANE_HEADER_H = 32    # UI-SPEC: pane-header height
+_MIN_PANE_W = 240      # UI-SPEC: min usable terminal width
+_MIN_PANE_H = 120      # UI-SPEC: min usable terminal height
+
+# UI-SPEC Color (Dracula, mirrored from theme.py).
+_DOT_ACTIVE = "#50fa7b"      # active agent dot (green)
+_DOT_HIBERNATED = "#6272a4"  # hibernated dot (grey)
+_BRANCH_PINK = "#ff79c6"     # pane-header branch label
+_FOCUS_RING = "#bd93f9"      # focused-pane purple ring
+_BG2 = "#21222c"             # sidebar / header / pane-header surface
+
+# Loaded once into the display so the CSS classes below resolve everywhere.
+_CSS = f"""
+.arduis-sidebar {{
+    background-color: {_BG2};
+}}
+.arduis-pane-header {{
+    background-color: {_BG2};
+    min-height: {_PANE_HEADER_H}px;
+    padding: 0 16px;
+}}
+.arduis-branch {{
+    color: {_BRANCH_PINK};
+    font-weight: 600;
+    font-size: 13px;
+}}
+.arduis-badge {{
+    color: {_FOCUS_RING};
+    font-size: 11px;
+}}
+.arduis-leaf.focus {{
+    border: 1px solid {_FOCUS_RING};
+}}
+.arduis-dot-active {{
+    color: {_DOT_ACTIVE};
+}}
+.arduis-dot-hibernated {{
+    color: {_DOT_HIBERNATED};
+}}
+.arduis-row-branch {{
+    font-weight: 600;
+    font-size: 13px;
+}}
+.arduis-row-subline {{
+    font-size: 11px;
+    opacity: 0.7;
+}}
+.arduis-row-hibernated {{
+    opacity: 0.5;
+}}
+"""
+
 
 def _rgba(spec: str) -> Gdk.RGBA:
     """Parse a hex color string into a ``Gdk.RGBA`` (GTK lives only here)."""
@@ -83,22 +144,31 @@ def _rgba(spec: str) -> Gdk.RGBA:
 
 
 class ArduisWindow(Adw.ApplicationWindow):
-    """A tabbed window: tab 0 = host scratch shell, +N worktree-agent tabs."""
+    """Sidebar + nested-GtkPaned canvas: N worktree terminals, decoupled view."""
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
         self._runner = HostRunner()
         self._store = SessionStore()
-        # tab 0 (the Phase-1 $HOME scratch shell) is NOT a session.
+        # The $HOME scratch shell is the pinned "main" leaf (D-07), not a session.
         self._shell_pid: int | None = None
         self._last_exit: int | None = None
         self._repo_root: str | None = None
 
-        # per-session widget maps (session_id -> widget) + reverse page lookup.
-        self._page_by_sid: dict[str, Adw.TabPage] = {}
+        # GTK-free layout model is the single source of truth for what is visible.
+        self._layout = LayoutModel()
+
+        # session_id -> widgets. The "main" key maps to the scratch-shell leaf.
+        self._leaf_by_sid: dict[str, Gtk.Widget] = {}
         self._term_by_sid: dict[str, Vte.Terminal] = {}
-        self._sid_by_page: dict[Adw.TabPage, str] = {}
+        # sidebar row <-> session_id (the main row maps to the scratch shell).
+        self._sid_by_row: dict[Gtk.ListBoxRow, str] = {}
+        self._row_by_sid: dict[str, Gtk.ListBoxRow] = {}
+        # the row a right-click context menu currently targets (D-08).
+        self._menu_target_sid: str | None = None
+
+        self._install_css()
 
         self.set_title("arduis")
         self.set_default_size(960, 620)
@@ -111,32 +181,53 @@ class ArduisWindow(Adw.ApplicationWindow):
         # until repo resolution succeeds.
         self._new_btn = Gtk.Button()
         self._new_btn.set_icon_name("list-add-symbolic")
-        self._new_btn.set_tooltip_text("New worktree")
+        self._new_btn.set_tooltip_text("Nova worktree")
         self._new_btn.set_sensitive(False)  # enabled once _repo_root resolves
         self._new_btn.connect("clicked", self._on_new_worktree_clicked)
         header.pack_start(self._new_btn)
         view.add_top_bar(header)
 
-        # Adw.TabView (the tab content stack) + Adw.TabBar (the visible strip).
-        self._tabs = Adw.TabView()
-        tabbar = Adw.TabBar(view=self._tabs)
-        view.add_top_bar(tabbar)
-        view.set_content(self._tabs)
+        # Body: horizontal split = sidebar (left, fixed-ish) + canvas slot (right).
+        body = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+
+        self._sidebar = self._build_sidebar()
+        body.append(self._sidebar)
+
+        # Canvas slot: a single-child frame whose child is the reflected pane tree.
+        self._canvas_slot = Gtk.Frame()
+        self._canvas_slot.set_hexpand(True)
+        self._canvas_slot.set_vexpand(True)
+        body.append(self._canvas_slot)
+
+        view.set_content(body)
         self.set_content(view)
 
-        # Right-click tab menu: Hibernate / Resume (D-10).
-        self._install_tab_menu()
+        # Hibernate / Resume actions reused from Phase 2, now driven by the row
+        # context menu (D-08).
+        self._install_row_actions()
 
-        # GTK4 window-close signal (Pitfall 5: NOT GTK3 "delete-event").
+        # GTK4 window-close signal (NOT GTK3 "delete-event").
         self.connect("close-request", self._on_close_request)
 
-        # Tab 0: the unchanged Phase-1 $HOME scratch shell (D-02).
-        self._open_shell_tab()
+        # Seed the canvas with the $HOME scratch shell as the pinned main leaf.
+        self._open_shell_leaf()
 
         # Resolve the launch repo asynchronously (D-03). Enables + on success.
         self._resolve_repo_root()
 
-    # --- terminal factory (extracted Phase-1 setup) -------------------------
+    # --- CSS provider (UI-SPEC Color) ---------------------------------------
+
+    def _install_css(self) -> None:
+        """Load the sidebar/dot/pane-header/focus-ring colors once per display."""
+        provider = Gtk.CssProvider()
+        provider.load_from_data(_CSS.encode("utf-8"))
+        display = Gdk.Display.get_default()
+        if display is not None:
+            Gtk.StyleContext.add_provider_for_display(
+                display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+            )
+
+    # --- terminal factory (reused verbatim from Phase 2) --------------------
 
     def _make_terminal(self) -> Vte.Terminal:
         """Build a VTE terminal with the app-owned palette + clipboard shortcuts."""
@@ -185,19 +276,101 @@ class ArduisWindow(Adw.ApplicationWindow):
             return True  # handled — don't propagate
         return _paste
 
-    # --- tab 0: Phase-1 $HOME scratch shell (D-02) --------------------------
+    # --- pane leaf factory (pane-header + terminal) -------------------------
 
-    def _open_shell_tab(self) -> None:
-        """Append tab 0 — the $HOME zsh scratch shell. Not a worktree session."""
+    def _make_leaf(self, sid: str, branch_label: str, terminal: Vte.Terminal) -> Gtk.Widget:
+        """Build a leaf = 32px pane header (branch + badge + ⊟/⊞/✕) over a terminal."""
+        leaf = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        leaf.add_css_class("arduis-leaf")
+        leaf.set_size_request(_MIN_PANE_W, _MIN_PANE_H)  # UI-SPEC min usable pane
+
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        header.add_css_class("arduis-pane-header")
+
+        # T-03-09: render the branch literally via set_text — never set_markup.
+        branch = Gtk.Label()
+        branch.set_text(branch_label)
+        branch.add_css_class("arduis-branch")
+        header.append(branch)
+
+        badge = Gtk.Label()
+        badge.set_text("claude")
+        badge.add_css_class("arduis-badge")
+        header.append(badge)
+
+        spacer = Gtk.Box()
+        spacer.set_hexpand(True)
+        header.append(spacer)
+
+        split_btn = Gtk.Button(label="⊟")
+        split_btn.set_tooltip_text("Dividir painel")
+        split_btn.add_css_class("flat")
+        split_btn.connect("clicked", self._make_split_pane_cb(sid))
+        header.append(split_btn)
+
+        zoom_btn = Gtk.Button(label="⊞")
+        zoom_btn.set_tooltip_text("Zoom")
+        zoom_btn.add_css_class("flat")
+        zoom_btn.connect("clicked", self._make_zoom_pane_cb(sid))
+        header.append(zoom_btn)
+
+        close_btn = Gtk.Button(label="✕")
+        close_btn.set_tooltip_text("Fechar painel")
+        close_btn.add_css_class("flat")
+        close_btn.connect("clicked", self._make_close_pane_cb(sid))
+        header.append(close_btn)
+
+        leaf.append(header)
+
+        terminal.set_hexpand(True)
+        terminal.set_vexpand(True)
+        leaf.append(terminal)
+        return leaf
+
+    def _make_split_pane_cb(self, sid: str):
+        def _split(_btn) -> None:
+            # ⊟ re-presents the +New dialog targeting this pane as the split point.
+            self._layout.focused_id = sid
+            self._on_new_worktree_clicked(None)
+        return _split
+
+    def _make_zoom_pane_cb(self, sid: str):
+        def _zoom(_btn) -> None:
+            if self._layout.is_zoomed():
+                self._layout.unzoom()
+            else:
+                self._layout.zoom(sid)
+            self._reflect_layout()
+        return _zoom
+
+    def _make_close_pane_cb(self, sid: str):
+        def _close(_btn) -> None:
+            # D-04 default: HIDE — drop the leaf; the session stays ACTIVE/in sidebar.
+            self._layout.close_leaf(sid)
+            self._reflect_layout()
+        return _close
+
+    # --- the pinned $HOME scratch shell as the "main" leaf (D-07) -----------
+
+    def _open_shell_leaf(self) -> None:
+        """Seed the canvas with the $HOME zsh scratch shell as the main leaf."""
         terminal = self._make_terminal()
         terminal.connect("child-exited", self._on_shell_exited)
-        page = self._tabs.append(terminal)
-        page.set_title("shell")
+
+        leaf = self._make_leaf(_MAIN_SID, "main", terminal)
+        self._leaf_by_sid[_MAIN_SID] = leaf
+        self._term_by_sid[_MAIN_SID] = terminal
+
+        # The main leaf is the root of the layout tree.
+        self._layout.root = LeafNode(_MAIN_SID)
+        self._layout.focused_id = _MAIN_SID
+        self._layout.touch(_MAIN_SID)
+        self._reflect_layout()
 
         argv, envv = build_spawn_command(self._runner)
         terminal.spawn_async(
             Vte.PtyFlags.DEFAULT,
-            GLib.get_home_dir(),  # working_directory (D-10)
+            GLib.get_home_dir(),  # working_directory
             argv,                 # ["zsh", "-l", "-i"]
             envv,                 # ["TERM=xterm-256color"]
             GLib.SpawnFlags.DEFAULT,
@@ -210,15 +383,154 @@ class ArduisWindow(Adw.ApplicationWindow):
         terminal.grab_focus()
 
     def _on_shell_spawned(self, terminal, pid, error):
-        """Capture tab 0's PID for teardown; ignore a failed spawn."""
+        """Capture the scratch shell's PID for teardown; ignore a failed spawn."""
         if error is not None or pid == -1:
             return
         self._shell_pid = pid
 
     def _on_shell_exited(self, terminal, status):
-        """Tab 0 exiting closes the window (D-12 — the scratch shell is primary)."""
+        """The scratch shell exiting closes the window (the primary shell)."""
         self._last_exit = decode_exit(status)
         self.close()
+
+    # --- sidebar (PAR-02, D-05/D-06/D-07/D-08) ------------------------------
+
+    def _build_sidebar(self) -> Gtk.Widget:
+        """The left sidebar: a ListBox of the pinned main row + worktree rows."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.add_css_class("arduis-sidebar")
+        box.set_size_request(_SIDEBAR_WIDTH, -1)
+
+        self._listbox = Gtk.ListBox()
+        self._listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self._listbox.connect("row-activated", self._on_row_activated)
+        box.append(self._listbox)
+
+        self._rebuild_sidebar()
+        return box
+
+    def _rebuild_sidebar(self) -> None:
+        """Rebuild rows from the store; pinned main row first, then each session."""
+        # Clear existing rows via the GTK4 child API (first-child + next-sibling
+        # walk — the GTK3 container-children accessor is gone in GTK4).
+        child = self._listbox.get_first_child()
+        while child is not None:
+            nxt = child.get_next_sibling()
+            self._listbox.remove(child)
+            child = nxt
+        self._sid_by_row.clear()
+        self._row_by_sid.clear()
+
+        # Pinned main row (D-07): the $HOME scratch shell, not a session.
+        self._listbox.append(
+            self._make_row(_MAIN_SID, "main", "zsh · ocioso", active=True)
+        )
+
+        # One row per worktree session.
+        for session in self._store.all():
+            active = session.state == SessionState.ACTIVE
+            self._listbox.append(
+                self._make_row(session.session_id, session.branch, "claude · —", active=active)
+            )
+
+    def _make_row(self, sid: str, branch: str, subline: str, active: bool) -> Gtk.ListBoxRow:
+        """One sidebar row: dot (8px) + branch (13/600) + RAM sub-line (11/400)."""
+        row = Gtk.ListBoxRow()
+        outer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        outer.set_margin_top(8)
+        outer.set_margin_bottom(8)
+        outer.set_margin_start(16)
+        outer.set_margin_end(16)
+
+        dot = Gtk.Label(label="●")
+        dot.add_css_class("arduis-dot-active" if active else "arduis-dot-hibernated")
+        dot.set_valign(Gtk.Align.CENTER)
+        outer.append(dot)
+
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        # T-03-09: branch name rendered literally via set_text (no markup injection).
+        name = Gtk.Label(xalign=0)
+        name.set_text(branch)
+        name.add_css_class("arduis-row-branch")
+        text.append(name)
+        sub = Gtk.Label(xalign=0)
+        sub.set_text(subline)
+        sub.add_css_class("arduis-row-subline")
+        text.append(sub)
+        outer.append(text)
+
+        if not active:
+            row.add_css_class("arduis-row-hibernated")
+
+        row.set_child(outer)
+
+        # Track the row<->sid map (the main row is mappable so activation focuses
+        # the scratch shell pane).
+        self._sid_by_row[row] = sid
+        self._row_by_sid[sid] = row
+
+        # Right-click context menu targets this row's session (D-08).
+        if sid != _MAIN_SID:
+            gesture = Gtk.GestureClick()
+            gesture.set_button(Gdk.BUTTON_SECONDARY)
+            gesture.connect("pressed", self._make_row_menu_cb(sid, row))
+            row.add_controller(gesture)
+
+        return row
+
+    def _make_row_menu_cb(self, sid: str, row: Gtk.ListBoxRow):
+        def _on_secondary(_gesture, _n_press, x, y) -> None:
+            self._menu_target_sid = sid
+            session = self._store.get(sid)
+            menu = Gio.Menu()
+            if session is not None and session.state == SessionState.ACTIVE:
+                menu.append("Hibernar", "win.hibernate")  # D-08
+            else:
+                menu.append("Retomar", "win.resume")
+            popover = Gtk.PopoverMenu.new_from_model(menu)
+            popover.set_parent(row)
+            rect = Gdk.Rectangle()
+            rect.x = int(x)
+            rect.y = int(y)
+            rect.width = 1
+            rect.height = 1
+            popover.set_pointing_to(rect)
+            popover.popup()
+        return _on_secondary
+
+    def _on_row_activated(self, _listbox, row: Gtk.ListBoxRow) -> None:
+        """D-06 focus-or-swap: focus the pane if visible, else swap into focused."""
+        sid = self._sid_by_row.get(row)
+        if sid is None:
+            return
+        action, target = resolve_selection(self._layout, sid)
+        if action == "focus":
+            self._layout.focused_id = target
+            self._layout.touch(target)
+            self._reflect_layout()
+            term = self._term_by_sid.get(target)
+            if term is not None:
+                term.grab_focus()
+        else:  # swap the hidden worktree into the currently-focused pane
+            focused = self._layout.focused_id
+            self._layout.set_leaf_session(focused, sid)
+            # The focused leaf now carries `sid` — remap its widget + terminal.
+            self._rebind_leaf(focused, sid)
+            self._reflect_layout()
+            term = self._term_by_sid.get(sid)
+            if term is not None:
+                term.grab_focus()
+
+    def _rebind_leaf(self, old_sid: str, new_sid: str) -> None:
+        """Move the leaf widget/terminal from old_sid's key to new_sid's after a swap."""
+        if old_sid == new_sid:
+            return
+        leaf = self._leaf_by_sid.pop(old_sid, None)
+        term = self._term_by_sid.pop(old_sid, None)
+        if leaf is not None:
+            self._leaf_by_sid[new_sid] = leaf
+        if term is not None:
+            self._term_by_sid[new_sid] = term
 
     # --- repo resolution (D-03) ---------------------------------------------
 
@@ -231,7 +543,7 @@ class ArduisWindow(Adw.ApplicationWindow):
             if status == 0 and out.strip():
                 self._repo_root = out.strip()
                 self._new_btn.set_sensitive(True)
-                self._new_btn.set_tooltip_text("New worktree")
+                self._new_btn.set_tooltip_text("Nova worktree")
             else:
                 self._repo_root = None
                 self._new_btn.set_sensitive(False)
@@ -255,15 +567,15 @@ class ArduisWindow(Adw.ApplicationWindow):
     def _present_new_worktree_dialog(self, existing: list[str]) -> None:
         """Type-or-pick branch dialog: typing a new name = new branch (D-06)."""
         dialog = Adw.AlertDialog(
-            heading="New worktree",
-            body="Type a new branch name or pick an existing branch.",
+            heading="Nova worktree",
+            body="Digite o nome de uma nova branch ou escolha uma existente.",
         )
         combo = Gtk.ComboBoxText.new_with_entry()
         for name in existing:
             combo.append_text(name)
         dialog.set_extra_child(combo)
-        dialog.add_response("cancel", "Cancel")
-        dialog.add_response("create", "Create")
+        dialog.add_response("cancel", "Cancelar")
+        dialog.add_response("create", "Criar")
         dialog.set_response_appearance("create", Adw.ResponseAppearance.SUGGESTED)
         dialog.set_default_response("create")
         dialog.set_close_response("cancel")
@@ -289,10 +601,10 @@ class ArduisWindow(Adw.ApplicationWindow):
             parsed = parse_worktrees(out) if status == 0 else []
             path = branch_checked_out_path(branch, parsed)
             if path:
-                # D-07: focus the tracked tab if arduis owns this worktree...
+                # D-07: focus the tracked worktree if arduis owns it...
                 session = self._session_for_worktree_dir(path)
                 if session is not None:
-                    self._tabs.set_selected_page(self._page_by_sid[session.session_id])
+                    self._focus_or_swap_session(session.session_id)
                     return
                 # ...else it's the main checkout or an untracked worktree: abort.
                 self._abort_already_checked_out(branch, path)
@@ -303,6 +615,13 @@ class ArduisWindow(Adw.ApplicationWindow):
         run_git_async(
             argv_worktree_list_porcelain(self._repo_root), _porcelain_done, self._runner
         )
+
+    def _focus_or_swap_session(self, sid: str) -> None:
+        """Route an existing session through the D-06 focus-or-swap path."""
+        row = self._row_by_sid.get(sid)
+        if row is not None:
+            self._listbox.select_row(row)
+            self._on_row_activated(self._listbox, row)
 
     def _resolve_base_then_add(self, branch: str, kind: str) -> None:
         """Default-branch chain (D-04): origin/HEAD -> local HEAD fallback."""
@@ -323,17 +642,26 @@ class ArduisWindow(Adw.ApplicationWindow):
         run_git_async(argv_default_branch_via_origin(repo), _origin_done, self._runner)
 
     def _open_and_add(self, branch: str, kind: str, base: str) -> None:
-        """Open the tab immediately (loading spinner), then run worktree add."""
+        """Split the focused pane (D-03), then run worktree add + spawn into it."""
         repo = self._repo_root
         wt_dir = worktree_dir_for(repo, branch)
 
-        # Instant "in seconds" feedback (Open Q2): open the tab loading.
+        # D-03: split the focused pane so the new agent appears beside it.
         terminal = self._make_terminal()
         terminal.connect("child-exited", self._on_worktree_term_exited)
-        page = self._tabs.append(terminal)
-        page.set_title(branch)
-        page.set_loading(True)
-        self._tabs.set_selected_page(page)
+        leaf = self._make_leaf(branch, branch, terminal)
+        self._leaf_by_sid[branch] = leaf
+        self._term_by_sid[branch] = terminal
+
+        focused = self._layout.focused_id
+        if focused is None or self._layout.root is None:
+            # Empty canvas — seed the first leaf instead of splitting.
+            self._layout.root = LeafNode(branch)
+            self._layout.focused_id = branch
+            self._layout.touch(branch)
+        else:
+            self._layout.split(focused, branch, "h")
+        self._reflect_layout()
 
         if kind == "new":
             argv = argv_worktree_add_new(repo, branch, wt_dir, base)
@@ -341,11 +669,13 @@ class ArduisWindow(Adw.ApplicationWindow):
             argv = argv_worktree_add_existing(repo, wt_dir, branch)
 
         def _add_done(status, _out, err):
-            page.set_loading(False)
             if status != 0:
-                # Creation failed — abort the tab; surface the git error.
-                self._show_error(f"Could not create worktree for '{branch}'", err)
-                self._tabs.close_page(page)
+                # Creation failed — drop the pane; surface the git error.
+                self._show_error("Não foi possível criar a worktree.", err)
+                self._layout.close_leaf(branch)
+                self._leaf_by_sid.pop(branch, None)
+                self._term_by_sid.pop(branch, None)
+                self._reflect_layout()
                 return
             session = WorktreeSession(
                 session_id=branch,
@@ -354,9 +684,7 @@ class ArduisWindow(Adw.ApplicationWindow):
                 repo_root=repo,
             )
             self._store.add(session)
-            self._page_by_sid[branch] = page
-            self._term_by_sid[branch] = terminal
-            self._sid_by_page[page] = branch
+            self._rebuild_sidebar()
             self._spawn_into(terminal, wt_dir, session)
 
         run_git_async(argv, _add_done, self._runner)
@@ -383,7 +711,7 @@ class ArduisWindow(Adw.ApplicationWindow):
     def _make_wt_spawn_cb(self, session: WorktreeSession):
         def _on_wt_spawned(terminal, pid, error):
             if error is not None or pid == -1:
-                return  # D-09: no banner; the tab stays a usable shell
+                return  # D-09: no banner; the pane stays a usable shell
             session.pid = pid
             try:
                 session.pgid = os.getpgid(pid)  # A1: don't assume pgid == pid
@@ -394,10 +722,66 @@ class ArduisWindow(Adw.ApplicationWindow):
 
     def _on_worktree_term_exited(self, terminal, status):
         """A worktree shell exiting is local — do not close the whole window."""
-        # The tab's shell ended (e.g. user typed `exit`); leave the tab/dir.
+        # The pane's shell ended (e.g. user typed `exit`); leave the leaf/dir.
         return
 
-    # --- helpers: session/page lookup + user messaging ----------------------
+    # --- canvas reflection: model tree -> Gtk.Paned widgets (D-01) ----------
+
+    def _reflect_layout(self) -> None:
+        """Rebuild the canvas widget tree from the layout model (Pattern 1).
+
+        Walks the GTK-free ``LayoutModel``: a ``SplitNode`` becomes a draggable
+        ``Gtk.Paned``; a ``LeafNode`` becomes its mapped pane widget. Detaches
+        every leaf from its previous parent FIRST (single-parent rule, Pitfall 1)
+        so widgets can be re-hung without "already has a parent" crashes.
+        """
+        # Detach the old root + every mapped leaf so they are parent-free before
+        # we re-hang them (GTK4 single-parent rule, Pitfall 1).
+        if self._canvas_slot.get_child() is not None:
+            self._canvas_slot.set_child(None)
+        for leaf in self._leaf_by_sid.values():
+            if leaf.get_parent() is not None:
+                leaf.unparent()
+
+        new_root = self._build_widget(self._layout.root)
+        self._canvas_slot.set_child(new_root)
+
+        # Apply the focused-pane purple ring to exactly one leaf (UI-SPEC).
+        focused = self._layout.focused_id
+        for sid, leaf in self._leaf_by_sid.items():
+            if sid == focused:
+                leaf.add_css_class("focus")
+            else:
+                leaf.remove_css_class("focus")
+
+    def _build_widget(self, node) -> Gtk.Widget:
+        """Reflect one layout node into a widget (SplitNode->Paned, LeafNode->leaf)."""
+        if node is None:
+            # Empty canvas — a neutral placeholder box.
+            return Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        if isinstance(node, LeafNode):
+            if node.session_id is None:
+                return Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            leaf = self._leaf_by_sid.get(node.session_id)
+            if leaf is None:
+                # A leaf id with no widget (shouldn't happen) — neutral filler.
+                return Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            return leaf
+        if isinstance(node, SplitNode):
+            orient = (
+                Gtk.Orientation.HORIZONTAL if node.orientation == "h"
+                else Gtk.Orientation.VERTICAL
+            )
+            paned = Gtk.Paned(orientation=orient)
+            paned.set_wide_handle(True)            # visible draggable gutter
+            paned.set_shrink_start_child(False)    # honor each leaf's min size
+            paned.set_shrink_end_child(False)
+            paned.set_start_child(self._build_widget(node.start))
+            paned.set_end_child(self._build_widget(node.end))
+            return paned
+        return Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+
+    # --- helpers: session lookup + user messaging ---------------------------
 
     def _session_for_worktree_dir(self, path: str) -> WorktreeSession | None:
         """Return the tracked session whose worktree_dir matches ``path``."""
@@ -410,8 +794,8 @@ class ArduisWindow(Adw.ApplicationWindow):
     def _abort_already_checked_out(self, branch: str, path: str) -> None:
         """D-07: clear abort message — NEVER --force."""
         self._show_error(
-            f"Branch '{branch}' is already checked out",
-            f"It is checked out at {path}. Pick a different branch.",
+            f"A branch '{branch}' já está em uso",
+            f"Ela está em uso em {path}. Escolha outra branch.",
         )
 
     def _show_error(self, heading: str, body: str) -> None:
@@ -421,15 +805,10 @@ class ArduisWindow(Adw.ApplicationWindow):
         dialog.set_close_response("ok")
         dialog.present(self)
 
-    # --- tab context menu: Hibernate / Resume (D-10) ------------------------
+    # --- row context menu: Hibernate / Resume (D-08) ------------------------
 
-    def _install_tab_menu(self) -> None:
-        """Right-click tab menu wired to win.hibernate / win.resume actions."""
-        menu = Gio.Menu()
-        menu.append("Hibernate", "win.hibernate")
-        menu.append("Resume", "win.resume")
-        self._tabs.set_menu_model(menu)
-
+    def _install_row_actions(self) -> None:
+        """Register win.hibernate / win.resume actions (reused from Phase 2)."""
         hibernate = Gio.SimpleAction.new("hibernate", None)
         hibernate.connect("activate", self._on_hibernate)
         self.add_action(hibernate)
@@ -438,37 +817,32 @@ class ArduisWindow(Adw.ApplicationWindow):
         resume.connect("activate", self._on_resume)
         self.add_action(resume)
 
-    def _selected_session(self) -> WorktreeSession | None:
-        """Resolve the currently selected tab back to its tracked session."""
-        page = self._tabs.get_selected_page()
-        if page is None:
+    def _menu_session(self) -> WorktreeSession | None:
+        """Resolve the right-clicked row back to its tracked session (D-08)."""
+        if self._menu_target_sid is None:
             return None
-        sid = self._sid_by_page.get(page)
-        if sid is None:
-            return None  # tab 0 / untracked page — no session
-        return self._store.get(sid)
+        return self._store.get(self._menu_target_sid)
 
     def _on_hibernate(self, _action, _param) -> None:
-        """D-11: kill the worktree process GROUP, keep the dir, dim the tab."""
-        session = self._selected_session()
+        """D-11: kill the worktree process GROUP, keep the dir, dim the row."""
+        session = self._menu_session()
         if session is None or session.state == SessionState.HIBERNATED:
             return
         if session.pid:
             self._teardown_pgid(session.pid)  # kills zsh + claude GROUP (Pitfall 5)
         hibernate_fields(session)  # GTK-free: state=HIBERNATED, pid/pgid=None
-        page = self._page_by_sid[session.session_id]
-        page.set_needs_attention(True)  # dim/badge as suspended (D-10)
+        self._rebuild_sidebar()    # dim/grey-dot the row (D-08, not a tab badge)
 
     def _on_resume(self, _action, _param) -> None:
         """D-12: cold relaunch (fresh zsh+claude) — not a reattach (v2/PERSIST-01)."""
-        session = self._selected_session()
+        session = self._menu_session()
         if session is None or session.state == SessionState.ACTIVE:
             return
         session.state = SessionState.ACTIVE
-        page = self._page_by_sid[session.session_id]
-        page.set_needs_attention(False)
-        terminal = self._term_by_sid[session.session_id]
-        self._spawn_into(terminal, session.worktree_dir, session)  # re-feeds AGENT_FEED
+        self._rebuild_sidebar()
+        terminal = self._term_by_sid.get(session.session_id)
+        if terminal is not None:
+            self._spawn_into(terminal, session.worktree_dir, session)  # re-feeds AGENT_FEED
 
     # --- teardown (RAM-01, D-11/D-13) ---------------------------------------
 
@@ -482,7 +856,7 @@ class ArduisWindow(Adw.ApplicationWindow):
             pass  # already gone
 
     def _on_close_request(self, *_):
-        """No-orphan teardown across ALL tabs (D-13): tab 0 + every session."""
+        """No-orphan teardown across ALL panes (D-13): scratch shell + sessions."""
         if self._shell_pid:
             self._teardown_pgid(self._shell_pid)
         for session in self._store.all():
