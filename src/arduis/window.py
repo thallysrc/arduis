@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import os
 import signal
+import subprocess
 
 import gi
 
@@ -172,6 +173,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._shell_pid: int | None = None
         self._last_exit: int | None = None
         self._repo_root: str | None = None
+        self._repo_name: str | None = None
 
         # GTK-free layout model is the single source of truth for what is visible.
         self._layout = LayoutModel()
@@ -254,11 +256,12 @@ class ArduisWindow(Adw.ApplicationWindow):
         # GTK4 window-close signal (NOT GTK3 "delete-event").
         self.connect("close-request", self._on_close_request)
 
-        # Seed the canvas with the $HOME scratch shell as the pinned main leaf.
-        self._open_shell_leaf()
-
-        # Resolve the launch repo asynchronously (D-03). Enables + on success.
+        # Resolve the launch repo FIRST (D-03) so the pinned main leaf can open
+        # in the repo root rather than $HOME, and the sidebar can show its name.
         self._resolve_repo_root()
+
+        # Seed the canvas with the main checkout scratch shell as the pinned leaf.
+        self._open_shell_leaf()
 
         # ~2s off-loop RAM poll (RAM-03/D-14): writes live process-group RSS onto
         # each active session and refreshes the row sub-lines + aggregate footer.
@@ -328,8 +331,18 @@ class ArduisWindow(Adw.ApplicationWindow):
 
     # --- pane leaf factory (pane-header + terminal) -------------------------
 
-    def _make_leaf(self, sid: str, branch_label: str, terminal: Vte.Terminal) -> Gtk.Widget:
-        """Build a leaf = 32px pane header (branch + badge + ⊟/⊞/✕) over a terminal."""
+    def _make_leaf(
+        self,
+        sid: str,
+        branch_label: str,
+        terminal: Vte.Terminal,
+        badge_label: str = "claude",
+    ) -> Gtk.Widget:
+        """Build a leaf = 32px pane header (branch + badge + ⊟/⊞/✕) over a terminal.
+
+        ``badge_label`` reflects what actually runs in the pane: ``zsh`` for the
+        pinned main scratch shell, ``claude`` for worktree agents (the default).
+        """
         leaf = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         leaf.add_css_class("arduis-leaf")
         leaf.set_size_request(_MIN_PANE_W, _MIN_PANE_H)  # UI-SPEC min usable pane
@@ -344,7 +357,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         header.append(branch)
 
         badge = Gtk.Label()
-        badge.set_text("claude")
+        badge.set_text(badge_label)
         badge.add_css_class("arduis-badge")
         header.append(badge)
 
@@ -400,14 +413,22 @@ class ArduisWindow(Adw.ApplicationWindow):
             self._reflect_layout()
         return _close
 
-    # --- the pinned $HOME scratch shell as the "main" leaf (D-07) -----------
+    # --- the pinned main-checkout scratch shell as the "main" leaf (D-07) ----
 
     def _open_shell_leaf(self) -> None:
-        """Seed the canvas with the $HOME zsh scratch shell as the main leaf."""
+        """Seed the canvas with the zsh scratch shell as the pinned main leaf.
+
+        D-07 (revised on UAT): the pinned leaf opens in the launch repo's root —
+        its main checkout — so launching arduis from a repo lands you in it.
+        Falls back to ``$HOME`` only when arduis was launched outside a repo.
+        """
         terminal = self._make_terminal()
         terminal.connect("child-exited", self._on_shell_exited)
 
-        leaf = self._make_leaf(_MAIN_SID, "main", terminal)
+        # Label the pinned leaf with the repo name (its main checkout); fall back
+        # to "main" when launched outside a repo. The badge is "zsh" (not claude).
+        main_label = self._repo_name or "main"
+        leaf = self._make_leaf(_MAIN_SID, main_label, terminal, badge_label="zsh")
         self._leaf_by_sid[_MAIN_SID] = leaf
         self._term_by_sid[_MAIN_SID] = terminal
 
@@ -417,10 +438,11 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._layout.touch(_MAIN_SID)
         self._reflect_layout()
 
+        main_cwd = self._repo_root or GLib.get_home_dir()
         argv, envv = build_spawn_command(self._runner)
         terminal.spawn_async(
             Vte.PtyFlags.DEFAULT,
-            GLib.get_home_dir(),  # working_directory
+            main_cwd,             # working_directory: repo root, else $HOME
             argv,                 # ["zsh", "-l", "-i"]
             envv,                 # ["TERM=xterm-256color"]
             GLib.SpawnFlags.DEFAULT,
@@ -472,9 +494,11 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._row_by_sid.clear()
         self._subline_by_sid.clear()
 
-        # Pinned main row (D-07): the $HOME scratch shell, not a session.
+        # Pinned main row (D-07 revised): the repo's main-checkout scratch shell,
+        # not a session. Titled with the repo name so you see which repo you're in.
+        main_title = self._repo_name or "main"
         self._listbox.append(
-            self._make_row(_MAIN_SID, "main", "zsh · ocioso", active=True)
+            self._make_row(_MAIN_SID, main_title, "main · zsh", active=True)
         )
 
         # One row per worktree session.
@@ -758,21 +782,32 @@ class ArduisWindow(Adw.ApplicationWindow):
     # --- repo resolution (D-03) ---------------------------------------------
 
     def _resolve_repo_root(self) -> None:
-        """Resolve the launch repo's toplevel; enable + on success, else hint."""
+        """Resolve the launch repo's toplevel; enable + on success, else hint.
+
+        Runs once at startup BEFORE the main leaf is seeded so the pinned ``main``
+        leaf opens in the repo root (the repo's main checkout, D-07 revised) and
+        the sidebar shows the repo name. A single ``git rev-parse`` is a short
+        read-only host query — blocking briefly at startup is acceptable
+        (CLAUDE.md) — and it still routes through the HostRunner seam.
+        """
         cwd = os.getcwd()
-        argv = ["git", "-C", cwd, "rev-parse", "--show-toplevel"]
+        argv = self._runner.wrap_argv(["git", "-C", cwd, "rev-parse", "--show-toplevel"])
+        try:
+            proc = subprocess.run(argv, capture_output=True, text=True, timeout=5)
+            top = proc.stdout.strip() if proc.returncode == 0 else ""
+        except (OSError, subprocess.SubprocessError):
+            top = ""
 
-        def _done(status, out, _err):
-            if status == 0 and out.strip():
-                self._repo_root = out.strip()
-                self._new_btn.set_sensitive(True)
-                self._new_btn.set_tooltip_text("Nova worktree")
-            else:
-                self._repo_root = None
-                self._new_btn.set_sensitive(False)
-                self._new_btn.set_tooltip_text(_NO_REPO_HINT)
-
-        run_git_async(argv, _done, self._runner)
+        if top:
+            self._repo_root = top
+            self._repo_name = os.path.basename(top)
+            self._new_btn.set_sensitive(True)
+            self._new_btn.set_tooltip_text("Nova worktree")
+        else:
+            self._repo_root = None
+            self._repo_name = None
+            self._new_btn.set_sensitive(False)
+            self._new_btn.set_tooltip_text(_NO_REPO_HINT)
 
     # --- + New-worktree dialog (D-06) ---------------------------------------
 
