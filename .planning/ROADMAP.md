@@ -68,11 +68,11 @@ Plans:
   5. A configurable cap on simultaneously active agents/containers is enforced when opening new worktrees
 **Plans**: 5 plans
 Plans:
-- [ ] 03-01-PLAN.md — Wave 0: RED test scaffolds for the four GTK-free modules (layout, keymap, resource_monitor, caps)
-- [ ] 03-02-PLAN.md — GREEN GTK-free canvas+keyboard: layout.py binary split/leaf tree + keymap.py C-Space prefix dispatch
-- [ ] 03-03-PLAN.md — GREEN GTK-free RAM: resource_monitor.py /proc process-group RSS + pt-BR format + caps.py active-agent cap policy
-- [ ] 03-04-PLAN.md — window.py: replace TabView with sidebar + nested GtkPaned canvas reflecting LayoutModel (PAR-01/PAR-02/LAYOUT-01)
-- [ ] 03-05-PLAN.md — window.py: C-Space prefix machine + ~2s RAM poll + cap prompt-to-hibernate + presets/zoom + manual acceptance (PAR-03/RAM-02/RAM-03)
+- [x] 03-01-PLAN.md — Wave 0: RED test scaffolds for the four GTK-free modules (layout, keymap, resource_monitor, caps)
+- [x] 03-02-PLAN.md — GREEN GTK-free canvas+keyboard: layout.py binary split/leaf tree + keymap.py C-Space prefix dispatch
+- [x] 03-03-PLAN.md — GREEN GTK-free RAM: resource_monitor.py /proc process-group RSS + pt-BR format + caps.py active-agent cap policy
+- [x] 03-04-PLAN.md — window.py: replace TabView with sidebar + nested GtkPaned canvas reflecting LayoutModel (PAR-01/PAR-02/LAYOUT-01)
+- [x] 03-05-PLAN.md — window.py: C-Space prefix machine + ~2s RAM poll + cap prompt-to-hibernate + presets/zoom + manual acceptance (PAR-03/RAM-02/RAM-03)
 **UI hint**: yes
 
 ### Phase 4: Attention Detection (who's waiting)
