@@ -36,8 +36,8 @@ Decimal phases appear between their surrounding integers in numeric order.
   5. Runs on Ubuntu 24.04 (system `gir1.2-vte-3.91` 0.76) and Arch (`vte4` 0.84) under real Wayland; code targets the VTE 0.76 API floor; `HostRunner` is a no-op seam (direct spawn) with the Flatpak path stubbed but unused
 **Plans**: 2 plans
 Plans:
-- [ ] 01-01-PLAN.md — GTK-free tested seams + Wave-0 infra: HostRunner (no-op/Flatpak-stub), Dracula palette, exit-status decode, spawn argv builder, pytest config
-- [ ] 01-02-PLAN.md — GTK wiring: refactor draft into arduis package, spawn host zsh via the seam, apply palette, no-orphan close-request teardown, native run.sh, manual acceptance checklist
+- [x] 01-01-PLAN.md — GTK-free tested seams + Wave-0 infra: HostRunner (no-op/Flatpak-stub), Dracula palette, exit-status decode, spawn argv builder, pytest config
+- [x] 01-02-PLAN.md — GTK wiring: refactor draft into arduis package, spawn host zsh via the seam, apply palette, no-orphan close-request teardown, native run.sh, manual acceptance checklist
 **UI hint**: yes
 
 ### Phase 2: Core Loop (new worktree → env → agent)
