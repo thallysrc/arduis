@@ -22,12 +22,11 @@ espera**.
 <!-- Shipped and confirmed valuable. -->
 
 - [x] **Terminal real embutido (VTE) rodando o shell do host** — janela GTK4/libadwaita com um terminal VTE rodando `zsh -l -i` do host via PTY nativo direto (sem `flatpak-spawn`), atrás do seam no-op `HostRunner`; paleta Dracula owned pelo app, Ctrl+C/Ctrl+Z+`fg`, decode de exit-status, teardown sem órfãos e copy/paste (Ctrl+Shift+C/V). *Validado na Fase 1: Terminal (2026-06-09, aceite manual #1–#4/#6 + 15 testes).* A parte "agente rodando" da linha Active correspondente chega na Fase 2.
+- [x] **Core loop**: "Nova worktree" → cria worktree + agente (`claude`) rodando num terminal real, em segundos — botão `+New worktree` num `Adw.TabView`, diálogo type-or-pick de branch, `git worktree add` async (off the GTK loop) na dir irmã a partir da default branch auto-detectada, terminal VTE com `claude` alimentado como bytes; branch já em uso foca a aba/aborta sem `--force`; `+` desabilita fora de repo git; hibernar mata o grupo de processos e mantém a dir, resume relança. Nasce a camada de domínio GTK-free (`worktree.py`, `SessionStore`) + o seam `swarm/`. *Validado na Fase 2: Core Loop (2026-06-09, aceite manual SC#2/#3/#4 + D-03 + 25 testes; WT-01/02/03, RAM-01).*
 
 ### Active
 
 <!-- Hipóteses até serem entregues e validadas. -->
-
-- [ ] **Core loop**: "Nova worktree" → cria worktree + monta ambiente + agente rodando num terminal real, em segundos
 - [ ] N agentes em **paralelo**, cada um na sua git worktree
 - [ ] Terminais reais embutidos via **VTE**, rodando o shell/agente **do host** (zsh, claude, git)
 - [ ] **Agente = comando configurável**; default `claude`; `Ctrl+C` cai no shell e troca de agente
@@ -115,4 +114,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-09 — Phase 1 (Terminal) complete: embedded VTE terminal on the host shell, behind the no-op HostRunner seam.*
+*Last updated: 2026-06-09 — Phase 2 (Core Loop) complete: "+New worktree" → worktree + `claude` running in a real terminal in seconds; GTK-free worktree/SessionStore domain layer + swarm seam born. (Phase 1: embedded VTE host-shell terminal behind the no-op HostRunner seam.)*
