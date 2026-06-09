@@ -29,7 +29,10 @@ Decisions wired here:
   cold-relaunches; window-close tears down ALL sessions (no orphans).
 
 Targets the VTE 0.76 API floor so one codebase runs on Ubuntu (0.76) and Arch
-(0.84). The RAM poll + cap enforcement + C-Space prefix keys land in Plan 03-05.
+(0.84). Plan 03-05 adds, on top of this shell: a capture-phase ``C-Space`` prefix
+state machine (PAR-03/D-09/D-10) dispatching via ``arduis.keymap``; a ~2s off-loop
+``GLib`` RAM poll (RAM-03/D-12/D-14) writing process-group RSS onto each session;
+and the active-agent cap prompt-to-hibernate gate on +New (RAM-02/D-15/D-16).
 """
 from __future__ import annotations
 
@@ -47,6 +50,7 @@ from arduis.host_runner import HostRunner  # noqa: E402
 from arduis.spawn import build_spawn_command, build_worktree_spawn  # noqa: E402
 from arduis.exit_status import decode_exit  # noqa: E402
 from arduis.git_service import run_git_async  # noqa: E402
+from arduis import caps, keymap, resource_monitor  # noqa: E402
 from arduis.layout import LayoutModel, LeafNode, SplitNode, resolve_selection  # noqa: E402
 from arduis.session import (  # noqa: E402
     AGENT_FEED,
@@ -133,6 +137,19 @@ _CSS = f"""
 .arduis-row-hibernated {{
     opacity: 0.5;
 }}
+.arduis-hintbar {{
+    background-color: {_BG2};
+    padding: 4px 16px;
+    font-size: 11px;
+}}
+.arduis-hint-key {{
+    color: {_FOCUS_RING};
+    font-weight: 600;
+}}
+.arduis-footer-count {{
+    color: {_DOT_ACTIVE};
+    font-weight: 600;
+}}
 """
 
 
@@ -168,6 +185,9 @@ class ArduisWindow(Adw.ApplicationWindow):
         # the row a right-click context menu currently targets (D-08).
         self._menu_target_sid: str | None = None
 
+        # C-Space prefix state machine (PAR-03/D-09/D-10): armed by Ctrl+Space.
+        self._prefix_armed = False
+
         self._install_css()
 
         self.set_title("arduis")
@@ -185,10 +205,17 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._new_btn.set_sensitive(False)  # enabled once _repo_root resolves
         self._new_btn.connect("clicked", self._on_new_worktree_clicked)
         header.pack_start(self._new_btn)
+
+        # ⌥ Layout menu (LAYOUT-01/D-04): grid 2×2 / columns presets.
+        header.pack_start(self._build_layout_button())
         view.add_top_bar(header)
 
-        # Body: horizontal split = sidebar (left, fixed-ish) + canvas slot (right).
+        # Outer body: the sidebar+canvas row over a bottom tmux-hint bar.
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+
+        # Row: horizontal split = sidebar (left, fixed-ish) + canvas slot (right).
         body = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        body.set_vexpand(True)
 
         self._sidebar = self._build_sidebar()
         body.append(self._sidebar)
@@ -199,12 +226,25 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._canvas_slot.set_vexpand(True)
         body.append(self._canvas_slot)
 
-        view.set_content(body)
+        outer.append(body)
+        outer.append(self._build_hint_bar())
+
+        view.set_content(outer)
         self.set_content(view)
+
+        # C-Space prefix machine on a CAPTURE-phase controller (RESEARCH § Pattern
+        # 3): it sees every key before the focused Vte.Terminal, swallowing ONLY
+        # the prefix while disarmed and a recognized action while armed (Pitfall 6).
+        kc = Gtk.EventControllerKey()
+        kc.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        kc.connect("key-pressed", self._on_key)
+        self.add_controller(kc)
 
         # Hibernate / Resume actions reused from Phase 2, now driven by the row
         # context menu (D-08).
         self._install_row_actions()
+        # Layout preset actions (LAYOUT-01/D-04), driven by the ⌥ Layout menu.
+        self._install_layout_actions()
 
         # GTK4 window-close signal (NOT GTK3 "delete-event").
         self.connect("close-request", self._on_close_request)
@@ -531,6 +571,176 @@ class ArduisWindow(Adw.ApplicationWindow):
             self._leaf_by_sid[new_sid] = leaf
         if term is not None:
             self._term_by_sid[new_sid] = term
+
+    # --- ⌥ Layout presets + zoom (LAYOUT-01/D-04) ---------------------------
+
+    def _build_layout_button(self) -> Gtk.Widget:
+        """Header menu button (``⌥ Layout``) with grid 2×2 / columns presets."""
+        menu = Gio.Menu()
+        menu.append("Grade 2×2", "win.preset_grid2x2")
+        menu.append("Colunas", "win.preset_columns")
+
+        button = Gtk.MenuButton()
+        button.set_label("⌥ Layout")
+        button.set_tooltip_text("Layout")
+        button.set_menu_model(menu)
+        return button
+
+    def _install_layout_actions(self) -> None:
+        """Register win.preset_grid2x2 / win.preset_columns (LAYOUT-01/D-04)."""
+        grid = Gio.SimpleAction.new("preset_grid2x2", None)
+        grid.connect("activate", lambda *_: self._apply_preset("grid2x2"))
+        self.add_action(grid)
+
+        columns = Gio.SimpleAction.new("preset_columns", None)
+        columns.connect("activate", lambda *_: self._apply_preset("columns"))
+        self.add_action(columns)
+
+    def _apply_preset(self, kind: str) -> None:
+        """Rebuild the canvas with a preset over the MRU active subset (D-04)."""
+        ids = self._mru_active_ids()
+        if not ids:
+            return
+        self._layout.preset(kind, ids)
+        self._reflect_layout()
+
+    def _mru_active_ids(self) -> list[str]:
+        """The most-recently-focused mapped leaf ids (the D-04 preset subset)."""
+        mapped = set(self._leaf_by_sid.keys())
+        ordered = [sid for sid in self._layout.mru_order() if sid in mapped]
+        # Include any mapped ids the MRU hasn't seen yet (deterministic tail).
+        for sid in self._leaf_by_sid:
+            if sid not in ordered:
+                ordered.append(sid)
+        return ordered
+
+    # --- bottom tmux-hint bar (UI-SPEC Copywriting) -------------------------
+
+    def _build_hint_bar(self) -> Gtk.Widget:
+        """The literal tmux hint bar + the live ``N agentes ativos`` footer."""
+        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=16)
+        bar.add_css_class("arduis-hintbar")
+
+        # Literal contract copy with purple C-Space glyphs (UI-SPEC).
+        hints = Gtk.Label()
+        hints.set_xalign(0)
+        hints.set_use_markup(True)
+        key = _FOCUS_RING
+        hints.set_markup(
+            f'<span foreground="{key}" weight="bold">C-Space n</span> nova · '
+            f'<span foreground="{key}" weight="bold">C-Space hjkl</span> mover · '
+            f'<span foreground="{key}" weight="bold">C-Space z</span> zoom'
+        )
+        bar.append(hints)
+
+        spacer = Gtk.Box()
+        spacer.set_hexpand(True)
+        bar.append(spacer)
+
+        # Aggregate footer: "N agentes ativos · <total> RAM" (count in green).
+        self._footer_label = Gtk.Label()
+        self._footer_label.set_xalign(1)
+        self._footer_label.set_use_markup(True)
+        self._update_footer()
+        bar.append(self._footer_label)
+        return bar
+
+    # --- C-Space prefix state machine (PAR-03/D-09/D-10) --------------------
+
+    def _on_key(self, _ctrl, keyval, _code, state) -> bool:
+        """Capture-phase prefix machine: arm on Ctrl+Space, dispatch the next key.
+
+        Returns True ONLY for the prefix keystroke (while disarmed) and for a
+        recognized action key (while armed); every other key returns False so the
+        focused terminal receives all normal typing (T-03-12 / Pitfall 6).
+        """
+        name = Gdk.keyval_name(keyval) or ""
+        if not self._prefix_armed:
+            if (
+                name == keymap.PREFIX_KEYVAL
+                and (state & Gdk.ModifierType.CONTROL_MASK)
+            ):
+                self._prefix_armed = True
+                return True  # swallow the prefix; do NOT leak it to the shell
+            return False  # normal typing — let the terminal have it (Pitfall 6)
+
+        # Armed: the next key is the action key. Disarm regardless of match.
+        self._prefix_armed = False
+        action = keymap.dispatch(name)
+        if action is None:
+            return False  # stray key after the prefix — don't eat it
+        self._run_action(action)
+        return True  # recognized action — swallow it
+
+    def _run_action(self, action: tuple) -> None:
+        """Map a keymap action tuple to focus/worktree/jump behavior (A2)."""
+        kind = action[0]
+        if kind == "focus_dir":
+            self._focus_neighbor(action[1])
+        elif kind == "worktree":
+            self._cycle_worktree(action[1])
+        elif kind == "jump":
+            self._jump_to_row(action[1])
+
+    def _focus_neighbor(self, direction: str) -> None:
+        """Move pane focus to the neighbor leaf (tree-order traversal — A2).
+
+        Phase 3 accepts tree-order (not true geometric) directional focus: h/k
+        step toward the previous visible leaf, j/l toward the next (Assumption A2).
+        """
+        visible = self._layout.visible_ids()
+        if len(visible) < 2:
+            return
+        focused = self._layout.focused_id
+        try:
+            idx = visible.index(focused)
+        except ValueError:
+            idx = 0
+        step = -1 if direction in ("left", "up") else 1
+        target = visible[(idx + step) % len(visible)]
+        self._focus_leaf(target)
+
+    def _focus_leaf(self, sid: str) -> None:
+        """Focus a visible leaf: update the model, ring, and grab its terminal."""
+        self._layout.focused_id = sid
+        self._layout.touch(sid)
+        self._reflect_layout()
+        term = self._term_by_sid.get(sid)
+        if term is not None:
+            term.grab_focus()
+
+    def _cycle_worktree(self, direction: str) -> None:
+        """C-Space n/p: cycle the sidebar selection, then focus-or-swap (D-06)."""
+        rows = self._session_rows()
+        if not rows:
+            return
+        current = self._listbox.get_selected_row()
+        try:
+            idx = rows.index(current)
+        except ValueError:
+            idx = -1
+        step = 1 if direction == "next" else -1
+        target = rows[(idx + step) % len(rows)]
+        self._listbox.select_row(target)
+        self._on_row_activated(self._listbox, target)
+
+    def _jump_to_row(self, n: int) -> None:
+        """C-Space <N>: select the Nth worktree row (1-indexed) + focus-or-swap."""
+        rows = self._session_rows()
+        if not (1 <= n <= len(rows)):
+            return
+        target = rows[n - 1]
+        self._listbox.select_row(target)
+        self._on_row_activated(self._listbox, target)
+
+    def _session_rows(self) -> list[Gtk.ListBoxRow]:
+        """The sidebar rows for real worktree sessions (excludes the main row)."""
+        rows: list[Gtk.ListBoxRow] = []
+        for session in self._store.all():
+            row = self._row_by_sid.get(session.session_id)
+            if row is not None:
+                rows.append(row)
+        return rows
 
     # --- repo resolution (D-03) ---------------------------------------------
 
