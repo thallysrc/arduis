@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: verifying
-stopped_at: Phase 2 context gathered
-last_updated: "2026-06-09T13:54:09.338Z"
-last_activity: 2026-06-09
+status: executing
+stopped_at: Completed 02-02-PLAN.md (human-verify approved)
+last_updated: "2026-06-09T16:21:15.029Z"
+last_activity: 2026-06-09 -- Plan 02-02 complete (core-loop GTK wiring, human-verified)
 progress:
   total_phases: 9
   completed_phases: 1
-  total_plans: 2
-  completed_plans: 2
-  percent: 100
+  total_plans: 5
+  completed_plans: 3
+  percent: 60
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-08)
 
 **Core value:** Tirar a ideia "quero começar uma branch nova" e ter um agente de IA rodando numa worktree isolada em segundos — gerenciando N agentes em paralelo e sempre sabendo qual deles te espera.
-**Current focus:** Phase 2 — Core Loop (new worktree → env → agent). Phase 1 (Terminal) complete & verified.
+**Current focus:** Phase 02 — core-loop-new-worktree-env-agent
 
 ## Current Position
 
-Phase: 2
-Plan: Not started
-Status: Phase 1 complete & verified (5/5) — ready to discuss/plan Phase 2
-Last activity: 2026-06-09
+Phase: 02 (core-loop-new-worktree-env-agent) — EXECUTING
+Plan: 3 of 3 (02-02 complete)
+Status: Plan 02-02 COMPLETE — Tasks 1-3 committed + run.sh D-03 fix; human-verify approved (SC#2/#3/#4 + D-03 + no-orphans all PASS). Phase 02 plans done; awaiting phase verification.
+Last activity: 2026-06-09 -- Plan 02-02 finalized after human-verify approval
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [██████░░░░] 60%
 
 ## Performance Metrics
 
@@ -82,6 +82,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-06-09T13:54:09.335Z
-Stopped at: Phase 2 context gathered
-Resume with: /gsd-discuss-phase 2  (or /gsd-plan-phase 2)
+Last session: 2026-06-09T16:21:15.029Z
+Stopped at: Completed 02-02-PLAN.md (human-verify approved) — all 3 Phase-02 plans done
+Resume with: phase verification for Phase 02 (orchestrator owns this next)

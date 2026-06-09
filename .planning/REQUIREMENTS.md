@@ -13,9 +13,9 @@ Requirements para o lançamento inicial (paralelismo simples). Cada um mapeia pa
 
 ### Worktree / Core Loop (WT)
 
-- [ ] **WT-01**: Usuário cria uma worktree nova a partir de uma branch (nova ou existente) pela UI ("＋ Nova worktree")
-- [ ] **WT-02**: A worktree é criada via `git worktree add` no local/base configurados
-- [ ] **WT-03**: Um terminal abre no diretório da worktree nova com o agente padrão (`claude`) já rodando
+- [x] **WT-01**: Usuário cria uma worktree nova a partir de uma branch (nova ou existente) pela UI ("＋ Nova worktree")
+- [x] **WT-02**: A worktree é criada via `git worktree add` no local/base configurados
+- [x] **WT-03**: Um terminal abre no diretório da worktree nova com o agente padrão (`claude`) já rodando
 
 ### Paralelismo + Sidebar (PAR)
 
@@ -57,7 +57,7 @@ Requirements para o lançamento inicial (paralelismo simples). Cada um mapeia pa
 
 ### RAM / Recursos (RAM)
 
-- [ ] **RAM-01**: Usuário hiberna uma worktree (mata agente + para containers, mantém o diretório) e retoma depois
+- [x] **RAM-01**: Usuário hiberna uma worktree (mata agente + para containers, mantém o diretório) e retoma depois
 - [ ] **RAM-02**: Limite configurável de agentes/containers ativos simultaneamente
 - [ ] **RAM-03**: Visibilidade de uso de RAM por worktree na UI
 - [ ] **RAM-04**: Suspender worktrees ociosas (ligado ao status idle)
@@ -130,10 +130,10 @@ Qual fase cobre qual requisito. Cada requisito v1 mapeia para exatamente uma fas
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | TERM-01 | Phase 1 | Pending |
-| WT-01 | Phase 2 | Pending |
-| WT-02 | Phase 2 | Pending |
-| WT-03 | Phase 2 | Pending |
-| RAM-01 | Phase 2 | Pending |
+| WT-01 | Phase 2 | Complete |
+| WT-02 | Phase 2 | Complete |
+| WT-03 | Phase 2 | Complete |
+| RAM-01 | Phase 2 | Complete |
 | PAR-01 | Phase 3 | Pending |
 | PAR-02 | Phase 3 | Pending |
 | PAR-03 | Phase 3 | Pending |
