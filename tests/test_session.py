@@ -1,83 +1,77 @@
-"""Wave-0 RED contract for the GTK-free SessionStore domain layer.
+"""Tests for the GTK-free serializable SessionStore (WT-03/RAM-01).
 
-Pins the pure (stdlib-only) API of `src/arduis/session.py`, which Plan 01
-implements. Until then this file is RED (ModuleNotFoundError at import).
-
-Decision IDs covered:
-- D-08 / Pitfall 1: the agent feed MUST be `bytes` (`b"claude\n"`); a `str`
-  raises TypeError on the VTE 0.76 `feed_child` binding.
-- D-11: hibernate clears pid/pgid, sets state HIBERNATED, KEEPS worktree_dir.
-- D-13: SessionStore is GTK-free + serializable, with RAM fields (rss_kb)
-  on the model from day one (unpopulated in Phase 2).
+Contract: ``AGENT_FEED`` is the bytes literal ``b"claude\\n"`` (D-08, Pitfall 1
+- ``feed_child`` rejects str at the 0.76 floor); the store is JSON-serializable
+via ``asdict`` (D-13) and carries the ``rss_kb`` RAM field from day one; the
+hibernate transition clears pid/pgid and flips state while KEEPING the directory
+(D-11).
 """
 import json
 
+from arduis import session
 from arduis.session import (
     AGENT_FEED,
     SessionState,
-    WorktreeSession,
     SessionStore,
+    WorktreeSession,
     hibernate_fields,
 )
 
 
 def test_agent_feed_is_bytes():
-    # D-08 / Pitfall 1: str raises TypeError on the 0.76 feed_child binding.
-    assert isinstance(AGENT_FEED, bytes)
+    # D-08 / Pitfall 1: must be bytes, not str (0.76 feed_child TypeError on str)
     assert AGENT_FEED == b"claude\n"
+    assert isinstance(AGENT_FEED, bytes)
 
 
 def test_store_serializable():
-    # D-13: GTK-free, serializable store; day-one RAM field rss_kb present.
     store = SessionStore()
-    session = WorktreeSession(
+    s = WorktreeSession(
         session_id="feat",
         branch="feat",
-        worktree_dir="/p/r-feat",
-        repo_root="/p/r",
+        worktree_dir="/home/u/repo-feat",
+        repo_root="/home/u/repo",
     )
-    store.add(session)
-
-    assert store.get("feat") is session
-    assert store.by_branch("feat") is session
-    assert len(store.all()) == 1
-
-    listed = store.to_list()
-    assert isinstance(listed, list)
-    # JSON-roundtrippable proves GTK-free serializability (no gi objects).
-    json.dumps(listed)
-
-    d = listed[0]
-    for key in (
-        "session_id",
-        "branch",
-        "worktree_dir",
-        "repo_root",
-        "state",
-        "pid",
-        "pgid",
-        "rss_kb",
-    ):
-        assert key in d
+    store.add(s)
+    # CRUD
+    assert store.get("feat") is s
+    assert store.by_branch("feat") is s
+    assert store.by_branch("absent") is None
+    assert store.all() == [s]
+    # RAM field present from day one (D-13)
+    assert s.rss_kb is None
+    # serializable: str-Enum dumps as its value, whole store is JSON-round-trippable
+    as_list = store.to_list()
+    assert as_list[0]["state"] == "active"
+    assert as_list[0]["rss_kb"] is None
+    json.dumps(as_list)  # must not raise
 
 
 def test_hibernate_model():
-    # D-11: hibernate model transition — clear pid/pgid, state HIBERNATED,
-    # keep worktree_dir; rss_kb field still present (defaults None).
-    session = WorktreeSession(
+    s = WorktreeSession(
         session_id="feat",
         branch="feat",
-        worktree_dir="/p/r-feat",
-        repo_root="/p/r",
-        state=SessionState.ACTIVE,
-        pid=1234,
-        pgid=1234,
+        worktree_dir="/home/u/repo-feat",
+        repo_root="/home/u/repo",
+        pid=4242,
+        pgid=4242,
+        rss_kb=12345,
     )
+    hibernate_fields(s)
+    assert s.state == SessionState.HIBERNATED
+    assert s.pid is None
+    assert s.pgid is None
+    # D-11: directory kept on disk; rss_kb left untouched
+    assert s.worktree_dir == "/home/u/repo-feat"
+    assert s.repo_root == "/home/u/repo"
+    assert s.rss_kb == 12345
+    # serializes cleanly post-hibernate
+    assert s.to_dict()["state"] == "hibernated"
 
-    hibernate_fields(session)
 
-    assert session.state == SessionState.HIBERNATED
-    assert session.pid is None
-    assert session.pgid is None
-    assert session.worktree_dir == "/p/r-feat"  # dir kept (D-11)
-    assert session.rss_kb is None  # RAM field present, unpopulated
+def test_session_module_is_gtk_free():
+    # the domain module must not import gi
+    src = session.__file__
+    with open(src, encoding="utf-8") as fh:
+        text = fh.read()
+    assert "import gi" not in text
