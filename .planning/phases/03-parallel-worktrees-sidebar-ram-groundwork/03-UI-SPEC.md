@@ -27,43 +27,45 @@ created: 2026-06-09
 
 **Source:** `docs/mockup/interface-v1.html` head `<style>` + `src/arduis/theme.py` + CONTEXT.md D-01/D-05/D-07/D-14.
 
+**Primary focal point:** The purple `＋ Nova worktree` header button is the single primary focal point of the screen — it is the only purple-filled element, sits top-left in the header bar, and carries the phase's core promise ("agent running in seconds"). All other accent uses (outline, hint glyphs, agent badge) are subordinate and must not out-weight it visually.
+
 ---
 
 ## Spacing Scale
 
-Declared values (must be multiples of 4). Derived from the v1 mockup; rounded to the 4px grid where the mockup used off-grid values (the mockup's `9px`/`10px`/`11px` paddings collapse to `8`/`12` on the grid — executor uses the grid value).
+Declared values (must be from the standard set {4, 8, 16, 24, 32, 48, 64}). Derived from the v1 mockup; rounded to the standard grid where the mockup used off-grid values (the mockup's `9px`/`10px`/`11px` paddings collapse to `8`/`16` on the grid — executor uses the grid value).
 
 | Token | Value | Usage |
 |-------|-------|-------|
 | xs | 4px | Dot-to-text gap, badge vertical padding, tight inline gaps |
-| sm | 8px | Sidebar row vertical padding, header button gaps, sidebar outer padding |
-| md | 12px | Sidebar row horizontal padding, pane-header horizontal padding, header bar left inset |
-| lg | 16px | Status/footer inter-item gaps, pane-body padding |
-| xl | 24px | Reserved for dialog content padding (`Adw.AlertDialog` default) |
-| 2xl | 32px | Reserved — not used at Phase-3 density |
-| 3xl | 48px | Reserved — not used at Phase-3 density |
+| sm | 8px | Sidebar row vertical padding, header button gaps, sidebar outer padding, `GtkPaned` gutter / pane gap (rendered via container margins) |
+| md | 16px | Sidebar row horizontal padding, pane-header horizontal padding, header bar left inset, status/footer inter-item gaps, pane-body padding |
+| lg | 24px | Dialog content padding (`Adw.AlertDialog` default) |
+| xl | 32px | Reserved — not used at Phase-3 density |
+| 2xl | 48px | Reserved — not used at Phase-3 density |
+| 3xl | 64px | Reserved — not used at Phase-3 density |
 
-Exceptions:
-- **Header bar height: 48px**, **pane-header height: 34px → 32px on grid**, **status bar height: 28px**, **sidebar width: 248px**, **state dot: 8px**. These are fixed widget dimensions from the mockup, not spacing-scale steps.
-- **Pane split divider (`GtkPaned` handle):** GTK default handle width; **minimum pane size ~240px wide / ~120px tall** so a terminal stays usable (Claude's discretion per CONTEXT.md — locked here as the floor).
-- **`GtkPaned` gutter / pane gap:** the mockup's `10px` grid gap → render as **8px** via container margins (grid-aligned).
+Exceptions (fixed widget dimensions, not spacing-scale steps — every value below is from the standard set {4, 8, 16, 24, 32, 48, 64}):
+- **Header bar height: 48px**, **pane-header height: 32px** (mockup `34px` → 32px on grid), **status bar height: 24px** (mockup `28px` → 24px on grid, preserving compact density), **state dot: 8px**.
+- **Sidebar width: 248px** — this is a content-column width, not a spacing step; treated as a fixed layout dimension (the mockup's measured rail width), exempt from the spacing scale like a component intrinsic size.
+- **Pane split divider (`GtkPaned` handle):** GTK default handle width; **minimum pane size ~240px wide / ~120px tall** so a terminal stays usable (Claude's discretion per CONTEXT.md — locked here as the floor). These are minimum-usable component dimensions, not spacing steps.
 
 ---
 
 ## Typography
 
-UI text only (terminal text is owned by VTE / the user's shell, not this contract). Exactly 4 roles, exactly 2 weights (600 semibold + 700 bold for emphasis labels; libadwaita body stays at its default 400 — counted as the regular weight). Sizes taken from the mockup.
+UI text only (terminal text is owned by VTE / the user's shell, not this contract). Exactly 4 size roles, exactly **2 weights**: 400 (regular) and 600 (semibold). Sizes taken from the mockup.
 
 | Role | Size | Weight | Line Height |
 |------|------|--------|-------------|
-| Section header (sidebar `WORKTREES`, all-caps, letter-spacing 1.5px) | 11px | 700 bold | 1.2 |
+| Section header (sidebar `WORKTREES`, all-caps, letter-spacing 1.5px) | 11px | 600 semibold | 1.2 |
 | Sub-line / status bar / footer (RAM line, "claude · editando", tmux hints) | 11px | 400 regular | 1.4 |
 | Body / row label (worktree branch name, header buttons, pane branch label) | 13px | 600 semibold | 1.4 |
-| Title (`arduis — <project>` window title) | 13px | 700 bold (sub at 500) | 1.2 |
+| Title (`arduis — <project>` window title) | 13px | 600 semibold (sub-title at 400) | 1.2 |
 
 Notes:
-- **Weights in play: 400 (regular body/sub-line) + 600 (semibold labels)**, with **700** used only for the two all-caps/title emphasis lines. Do not introduce a fourth weight.
-- **Branch names** render in the Dracula **pink** (`#ff79c6`) in pane headers (per mockup `.branch`); in the sidebar they use default `--fg`.
+- **Exactly 2 weights in play: 400 (regular — body sub-line, status bar, footer, window sub-title) and 600 (semibold — row labels, header buttons, pane branch label, section header, and window title).** No other weight is used anywhere in this phase.
+- **Branch names** render in the Dracula **pink** (`#ff79c6`) in pane headers (per mockup `.branch`); in the sidebar they use default `--fg`. (Weight stays 600 in both places.)
 - Terminal monospace size/line-height (mockup `11.5px`/`1.55`) is **out of scope** — VTE/user-controlled.
 
 ---
@@ -80,7 +82,7 @@ App-owned **Dracula** palette (`src/arduis/theme.py` is the single source for th
 | Destructive | `#ff5555` (Dracula red) | Window-close affordance hover, destructive confirmation actions only |
 
 Accent reserved for (purple `#bd93f9` — explicit list, never "all interactive elements"):
-- The **suggested/primary header button** (`＋ Nova worktree`) — purple fill, `#21222c` text.
+- The **suggested/primary header button** (`＋ Nova worktree`) — purple fill, `#21222c` text. **This is the primary focal point** (see Design System note).
 - The **focused-pane outline** (1px purple border + 1px purple ring on `.term.focus`).
 - **tmux keybinding hint glyphs** in the status bar (`C-Space n`, etc. — the `.k` accent).
 - The **`claude` agent badge** text/tint in the pane header (`badge.agent`).
@@ -112,10 +114,15 @@ All user-facing copy is **pt-BR** (the project's language, per mockup and REQUIR
 | Cap-reached prompt (D-15/D-16) | Heading: `Você está com N agentes ativos`. Body: `Hiberne uma worktree para liberar RAM antes de abrir outra.` Then a chooser of active worktrees; on pick → hibernate that one → proceed with creation. **Blocks** silent-allow and create-hibernated. |
 | Destructive confirmation — Hibernate | `Hibernar <branch>?`: `O agente será encerrado e a RAM liberada; o diretório da worktree é mantido. Você pode retomar depois.` Confirm button `Hibernar`. |
 | Destructive confirmation — Close pane | Default per D-04/discretion = **hide, not destroy** → no confirmation; the worktree stays active in the sidebar. (Only **Hibernate** — an explicit menu action — confirms; **conclude/remove worktree is Phase 8**, not here.) |
-| Context-menu actions (sidebar row, D-08) | `Hibernar` (active rows) / `Retomar` (hibernated rows) — reuse Phase-2 `win.hibernate` / `win.resume`. |
+| Context-menu actions (sidebar row, D-08) | `Hibernar` (active rows) / `Retomar` (hibernated rows) — single-word labels are **intentional**: the menu opens on a specific worktree row, so the row context makes the `worktree` noun redundant. Reuse Phase-2 `win.hibernate` / `win.resume`. |
 | tmux hint bar (status bar) | `C-Space n nova` · `C-Space hjkl mover` · `C-Space z zoom` (hints shown now; the full chord system is Phase 5, but the hint copy is part of this contract) |
 
 Units/format (D-14, Claude's discretion locked here): RAM shown as **`MB` under 1024 MB, `GB` with one decimal above** (e.g. `312 MB`, `1,2 GB`), pt-BR decimal comma. Poll cadence **~2s**, off the GTK main loop.
+
+**Icon-only control tooltips (GTK `tooltip-text`)** — every icon-only affordance in the pane header declares a pt-BR tooltip so the glyph is not the sole label:
+- `⊟` → `Dividir painel`
+- `⊞` → `Zoom`
+- `✕` → `Fechar painel`
 
 ---
 
@@ -136,10 +143,10 @@ Captured here because the executor implements layout behavior, not just static t
 | Element | Contract |
 |---------|----------|
 | Window shell | `Adw.ApplicationWindow` ▸ `Adw.ToolbarView` ▸ `Adw.HeaderBar` (top) + body + status bar (bottom). |
-| Header bar | `＋ Nova worktree` (suggested), `⌥ Layout` (menu), centered title `arduis — <project>`, window menu `☰`, native window controls. |
+| Header bar | `＋ Nova worktree` (suggested, **primary focal point**), `⌥ Layout` (menu), centered title `arduis — <project>`, window menu `☰`, native window controls. |
 | Body split | Horizontal: **Sidebar (left, 248px fixed-ish)** + **pane canvas (right, fills)**. |
 | Pane canvas | Nested **binary `GtkPaned`** (`GtkPaned ▸ GtkPaned ▸ Vte.Terminal`) — free split/drag, **no visible tab bar** (replaces Phase-2 `Adw.TabView`). |
-| Pane header (per pane, 32px) | Pink branch label + agent badge + spacer + icons `⊟` (split-ish/zoom-out), `⊞` (zoom/maximize), `✕` (close pane = hide worktree by default). |
+| Pane header (per pane, 32px) | Pink branch label + agent badge + spacer + icons `⊟` (split-ish/zoom-out, tooltip `Dividir painel`), `⊞` (zoom/maximize, tooltip `Zoom`), `✕` (close pane = hide worktree by default, tooltip `Fechar painel`). |
 | Focused pane | Purple 1px border + 1px purple ring (`.term.focus`). Exactly one focused pane. |
 | Sidebar row | `dot (8px) + branch name (13/600) + RAM sub-line (11/400)`; hover/selected = `#44475a` fill; hibernated = dimmed + grey dot. |
 | Sidebar selection (D-06) | Selecting a row **focuses its pane if visible; else swaps that worktree into the focused pane**. |
