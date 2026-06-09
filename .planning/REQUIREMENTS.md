@@ -74,14 +74,19 @@ Requirements para o lançamento inicial (paralelismo simples). Cada um mapeia pa
 
 ### Distribuição (DIST)
 
-- [ ] **DIST-01**: Instalável via Flatpak (canal principal), com VTE embutido
-- [ ] **DIST-02**: Pacote nativo AUR
-- [ ] **DIST-03**: Pacote nativo .deb
+- [ ] **DIST-02**: Pacote nativo **AUR** (Arch), usando `vte4` do sistema — canal principal no Arch
+- [ ] **DIST-03**: Pacote nativo **`.deb`** (Ubuntu), usando `gir1.2-vte-3.91` do sistema — canal principal no Ubuntu
 - [ ] **DIST-04**: Roda em Ubuntu e Arch (GNOME, Wayland)
+
+> **DIST-01 (Flatpak) movido pro v2** (ver abaixo). O pivô pra distribuição nativa elimina o sandbox e a ponte `flatpak-spawn --host`; o VTE vem dos repos oficiais (Ubuntu 0.76 / Arch 0.84), sem bundle.
 
 ## v2 Requirements
 
 Adiados para depois. Rastreados, mas fora do roadmap atual.
+
+### Distribuição (DIST)
+
+- **DIST-01**: Flatpak como canal **secundário**, com VTE embutido — reintroduz a ponte `flatpak-spawn --host` via o `HostRunner` (que já nasce com esse caminho no v1, como no-op)
 
 ### Persistência (PERSIST)
 
@@ -153,18 +158,18 @@ Qual fase cobre qual requisito. Cada requisito v1 mapeia para exatamente uma fas
 | REVIEW-02 | Phase 8 | Pending |
 | REVIEW-03 | Phase 8 | Pending |
 | GIT-01 | Phase 8 | Pending |
-| DIST-01 | Phase 9 | Pending |
 | DIST-02 | Phase 9 | Pending |
 | DIST-03 | Phase 9 | Pending |
 | DIST-04 | Phase 9 | Pending |
+| ~~DIST-01~~ (Flatpak) | v2 | Deferred |
 
 **Nota cross-cutting:** RAM management é tecido entre as fases — RAM-01 (agent-half) na Phase 2, RAM-02/03 (ResourceMonitor + visibilidade + caps) na Phase 3, RAM-04 (auto-suspend) na Phase 4; a metade de containers amadurece na Phase 7. Cada RAM-REQ é "owned" por uma única fase (acima), mas a feature evolui ao longo do roadmap.
 
 **Coverage:**
-- v1 requirements: 33 total
-- Mapped to phases: 33 ✓
+- v1 requirements: 32 total (DIST-01/Flatpak movido pro v2)
+- Mapped to phases: 32 ✓
 - Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-06-08*
-*Last updated: 2026-06-08 after roadmap creation (traceability mapped)*
+*Last updated: 2026-06-08 — pivô de distribuição: Flatpak → nativo (.deb + AUR), DIST-01 movido pro v2*

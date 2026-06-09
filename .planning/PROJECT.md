@@ -6,7 +6,8 @@ arduis é um app desktop GNOME **lightweight** (Linux: Ubuntu + Arch) que orques
 **vários agentes de IA (Claude Code) em paralelo** — cada um na sua **git worktree**, com
 **terminais reais embutidos (VTE)**. É a resposta Linux e terminal-cêntrica ao
 BridgeMind/BridgeSpace (que só existe no Mac). Para devs que vivem no terminal/tmux e usam
-agentes de IA intensamente; usável solo e **instalável facilmente por um time** (Flatpak).
+agentes de IA intensamente; usável solo e **instalável facilmente por um time** (pacotes
+nativos `.deb` + AUR).
 
 ## Core Value
 
@@ -38,7 +39,7 @@ espera**.
 - [ ] **Keybindings estilo tmux** configuráveis; tema **Dracula** default (temas trocáveis)
 - [ ] Ler info de **git/gh** (branch, status de PR) — somente leitura
 - [ ] **Review + cleanup**: ver diff / abrir PR via `gh`; concluir worktree remove worktree + containers
-- [ ] **Instalável**: **Flatpak** principal (`flatpak install` para outros devs), **AUR + .deb** nativos
+- [ ] **Instalável**: pacotes **nativos** — `.deb` (Ubuntu) + **AUR** (Arch), usando o VTE do sistema; Flatpak fora do v1
 
 ### Out of Scope
 
@@ -57,15 +58,19 @@ espera**.
 - **Ambiente:** Ubuntu 24.04 + Arch Linux, GNOME, Wayland. Instalados: flatpak 1.14.6,
   flatpak-builder 1.4.2, GNOME Platform/Sdk **50** (user), Python 3.12, `gh`, `tmux`,
   `nvim`, docker (snap), cargo/rust.
-- **VTE não vem no runtime do GNOME nem no apt do Ubuntu 24.04** → é **compilado dentro do
-  app** via flatpak-builder: VTE 0.84.0 (+ deps `fast_float` v8.2.8 e `simdutf` v7.7.1).
+- **VTE pra GTK4 vem dos repos oficiais**: Ubuntu 24.04 tem `gir1.2-vte-3.91` **0.76** no
+  `main` (verificado em 2026-06-08); Arch tem `vte4` **0.84** no `extra`. Pacotes nativos usam
+  o VTE do sistema — **sem compilar/bundle**. Codar pro piso da API 0.76 cobre a Fase 1 e o
+  OSC 133 da Fase 4.
 - **Inspiração:** BridgeMind/BridgeSpace (Mac). Mockups visuais **APROVADOS** em
   `docs/mockup/` — v1 (Dracula, grade 2×2) e v2 estilo BridgeSpace (charcoal + accent,
   command-blocks tipo Warp, room tabs Command/Swarm/Review, rail de agentes, mini-kanban).
 - **Contexto rico prévio:** `docs/MOTIVATION.md` (documento-base) e `docs/ROADMAP.md`
   (roadmap em degraus + esquema do `.arduis.toml` + trilha de swarm).
-- **Rascunho NÃO-commitado do Degrau 1** existe (`io.github.thallys.Arduis.yml`,
-  `src/main.py`, `data/*`, `dev.sh`) — tratar como rascunho a validar, não como verdade.
+- **Rascunho NÃO-commitado do Degrau 1** existe (`src/main.py`, `data/*`). Com o pivô pra
+  nativo, o manifesto Flatpak (`io.github.thallys.Arduis.yml`) e o `dev.sh` ficam **obsoletos**
+  (precisam de um script de run/build nativo); o `main.py` serve de base, mas **perde o
+  `flatpak-spawn`** — passa a spawnar o `zsh` direto.
 - **Usuário:** tmux-cêntrico, keyboard-driven, heavy Claude Code user; valoriza mínimo de
   dependências e manutenção solo. App-id placeholder: `io.github.thallys.Arduis`.
 
@@ -73,7 +78,7 @@ espera**.
 
 - **Plataforma**: Linux + GNOME, **Ubuntu E Arch** — regra inegociável
 - **Tech stack**: Python + PyGObject + GTK4 + libadwaita + VTE (Vte-3.91); config TOML; shell-out para git/gh/docker compose
-- **Distribuição**: Flatpak principal (instalação fácil pro time); AUR + .deb nativos; Snap não
+- **Distribuição**: **nativa** — `.deb` (Ubuntu) + AUR (Arch), usando o VTE do sistema; Flatpak fora do v1; Snap não
 - **UX**: centrado no terminal; respeita keybindings estilo tmux
 - **Performance/Memória**: lightweight, com **gestão de RAM de primeira classe**
 - **Método**: Accelerate/DORA — degraus pequenos, instaláveis e usáveis; trunk-based; entrega contínua; `main` sempre funcionando; dogfooding cedo
@@ -85,8 +90,8 @@ espera**.
 |----------|-----------|---------|
 | App desktop GTK4 + VTE (caminho A) vs. orquestrar kitty (caminho B) | Visual rico (sidebar com status, badges) + app instalável de verdade; kitty não embute como widget no Wayland | — Pending |
 | Python (PyGObject) vs. Vala/Rust | Protótipo rápido, mínimo de deps, manutenção solo; RAM não é gargalo da GUI | — Pending |
-| VTE compilado no app via flatpak-builder | VTE não vem no runtime GNOME nem no apt Ubuntu 24.04 | — Pending |
-| Flatpak principal (+ AUR/.deb), Snap não | 1 build cobre Ubuntu+Arch; instalação fácil pro time; Snap confina demais p/ ferramenta que dirige docker/git | — Pending |
+| VTE do sistema (Ubuntu 0.76 / Arch 0.84), sem compilar | Disponível nos repos oficiais dos dois; bundle só era necessário por causa do Flatpak | ✓ 2026-06-08 |
+| **Nativo (`.deb` Ubuntu + AUR Arch); Flatpak fora do v1; Snap não** | Flatpak forçaria sandbox → todo o risco do `flatpak-spawn --host`. Ubuntu 24.04 já tem GTK4-VTE 0.76 no `main` e Arch tem `vte4` 0.84 → nativo usa o VTE do sistema sem bundle e o PTY roda **direto** (igual BridgeMind). Snap confina demais | ✓ 2026-06-08 |
 | Containers isolados **opt-in**, compose-base da `main`, porta auto | Isolar projeto grande por worktree sem custo de RAM por padrão; ambiente baseado no trunk | — Pending |
 | Agente = comando configurável (Ctrl+C troca) | Flexibilidade (claude/codex/aider/shell) sem integração profunda | — Pending |
 | MVP = paralelismo simples; swarm = Fase 2 opcional | Evolução constante e visível (Accelerate); swarm monolítico mataria o momentum | — Pending |

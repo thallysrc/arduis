@@ -2,7 +2,7 @@
 
 ## Overview
 
-arduis is built as a ladder of **vertical "degraus"** — each phase is installable and usable on its own, following Accelerate/DORA (small batches, trunk-based, `main` always working, dogfood early). The journey starts by retiring the highest technical risk first: one real VTE terminal running the host shell through the single `flatpak-spawn --host` seam (Phase 1). It then builds the product's heart — "new worktree → env → agent in seconds" (Phase 2) — and makes parallelism visible with a sidebar and RAM groundwork (Phase 3). The Core Value pillar, hooks-first attention detection ("which agent is waiting for me"), lands in Phase 4. Phases 5–6 respect the tmux-centric user (agent-as-command, configurable chords, themes) and make worktrees "ready to work" via `.arduis.toml` setup. Phase 7 adds opt-in isolated docker-compose stacks (the heaviest RAM line item, hence after RAM groundwork), Phase 8 closes the loop with read-only review + correct teardown, and Phase 9 ships it team-installable on Ubuntu + Arch. **RAM management is woven across Phases 2/3/4/7, not a single late phase.** Swarm is explicitly Phase-2-of-the-product / out of v1 — kept cheap via the GTK-free `SessionStore` and `AgentSpec` seams, never built here.
+arduis is built as a ladder of **vertical "degraus"** — each phase is installable and usable on its own, following Accelerate/DORA (small batches, trunk-based, `main` always working, dogfood early). arduis ships as **native packages** (`.deb` on Ubuntu, AUR on Arch) using the system VTE — Flatpak is out of v1, which removes the sandbox and the entire `flatpak-spawn --host` risk class. The journey starts with the foundation: one real VTE terminal running the host shell via a **direct native PTY** (like BridgeMind), behind a thin `HostRunner` seam that is a no-op for native builds but keeps a single place to reintroduce an optional Flatpak channel later (Phase 1). It then builds the product's heart — "new worktree → env → agent in seconds" (Phase 2) — and makes parallelism visible with a sidebar and RAM groundwork (Phase 3). The Core Value pillar, hooks-first attention detection ("which agent is waiting for me"), lands in Phase 4. Phases 5–6 respect the tmux-centric user (agent-as-command, configurable chords, themes) and make worktrees "ready to work" via `.arduis.toml` setup. Phase 7 adds opt-in isolated docker-compose stacks (the heaviest RAM line item, hence after RAM groundwork), Phase 8 closes the loop with read-only review + correct teardown, and Phase 9 ships it team-installable on Ubuntu + Arch as native packages. **RAM management is woven across Phases 2/3/4/7, not a single late phase.** Swarm is explicitly Phase-2-of-the-product / out of v1 — kept cheap via the GTK-free `SessionStore` and `AgentSpec` seams, never built here.
 
 ## Phases
 
@@ -12,7 +12,7 @@ arduis is built as a ladder of **vertical "degraus"** — each phase is installa
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Terminal + Sandbox Seam** - One real VTE terminal running host zsh through the `flatpak-spawn --host` HostRunner, with Ctrl+C/job-control/exit-status acceptance tests
+- [ ] **Phase 1: Terminal** - One real VTE terminal running host zsh via a direct native PTY, behind a thin no-op `HostRunner` seam, with Ctrl+C/job-control/exit-status acceptance tests
 - [ ] **Phase 2: Core Loop (new worktree → env → agent)** - "+New worktree" creates a worktree and opens a terminal with `claude` running; births the GTK-free SessionStore
 - [ ] **Phase 3: Parallel Worktrees + Sidebar + RAM Groundwork** - N worktrees side by side, free pane layout, sidebar with focus/switch, per-worktree RAM visibility and active caps
 - [ ] **Phase 4: Attention Detection (who's waiting)** - Hooks-first status (running/waiting/idle/ready), sidebar+pane dots, desktop notification, idle auto-suspend
@@ -20,20 +20,20 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 6: Per-Worktree Setup via `.arduis.toml`** - Repo config with sensible defaults; setup commands run on worktree creation via the login shell
 - [ ] **Phase 7: Opt-in Isolated Containers** - Per-worktree docker-compose isolation with stable project name, auto port offset + probing, port badges, guaranteed teardown
 - [ ] **Phase 8: Review + Cleanup** - Read-only diff, branch/PR status via git/gh, "conclude worktree" with correct teardown order
-- [ ] **Phase 9: Packaging (Flatpak / AUR / .deb)** - Team-installable on Ubuntu + Arch under real Wayland; VTE bundled in the Flatpak; HostRunner no-op for native builds
+- [ ] **Phase 9: Packaging (AUR + .deb)** - Team-installable on Ubuntu + Arch under real Wayland as native packages using the system VTE; Flatpak deferred to v2
 
 ## Phase Details
 
-### Phase 1: Terminal + Sandbox Seam
-**Goal**: A GTK4/libadwaita window with one real VTE terminal running the user's host `zsh`, where every host call funnels through a single `HostRunner` abstraction — retiring the highest technical risk (`flatpak-spawn --host`) before anything is built on top of it.
+### Phase 1: Terminal
+**Goal**: A GTK4/libadwaita window with one real VTE terminal running the user's host `zsh` via a **direct native PTY** (no sandbox). All host execution still funnels through a thin `HostRunner` seam — a no-op for native builds — so an optional Flatpak channel can later prepend `flatpak-spawn --host` in one place without reshaping the code.
 **Depends on**: Nothing (first phase)
 **Requirements**: TERM-01
 **Success Criteria** (what must be TRUE):
-  1. User opens arduis and gets a working shell inside the window, with their own zsh config, prompt, and colors
+  1. User opens arduis and gets a working shell inside the window, running their host `zsh` with their own config and prompt, rendered in the **app's theme palette** (Dracula default — the app owns terminal colors, not the shell)
   2. `claude`, `gh`, and `docker` resolve inside the embedded terminal (host login-shell PATH and version-manager shims work)
-  3. Ctrl+C interrupts a host subprocess and Ctrl+Z/`fg` job control work through the sandbox boundary
-  4. Exit codes and signals are decoded correctly (`os.waitstatus_to_exitcode`); closing the window kills host `claude`/`zsh` with no orphans
-  5. The Flatpak builds reproducibly offline with VTE 0.84.0 + fast_float v8.1.0 + simdutf v7.7.1, and `Vte-3.91` imports against SDK 50
+  3. Ctrl+C interrupts a host subprocess and Ctrl+Z/`fg` job control work
+  4. Exit codes and signals are decoded correctly (`os.waitstatus_to_exitcode`); closing the window kills the host `zsh`/agent with no orphans
+  5. Runs on Ubuntu 24.04 (system `gir1.2-vte-3.91` 0.76) and Arch (`vte4` 0.84) under real Wayland; code targets the VTE 0.76 API floor; `HostRunner` is a no-op seam (direct spawn) with the Flatpak path stubbed but unused
 **Plans**: TBD
 **UI hint**: yes
 
@@ -99,7 +99,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans**: TBD
 
 ### Phase 7: Opt-in Isolated Containers
-**Goal**: Per-worktree isolated docker-compose stacks, off by default — the thing the user misses most and the heaviest RAM line item, landing after the RAM groundwork. All docker calls route through `flatpak-spawn --host` (no socket permission needed; snap-docker safe). The container half of RAM management matures here.
+**Goal**: Per-worktree isolated docker-compose stacks, off by default — the thing the user misses most and the heaviest RAM line item, landing after the RAM groundwork. Docker calls run on the host directly through the `HostRunner` seam (no-op on native builds); snap-docker on Ubuntu and native docker on Arch both work. The container half of RAM management matures here.
 **Depends on**: Phase 6
 **Requirements**: CONT-01, CONT-02, CONT-03, CONT-04, CONT-05
 **Success Criteria** (what must be TRUE):
@@ -107,7 +107,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. Turning on isolation for a worktree brings up its own stack with a stable, persisted `COMPOSE_PROJECT_NAME` and a generated `docker-compose.override.yml` (whole `ports` list rewritten) using compose-base from `main`
   3. Host ports are probed free before `up` (deterministic offset + retry on collision) and the resolved ports are shown as UI badges
   4. Removing a worktree tears down its containers (`down --remove-orphans --volumes`); a startup pass reconciles orphaned `arduis-*` projects after a crash
-  5. All docker compose calls go through `flatpak-spawn --host` and work with snap docker on Ubuntu and native docker on Arch
+  5. All docker compose calls go through the `HostRunner` seam and work with snap docker on Ubuntu and native docker on Arch
 **Plans**: TBD
 **UI hint**: yes
 
@@ -123,15 +123,15 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans**: TBD
 **UI hint**: yes
 
-### Phase 9: Packaging (Flatpak / AUR / .deb)
-**Goal**: Make arduis team-installable — the reason the project exists — proving the single-seam design across distribution channels. Flatpak is primary (VTE bundled), AUR and .deb are native (HostRunner no-ops, `flatpak-spawn` indirection drops away).
+### Phase 9: Packaging (AUR + .deb)
+**Goal**: Make arduis team-installable — the reason the project exists — as **native packages** on both target distros, using the system VTE (no bundling). Flatpak is out of v1 (deferred to v2 as an optional secondary channel that re-enables the `HostRunner` Flatpak path).
 **Depends on**: Phase 8
-**Requirements**: DIST-01, DIST-02, DIST-03, DIST-04
+**Requirements**: DIST-02, DIST-03, DIST-04
 **Success Criteria** (what must be TRUE):
-  1. User installs arduis via Flatpak (`flatpak install`) with VTE embedded, and it runs
-  2. A native AUR package (PKGBUILD depending on system `vte4` 0.84) installs and runs on Arch
-  3. A native .deb package installs and runs on Ubuntu (GTK4-VTE availability verified for 24.04; backport/PPA if needed)
-  4. A clean install runs on both Ubuntu and Arch under real Wayland (hard gate)
+  1. A native AUR package (PKGBUILD depending on system `vte4` 0.84, `python-gobject`, `gtk4`, `libadwaita`) installs and runs on Arch
+  2. A native `.deb` package installs and runs on Ubuntu 24.04 (depends on system `gir1.2-vte-3.91` 0.76, `python3-gi`, `gir1.2-gtk-4.0`, `libadwaita`)
+  3. A clean install runs on both Ubuntu and Arch under real Wayland (hard gate)
+  4. `HostRunner` confirmed as a no-op on native builds (direct PTY spawn; no `flatpak-spawn` dependency)
 **Plans**: TBD
 
 ## Cross-Cutting: RAM Management & Swarm Seams (not phases)
@@ -152,7 +152,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Terminal + Sandbox Seam | 0/TBD | Not started | - |
+| 1. Terminal | 0/TBD | Not started | - |
 | 2. Core Loop | 0/TBD | Not started | - |
 | 3. Parallel + Sidebar + RAM | 0/TBD | Not started | - |
 | 4. Attention Detection | 0/TBD | Not started | - |

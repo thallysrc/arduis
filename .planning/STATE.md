@@ -43,7 +43,8 @@ Decisions are logged in PROJECT.md Key Decisions table.
 Roadmap-shaping decisions affecting current work:
 
 - Roadmap: 9 vertical "degraus" (Accelerate/DORA) — each phase installable + usable on its own.
-- Phase 1: highest technical risk (`flatpak-spawn --host` Ctrl+C/job-control/exit-status) retired first via mandatory acceptance tests; one `HostRunner` seam centralizes all host execution.
+- Distribution: **native (`.deb` + AUR), Flatpak out of v1** (2026-06-08) — removes the sandbox; VTE from system repos (Ubuntu 0.76 / Arch 0.84).
+- Phase 1: native **direct PTY** (no sandbox); a thin `HostRunner` seam centralizes host execution (no-op natively, Flatpak path stubbed for v2). Ctrl+C/job-control/exit-status acceptance tests still mandatory. App owns the terminal theme palette (Dracula default), not the shell.
 - Phase 4: attention detection is HOOKS-FIRST (Claude Code `Notification`/`Stop` → state file), BEL/OSC secondary, scraping fallback deferred to v2 (STATUS-04).
 - RAM management is cross-cutting (Phases 2/3/4/7), not a single phase.
 - Swarm is out of v1; kept cheap via GTK-free SessionStore (P2) + AgentSpec (P5) seams only.
@@ -54,12 +55,12 @@ None yet.
 
 ### Blockers/Concerns
 
-- Phase 1 (research flag): `flatpak-spawn --host` signal/ctty/exit-status across the sandbox needs a hands-on acceptance-test spike (flatpak#3697, #4827); have explicit-portal-SIGINT fallback ready.
-- Phase 1: fast_float pin must be v8.1.0 (the uncommitted draft manifest uses v8.2.8 — drift to correct).
+- **Distribution pivot (2026-06-08):** Flatpak dropped from v1 → native `.deb` (Ubuntu) + AUR (Arch). Kills the entire `flatpak-spawn --host` risk class. VTE comes from the system (Ubuntu 24.04 `gir1.2-vte-3.91` **0.76** in `main`, verified; Arch `vte4` **0.84**); code to the 0.76 API floor. fast_float/simdutf pins no longer relevant (were Flatpak VTE-bundle deps).
+- Phase 1: direct native PTY (no sandbox); `HostRunner` is a thin no-op seam with the Flatpak path stubbed for a possible v2 channel. Ctrl+C/job-control/exit-status acceptance tests still mandatory (now native, much lower risk).
 - Phase 4 (research flag): Claude Code hook event semantics evolving (`Notification` over-fires; no clean `waiting_for_user_action`); design the watcher to filter event types.
-- Phase 7 (research flag): compose isolation edge cases + snap-docker-on-Ubuntu behavior.
-- Phase 9 (research flag): verify Ubuntu 24.04 GTK4-VTE availability for the .deb (may need backport/PPA).
-- Uncommitted D1 draft exists (`io.github.thallys.Arduis.yml`, `src/main.py`, `data/*`, `dev.sh`) — treat as a starting point to validate, not as done.
+- Phase 7 (research flag): compose isolation edge cases + snap-docker-on-Ubuntu behavior (docker runs on host directly).
+- Uncommitted D1 draft exists (`src/main.py`, `data/*`); the Flatpak manifest (`io.github.thallys.Arduis.yml`) and `dev.sh` are now **obsolete** (need a native run/build script); `main.py` keeps as a base but drops `flatpak-spawn`.
+- **Follow-up:** `CLAUDE.md` still carries a large Flatpak/VTE-bundling/`flatpak-spawn` tech-stack section that now contradicts this pivot — needs a cleanup pass.
 
 ## Session Continuity
 
