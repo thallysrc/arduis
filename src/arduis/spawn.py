@@ -23,3 +23,18 @@ def build_spawn_command(runner: HostRunner) -> tuple[list[str], list[str]]:
     identity pair; under a future Flatpak build the seam owns the rewrite.
     """
     return runner.wrap_argv(SHELL_ARGV), runner.wrap_env(TERM_ENV)
+
+
+def build_worktree_spawn(runner: HostRunner) -> tuple[list[str], list[str]]:
+    """Assemble the (argv, envv) for a per-worktree shell, routed through the seam.
+
+    Same shell/env as ``build_spawn_command`` — the cwd differs per worktree but
+    is a ``spawn_async`` argument, NOT part of argv, so this reuses
+    ``SHELL_ARGV``/``TERM_ENV``. The separate name documents intent (the
+    worktree-tab spawn path, WT-03) and gives a unit-test handle distinct from
+    tab 0's Phase-1 ``build_spawn_command``.
+
+    Threat T-01-01/T-01-02: still list literals through the seam — no shell
+    string, no ``flatpak-spawn`` prefix in v1.
+    """
+    return runner.wrap_argv(SHELL_ARGV), runner.wrap_env(TERM_ENV)
