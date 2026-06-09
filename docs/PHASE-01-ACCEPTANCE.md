@@ -127,7 +127,29 @@ session is unavailable now, record X11-only coverage and the reason.
 
 ---
 
+## Criterion #6 — Copy/paste in the embedded terminal
+
+VTE does not bind clipboard shortcuts itself — the app wires them
+(`_install_clipboard_shortcuts` in `window.py`). The terminal convention is
+**Ctrl+Shift+C/V** (plain Ctrl+C stays SIGINT, per criterion #3).
+
+**Steps**
+1. Select some text in the terminal with the mouse, press **Ctrl+Shift+C**, then
+   paste into another app (or back into the terminal) → the selection is copied.
+2. Copy text from another app, click into the terminal, press **Ctrl+Shift+V** →
+   the text is pasted at the prompt.
+3. Select text in the terminal, then **middle-click** elsewhere in it → VTE's
+   built-in primary-selection paste inserts the text.
+
+**Expected:** Ctrl+Shift+C copies the selection, Ctrl+Shift+V pastes the
+clipboard, and middle-click pastes the primary selection.
+
+**Sign-off:** PASS / FAIL — date: __________ — distro/session: __________
+
+---
+
 ## Phase 1 Gate
 
-Phase 1 acceptance passes when criteria **#1–#4 are PASS** and **#5** is recorded
-with its session type (X11-only coverage noted if Wayland is unavailable).
+Phase 1 acceptance passes when criteria **#1–#4 and #6 are PASS** and **#5** is
+recorded with its session type (X11-only coverage noted if Wayland is
+unavailable).

@@ -75,6 +75,13 @@ class ArduisWindow(Adw.ApplicationWindow):
         self.terminal.set_scrollback_lines(10000)
         self.terminal.set_mouse_autohide(True)
 
+        # Terminal copy/paste: VTE does NOT bind these itself — the app must
+        # wire the shortcuts and call the clipboard methods (like GNOME
+        # Terminal/Console do). Ctrl+Shift+C/V are the terminal convention
+        # (plain Ctrl+C stays SIGINT). Middle-click primary paste is VTE's
+        # built-in default and needs no wiring.
+        self._install_clipboard_shortcuts()
+
         view.set_content(self.terminal)
         self.set_content(view)
 
@@ -84,6 +91,35 @@ class ArduisWindow(Adw.ApplicationWindow):
         self.terminal.connect("child-exited", self._on_child_exited)
 
         self._spawn_host_shell()
+
+    def _install_clipboard_shortcuts(self) -> None:
+        """Wire Ctrl+Shift+C/V to VTE's clipboard methods (GTK4 core API)."""
+        controller = Gtk.ShortcutController()
+        controller.set_scope(Gtk.ShortcutScope.LOCAL)
+        controller.add_shortcut(
+            Gtk.Shortcut.new(
+                Gtk.ShortcutTrigger.parse_string("<Control><Shift>c"),
+                Gtk.CallbackAction.new(self._copy_selection),
+            )
+        )
+        controller.add_shortcut(
+            Gtk.Shortcut.new(
+                Gtk.ShortcutTrigger.parse_string("<Control><Shift>v"),
+                Gtk.CallbackAction.new(self._paste_clipboard),
+            )
+        )
+        self.terminal.add_controller(controller)
+
+    def _copy_selection(self, *_) -> bool:
+        """Copy the current selection to the CLIPBOARD (no-op if none)."""
+        if self.terminal.get_has_selection():
+            self.terminal.copy_clipboard_format(Vte.Format.TEXT)
+        return True  # handled — don't propagate
+
+    def _paste_clipboard(self, *_) -> bool:
+        """Paste the CLIPBOARD selection into the terminal."""
+        self.terminal.paste_clipboard()
+        return True  # handled — don't propagate
 
     def _spawn_host_shell(self) -> None:
         """Spawn host ``zsh -l -i`` over a direct PTY through the seam."""
