@@ -3,7 +3,7 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 1 context gathered (native pivot)
+stopped_at: Phase 1 complete & verified — Phase 2 not started
 last_updated: "2026-06-09T11:40:34.730Z"
 last_activity: 2026-06-09
 progress:
@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-08)
 
 **Core value:** Tirar a ideia "quero começar uma branch nova" e ter um agente de IA rodando numa worktree isolada em segundos — gerenciando N agentes em paralelo e sempre sabendo qual deles te espera.
-**Current focus:** Phase 01 — terminal
+**Current focus:** Phase 2 — Core Loop (new worktree → env → agent). Phase 1 (Terminal) complete & verified.
 
 ## Current Position
 
 Phase: 2
 Plan: Not started
-Status: Executing Phase 01
+Status: Phase 1 complete & verified (5/5) — ready to discuss/plan Phase 2
 Last activity: 2026-06-09
 
 Progress: [░░░░░░░░░░] 0%
@@ -77,11 +77,11 @@ None yet.
 - Phase 1: direct native PTY (no sandbox); `HostRunner` is a thin no-op seam with the Flatpak path stubbed for a possible v2 channel. Ctrl+C/job-control/exit-status acceptance tests still mandatory (now native, much lower risk).
 - Phase 4 (research flag): Claude Code hook event semantics evolving (`Notification` over-fires; no clean `waiting_for_user_action`); design the watcher to filter event types.
 - Phase 7 (research flag): compose isolation edge cases + snap-docker-on-Ubuntu behavior (docker runs on host directly).
-- Uncommitted D1 draft exists (`src/main.py`, `data/*`); the Flatpak manifest (`io.github.thallys.Arduis.yml`) and `dev.sh` are now **obsolete** (need a native run/build script); `main.py` keeps as a base but drops `flatpak-spawn`.
+- ~~Uncommitted D1 draft / obsolete Flatpak manifest~~ **RESOLVED in Phase 1:** draft refactored into `src/arduis/{main,window}.py` (thin `src/main.py` shim kept, no `flatpak-spawn`); `data/*` committed; `io.github.thallys.Arduis.yml` + `dev.sh` deleted; native `run.sh` added (backups in `/tmp/arduis-untracked-bak/`).
 - `CLAUDE.md` tech-stack section rewritten native-first (2026-06-08) — Flatpak/bundling contradiction resolved.
 
 ## Session Continuity
 
 Last session: 2026-06-09T01:11:50.574Z
-Stopped at: Phase 1 context gathered (native pivot)
-Resume file: .planning/phases/01-terminal/01-CONTEXT.md
+Stopped at: Phase 1 complete & verified (5/5 must-haves; manual acceptance approved 2026-06-09). Next: discuss/plan Phase 2.
+Resume with: /gsd-discuss-phase 2  (or /gsd-plan-phase 2)
