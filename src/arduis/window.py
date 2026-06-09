@@ -64,6 +64,7 @@ from arduis.worktree import (  # noqa: E402
     argv_default_branch_local,
     argv_default_branch_via_origin,
     argv_list_local_branches,
+    argv_repo_has_commit,
     argv_worktree_add_existing,
     argv_worktree_add_new,
     argv_worktree_list_porcelain,
@@ -905,8 +906,26 @@ class ArduisWindow(Adw.ApplicationWindow):
     # --- create flow (WT-01/WT-02/WT-03, D-04/D-05/D-07) --------------------
 
     def _create_worktree(self, branch: str, existing: list[str]) -> None:
-        """Porcelain pre-check (D-07), then default-branch chain + add (async)."""
+        """Born-HEAD guard, porcelain pre-check (D-07), then base chain + add."""
         kind = infer_new_vs_existing(branch, existing)
+
+        def _has_commit_done(hstatus, _hout, _herr):
+            if hstatus != 0:
+                # UAT: a freshly init'd repo (unborn HEAD) cannot host a worktree.
+                # Show a friendly message instead of git's "invalid reference: HEAD".
+                self._show_error(
+                    "Este repositório ainda não tem commits.",
+                    "Faça um commit antes de criar worktrees.",
+                )
+                return
+            self._continue_create_worktree(branch, kind)
+
+        run_git_async(
+            argv_repo_has_commit(self._repo_root), _has_commit_done, self._runner
+        )
+
+    def _continue_create_worktree(self, branch: str, kind: str) -> None:
+        """Porcelain pre-check (D-07), then default-branch chain + add (async)."""
 
         def _porcelain_done(status, out, _err):
             parsed = parse_worktrees(out) if status == 0 else []

@@ -52,6 +52,20 @@ def parse_default_branch(stdout: str) -> str:
     return name
 
 
+# --- born-HEAD guard (UAT: empty repo can't host a worktree) ----------------
+
+def argv_repo_has_commit(repo: str) -> list[str]:
+    """argv whose exit status is 0 iff ``repo`` has at least one commit.
+
+    ``git worktree add`` needs an object to check out; a freshly ``git init``'d
+    repo has an unborn HEAD and the add fails with the cryptic
+    ``fatal: invalid reference: HEAD``. ``rev-parse --verify -q HEAD`` exits
+    non-zero (printing nothing with ``-q``) when HEAD is unborn, so the caller
+    can show a friendly message instead.
+    """
+    return ["git", "-C", repo, "rev-parse", "--verify", "-q", "HEAD"]
+
+
 # --- worktree add argv (D-07: never the force flag) -------------------------
 
 def argv_worktree_add_new(repo: str, branch: str, worktree_dir: str, base: str) -> list[str]:

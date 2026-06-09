@@ -23,6 +23,16 @@ def test_default_branch_fallback():
     assert worktree.parse_default_branch("master\n") == "master"
 
 
+def test_repo_has_commit_argv():
+    # born-HEAD guard: quiet rev-parse --verify so an empty repo is caught
+    # before `worktree add` fails with the cryptic "invalid reference: HEAD".
+    assert worktree.argv_repo_has_commit("/r") == [
+        "git", "-C", "/r", "rev-parse", "--verify", "-q", "HEAD"
+    ]
+    # no shell string, branch/refs stay discrete argv elements (T-02-01)
+    assert "--force" not in worktree.argv_repo_has_commit("/r")
+
+
 def test_add_argv():
     # NEW branch off the detected base
     assert worktree.argv_worktree_add_new("/r", "feat", "/d", "main") == [
