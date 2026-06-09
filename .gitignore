@@ -3,3 +3,12 @@ __pycache__/
 *.pyc
 .venv/
 .pytest_cache/
+
+# Flatpak build artifacts (deferred to v2 — kept ignored)
+build-dir/
+.flatpak-builder/
+repo/
+*.flatpak
+
+# Mockup renders (gerados a partir do .html)
+docs/mockup/*.png
