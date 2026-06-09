@@ -78,7 +78,7 @@ None yet.
 - Phase 4 (research flag): Claude Code hook event semantics evolving (`Notification` over-fires; no clean `waiting_for_user_action`); design the watcher to filter event types.
 - Phase 7 (research flag): compose isolation edge cases + snap-docker-on-Ubuntu behavior (docker runs on host directly).
 - Uncommitted D1 draft exists (`src/main.py`, `data/*`); the Flatpak manifest (`io.github.thallys.Arduis.yml`) and `dev.sh` are now **obsolete** (need a native run/build script); `main.py` keeps as a base but drops `flatpak-spawn`.
-- **Follow-up:** `CLAUDE.md` still carries a large Flatpak/VTE-bundling/`flatpak-spawn` tech-stack section that now contradicts this pivot — needs a cleanup pass.
+- `CLAUDE.md` tech-stack section rewritten native-first (2026-06-08) — Flatpak/bundling contradiction resolved.
 
 ## Session Continuity
 
