@@ -21,7 +21,7 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-08)
 
 **Core value:** Tirar a ideia "quero começar uma branch nova" e ter um agente de IA rodando numa worktree isolada em segundos — gerenciando N agentes em paralelo e sempre sabendo qual deles te espera.
-**Current focus:** Phase 1 — Terminal + Sandbox Seam
+**Current focus:** Phase 1 — Terminal
 
 ## Current Position
 
