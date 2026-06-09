@@ -114,4 +114,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-09 — Phase 2 (Core Loop) complete: "+New worktree" → worktree + `claude` running in a real terminal in seconds; GTK-free worktree/SessionStore domain layer + swarm seam born. (Phase 1: embedded VTE host-shell terminal behind the no-op HostRunner seam.)*
+*Last updated: 2026-06-09 — Phase 3 (Parallel Worktrees + Sidebar + RAM Groundwork) complete: sidebar bound to SessionStore + nested GtkPaned canvas (no tabs), GTK-free LayoutModel, C-Space tmux prefix, ~2s /proc RAM poll + footer, active-agent cap on +New. UAT: main shell now opens in the launch repo root (D-07 revised) + repo name in sidebar + empty-repo guard. NEXT-PHASE IDEA captured: "worktree = workspace of up to 2 terminals" (sidebar switches workspaces) — a redesign of the current shared-canvas / focus-or-swap model, to be designed via discuss→plan. (Phase 2: "+New worktree" → worktree + `claude` in seconds. Phase 1: embedded VTE host-shell terminal behind the no-op HostRunner seam.)*
