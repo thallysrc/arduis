@@ -1,10 +1,11 @@
 ---
 phase: 3
 slug: parallel-worktrees-sidebar-ram-groundwork
-status: draft
+status: approved
 shadcn_initialized: false
 preset: none
 created: 2026-06-09
+reviewed_at: 2026-06-09
 ---
 
 # Phase 3 — UI Design Contract
