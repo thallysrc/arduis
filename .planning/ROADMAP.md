@@ -12,9 +12,11 @@ arduis is built as a ladder of **vertical "degraus"** — each phase is installa
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Terminal** - One real VTE terminal running host zsh via a direct native PTY, behind a thin no-op `HostRunner` seam, with Ctrl+C/job-control/exit-status acceptance tests
-- [ ] **Phase 2: Core Loop (new worktree → env → agent)** - "+New worktree" creates a worktree and opens a terminal with `claude` running; births the GTK-free SessionStore
-- [ ] **Phase 3: Parallel Worktrees + Sidebar + RAM Groundwork** - N worktrees side by side, free pane layout, sidebar with focus/switch, per-worktree RAM visibility and active caps
+- [x] **Phase 1: Terminal** - One real VTE terminal running host zsh via a direct native PTY, behind a thin no-op `HostRunner` seam, with Ctrl+C/job-control/exit-status acceptance tests
+- [x] **Phase 2: Core Loop (new worktree → env → agent)** - "+New worktree" creates a worktree and opens a terminal with `claude` running; births the GTK-free SessionStore
+- [x] **Phase 3: Parallel Worktrees + Sidebar + RAM Groundwork** - N worktrees side by side, free pane layout, sidebar with focus/switch, per-worktree RAM visibility and active caps
+- [x] **Phase 03.1: worktree-as-terminal-workspace (INSERTED)** - Canvas shows ONE worktree's terminals (workspace); per-worktree LayoutModel; sidebar swaps the whole workspace; re-targeted C-Space/RAM/hibernate semantics
+- [ ] **Phase 03.2: Projects and Cross-Repo Tasks (INSERTED)** - Project = multi-repo root folder; task = set of worktrees (one per chosen repo) mirroring the root layout; sidebar lists tasks, workspace shows a task's terminals
 - [ ] **Phase 4: Attention Detection (who's waiting)** - Hooks-first status (running/waiting/idle/ready), sidebar+pane dots, desktop notification, idle auto-suspend
 - [ ] **Phase 5: Agent Swap + tmux Keybindings + Themes** - Agent = configurable command (Ctrl+C swaps), tmux-style chords, Dracula default + swappable themes
 - [ ] **Phase 6: Per-Worktree Setup via `.arduis.toml`** - Repo config with sensible defaults; setup commands run on worktree creation via the login shell
@@ -75,6 +77,22 @@ Plans:
 - [x] 03-05-PLAN.md — window.py: C-Space prefix machine + ~2s RAM poll + cap prompt-to-hibernate + presets/zoom + manual acceptance (PAR-03/RAM-02/RAM-03)
 **UI hint**: yes
 
+### Phase 03.2: Projects and Cross-Repo Tasks (INSERTED)
+
+**Goal:** Pivot level 1 of the interface from "topbar = single git repos" to **project = multi-repo root folder** (the user's real layout: a root dir holding e.g. `backend/`, `frontend/`, `keycloak/` + root `CLAUDE.md`/`docker-compose.yml`, ideally versioned as a small meta-repo). Introduce **task** as the unit of work: creating a task picks 1+ of the project's repos, creates a branch-named worktree in each, and materializes a **task folder mirroring the root layout** (worktrees keep the repo dir names, root compose/config linked) so the project's tooling runs verbatim inside the task. Sidebar pivots from "worktrees" to **tasks of the selected project**; the workspace shows the selected task's terminals (default: one agent + one shell per chosen repo, or a single agent with `--add-dir` across repos — to decide in discuss-phase). Single-repo project is the degenerate case (task = 1 worktree, current 03.1 behavior unchanged). Hibernate/RAM/cap/teardown re-target from worktree to task.
+**Requirements**: PAR-01, PAR-02, RAM-02, RAM-03 (re-targeted from worktree to task semantics); new level-1 scope superseding the old "topbar = repos" reading of docs/MOTIVATION.md
+**Depends on:** Phase 03.1
+**Success Criteria** (what must be TRUE):
+  1. A project = root folder with N member repos; arduis opens a project and lists its tasks in the sidebar (single-repo roots work with zero extra config)
+  2. "New task" picks 1+ member repos, creates same-named branches/worktrees in each, and materializes the task folder mirroring the root layout
+  3. The task workspace opens with terminals for every chosen repo (agent placement per discuss-phase decision); swap/keys/RAM/hibernate operate per task
+  4. Concluding/hibernating a task tears down every worktree's process groups (no orphans), keeping directories on hibernate
+  5. Phase 03.1 single-worktree behavior is preserved as the 1-repo task case (no special-casing)
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 03.2 to break down)
+
 ### Phase 03.1: worktree-as-terminal-workspace (INSERTED)
 
 **Goal:** Pivot the workspace model to the approved 3-level interface (docs/MOTIVATION.md): the pane canvas shows the terminals of ONE worktree at a time (workspace), not multiple worktrees side by side. Each worktree owns its own layout tree and 2 default terminals (agent + shell); selecting a sidebar row swaps the whole workspace (tmux: panes = terminals, windows = worktrees). Re-targets Phase-3's PAR/LAYOUT/RAM behaviors under the new semantics; topbar/multi-repo (level 1) is out of scope.
@@ -88,8 +106,8 @@ Plans:
 - [x] 03.1-03-PLAN.md — window.py lifecycle: re-targeted C-Space keys, per-worktree RAM sum, hibernate-all/resume-default, no-orphan close + manual UAT
 
 ### Phase 4: Attention Detection (who's waiting)
-**Goal**: Solve the Core Value pillar — always knowing which agent is waiting for you — using a HOOKS-FIRST mechanism (Claude Code `Notification`/`Stop` hooks write per-worktree state files arduis watches), with terminal BEL/OSC as a secondary signal and activity-timeout as a soft fallback. Reliability of the status dot is the differentiator; scraping is explicitly NOT the primary signal (STATUS-04 scraping fallback for non-Claude agents is v2).
-**Depends on**: Phase 3
+**Goal**: Solve the Core Value pillar — always knowing which agent is waiting for you — using a HOOKS-FIRST mechanism (Claude Code `Notification`/`Stop` hooks write per-worktree state files arduis watches), with terminal BEL/OSC as a secondary signal and activity-timeout as a soft fallback. Reliability of the status dot is the differentiator; scraping is explicitly NOT the primary signal (STATUS-04 scraping fallback for non-Claude agents is v2). **Re-anchored by 03.2:** sidebar rows are TASKS — a task's status aggregates its agents (any agent waiting → task waiting); state files stay per-worktree (where hooks run) and roll up per task.
+**Depends on**: Phase 03.2
 **Requirements**: STATUS-01, STATUS-02, STATUS-03, RAM-04
 **Success Criteria** (what must be TRUE):
   1. When a `claude` agent pauses for input, its status flips to "waiting" via Claude Code hooks (state file), not screen-scraping
@@ -124,7 +142,7 @@ Plans:
 **Plans**: TBD
 
 ### Phase 7: Opt-in Isolated Containers
-**Goal**: Per-worktree isolated docker-compose stacks, off by default — the thing the user misses most and the heaviest RAM line item, landing after the RAM groundwork. Docker calls run on the host directly through the `HostRunner` seam (no-op on native builds); snap-docker on Ubuntu and native docker on Arch both work. The container half of RAM management matures here.
+**Goal**: Per-TASK isolated docker-compose stacks, off by default — the thing the user misses most and the heaviest RAM line item, landing after the RAM groundwork. Docker calls run on the host directly through the `HostRunner` seam (no-op on native builds); snap-docker on Ubuntu and native docker on Arch both work. The container half of RAM management matures here. **Re-anchored by 03.2 (decided 2026-06-10):** the compose base is a SINGLE `docker-compose.yml` at the project ROOT (meta-repo) covering all member services (backend/frontend/keycloak/db share one network → service discovery by name works, and duplication is atomic); `COMPOSE_PROJECT_NAME` is unique per TASK, the override is generated into the task folder (which mirrors the root layout, so relative build contexts/bind mounts resolve verbatim), and teardown wires into task conclude/hibernate.
 **Depends on**: Phase 6
 **Requirements**: CONT-01, CONT-02, CONT-03, CONT-04, CONT-05
 **Success Criteria** (what must be TRUE):
@@ -177,9 +195,11 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Terminal | 0/2 | Planned | - |
+| 1. Terminal | 2/2 | Complete | 2026-06-09 |
 | 2. Core Loop | 3/3 | Complete | 2026-06-09 |
-| 3. Parallel + Sidebar + RAM | 0/5 | Planned | - |
+| 3. Parallel + Sidebar + RAM | 5/5 | Complete | 2026-06-09 |
+| 03.1. worktree-as-terminal-workspace | 3/3 | Complete | 2026-06-10 |
+| 03.2. Projects and Cross-Repo Tasks | 0/TBD | Not started | - |
 | 4. Attention Detection | 0/TBD | Not started | - |
 | 5. Agent Swap + Keys + Themes | 0/TBD | Not started | - |
 | 6. Setup via `.arduis.toml` | 0/TBD | Not started | - |

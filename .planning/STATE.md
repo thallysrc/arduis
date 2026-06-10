@@ -25,9 +25,9 @@ See: .planning/PROJECT.md (updated 2026-06-08)
 
 ## Current Position
 
-Phase: 4
+Phase: 03.2 (Projects and Cross-Repo Tasks)
 Plan: Not started
-Status: Executing Phase 03.1
+Status: Phase 03.1 complete + verified (UAT approved); Phase 03.2 inserted, awaiting discuss/plan
 Last activity: 2026-06-10
 
 Progress: [██████░░░░] 60%
@@ -73,6 +73,7 @@ Roadmap-shaping decisions affecting current work:
 ### Roadmap Evolution
 
 - Phase 03.1 inserted after Phase 3: worktree-as-terminal-workspace (URGENT)
+- Phase 03.2 inserted after Phase 3 (2026-06-10): Projects and Cross-Repo Tasks (URGENT) — level-1 pivot: project = multi-repo root folder (meta-repo with root CLAUDE.md/compose/.arduis.toml); task = set of worktrees mirroring the root layout; sidebar = tasks, workspace = the task's terminals. Single-repo project is the degenerate case. DECIDED: single root docker-compose.yml per project (not per repo) — Phase 7 re-anchored to COMPOSE_PROJECT_NAME per task; Phase 4 re-anchored to per-task attention rollup (depends on 03.2 now). Supersedes the "topbar = single repos" reading of docs/MOTIVATION.md.
 
 ### Pending Todos
 

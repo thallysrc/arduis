@@ -59,26 +59,39 @@ para Mac): um **app desktop GNOME** que orquestra vários agentes em paralelo.
 > app instalável de verdade. (kitty não pode ser embutido como widget, ainda mais no
 > Wayland; por isso não vira o motor interno.)
 
-### Estrutura da interface — 3 níveis (modelo aprovado)
+### Estrutura da interface — 3 níveis (modelo aprovado, revisado 2026-06-10)
 
 A navegação tem **três níveis**, de cima para baixo:
 
-1. **Topbar = repositórios (projetos).** Posso ter **vários repositórios git abertos ao
-   mesmo tempo** e alternar entre eles na barra superior. Cada repositório é um projeto.
-2. **Sidebar = worktrees** do repositório selecionado. Lista as worktrees daquele repo
-   (com status); selecionar uma foca/abre essa worktree.
-3. **Workspace = a worktree selecionada**, exibindo seus **terminais**. **Apenas uma
-   worktree fica visível por vez** — selecionar outra na sidebar troca o workspace inteiro.
+1. **Topbar = projetos.** Um projeto é uma **pasta raiz multi-repo** — meu layout real:
+   uma raiz com `backend/`, `frontend/`, `keycloak/` etc., mais `CLAUDE.md`,
+   `docker-compose.yml` e (futuro) `.arduis.toml` na raiz, idealmente versionada como um
+   **meta-repo** pequeno. Um projeto de **um repo só é o caso degenerado** — funciona sem
+   config extra.
+2. **Sidebar = tasks** do projeto selecionado. Uma **task** é a unidade de trabalho: ao
+   criá-la escolho 1+ repos do projeto, e o arduis cria uma worktree com a mesma branch em
+   cada um, materializando uma **pasta de task que espelha o layout da raiz** (worktrees
+   com os mesmos nomes de dir dos repos, compose/config da raiz linkados) — assim o
+   tooling do projeto roda igualzinho dentro da task. Task de 1 repo = comportamento
+   anterior (1 worktree).
+3. **Workspace = a task selecionada**, exibindo seus **terminais**. **Apenas uma task
+   fica visível por vez** — selecionar outra na sidebar troca o workspace inteiro
+   (tmux: panes = terminais, windows = tasks).
 
-- **Terminais por worktree:** o padrão é **2** (ex.: um `claude` + um shell — meu hábito
-  backend/frontend), lado a lado. **Não é limite rígido** — posso abrir mais quando
-  precisar; 2 é só o default.
+- **Terminais por task:** o padrão escala com os repos escolhidos (ex.: agente + shell por
+  repo, ou um agente único com `--add-dir` cobrindo os repos da task — a decidir no
+  discuss da Phase 03.2). **Não é limite rígido** — posso abrir mais quando precisar.
 - Os terminais são VTE embutidos; layout e atalhos seguem o padrão tmux (`C-Space`,
   `C-h/j/k/l`, split, etc.).
+- Hibernar/RAM/cap/teardown operam **por task** (todas as worktrees dela juntas).
 
-> Isto **refina/supersede** a ideia anterior de "grade 2×2 de worktrees" (mockup v1):
-> os panes do workspace são os **terminais de UMA worktree**, não várias worktrees lado
-> a lado. Repos vivem no topbar; worktrees na sidebar; terminais no workspace.
+> **Histórico:** a v1 deste modelo (2026-06-09) dizia "topbar = repositórios; sidebar =
+> worktrees". A revisão de 2026-06-10 (Phase 03.2) substituiu isso ao constatar que uma
+> feature real cruza repos (frontend + backend + keycloak): a unidade de trabalho é a
+> **task**, não o repo — senão os agentes de uma mesma feature ficam fragmentados em abas
+> diferentes e o Core Value ("quem te espera") quebra. Isto também **refina/supersede** a
+> ideia original de "grade 2×2 de worktrees" (mockup v1): os panes do workspace são os
+> terminais de UMA task, não várias worktrees lado a lado.
 
 ## Restrições inegociáveis (REGRAS)
 
@@ -111,13 +124,19 @@ A navegação tem **três níveis**, de cima para baixo:
 ## Em aberto (a discutir)
 
 - ~~**Linguagem**~~ → **DECIDIDO: Python (PyGObject)** (protótipo rápido, mínimo de deps).
-- **Containers** (DECIDIDO): isolamento **por worktree, opt-in** (não toda vez). Quando
-  ligado, sobe instância própria e isolada via `COMPOSE_PROJECT_NAME` único (nomes/redes/
-  volumes separados → banco vazio e isolado de graça) + **`docker-compose.override.yml`
-  gerado** com **offset de porta** por worktree, exibido na UI (badge tipo `db :5433`).
-  O compose-base vem **sempre da `main`** (ambiente baseado no trunk, não da branch).
-  Default = `off`. A criar dados: migrations/seed via comandos de `setup`.
-  Em aberto: portas auto-atribuídas vs. fixas previsíveis.
+- **Containers** (DECIDIDO, revisado 2026-06-10): isolamento **por task, opt-in** (não
+  toda vez). O compose-base é **UM `docker-compose.yml` na RAIZ do projeto** (meta-repo),
+  cobrindo todos os serviços (backend/frontend/keycloak/db) — mesma network → service
+  discovery por nome funciona, e duplicar a stack inteira é **uma operação atômica**.
+  Quando ligado, a task sobe instância própria e isolada via `COMPOSE_PROJECT_NAME` único
+  por task (nomes/redes/volumes separados → banco vazio e isolado de graça) +
+  **`docker-compose.override.yml` gerado na pasta da task** (que espelha o layout da raiz,
+  então build contexts/bind mounts relativos resolvem igual) com **offset de porta** por
+  task, exibido na UI (badge tipo `db :5433`). O compose-base vem **sempre da `main`** do
+  meta-repo (ambiente baseado no trunk, não da branch). Default = `off`. A criar dados:
+  migrations/seed via comandos de `setup`. Em aberto: portas auto-atribuídas vs. fixas
+  previsíveis. (Composes separados por repo foram descartados: duplicação viraria
+  orquestração de N projects + networks externas na mão.)
 - ~~**Layout** dos panes: grade fixa vs. livre~~ → **RESOLVIDO** pelo modelo de 3 níveis
   (ver "Estrutura da interface"): os panes do workspace são os **terminais de UMA
   worktree** (default 2, sem limite rígido), com split estilo tmux — não várias worktrees
