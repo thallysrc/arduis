@@ -5,19 +5,25 @@ pid/pgid, and lifecycle state. The UI (tabs in Plan 02, the Phase-3 sidebar
 later) is a *view* of this store. Imports NO ``gi``.
 
 Decisions:
+- D-02 / D-03: a worktree is a *workspace of N terminals* (default 2 — one
+  ``agent`` running ``claude`` and one plain ``shell``), not a single pid. Each
+  terminal is a ``TerminalRecord``; ``default_terminals(sid)`` yields the agent +
+  shell default. The canvas (Plan 02/03) shows ONE worktree's terminals.
 - D-08 / Pitfall 1: the agent is launched by feeding ``AGENT_FEED`` into the
   PTY. It is the bytes literal ``b"claude\\n"`` because ``Vte.Terminal.feed_child``
   rejects ``str`` at the 0.76 floor (``TypeError: Must be number, not str``).
-- D-11: hibernate kills the worktree process group and clears pid/pgid but KEEPS
-  the directory on disk (the actual ``os.killpg`` teardown lives in Plan 02's
-  ``window.py``; this module only models the field transition).
-- D-13: the store is GTK-free and serializable via ``dataclasses.asdict``, with
-  the ``rss_kb`` RAM field present from day one (populated in Phase 3), but it is
-  in-memory only in Phase 2 — serializable does not mean persisted.
+- D-08 / D-11 / Pitfall 3: hibernate clears EVERY terminal's pid/pgid (no group
+  forgotten by the caller's teardown loop, so RAM can't leak) but KEEPS the
+  directory on disk (the actual ``os.killpg`` teardown lives in ``window.py``;
+  this module only models the field transition).
+- D-10 / D-13: the store is GTK-free and serializable via ``dataclasses.asdict``
+  (recursing into the terminals list — A2), with each terminal's ``rss_kb`` RAM
+  field present from day one (summed across terminals by the caller; populated in
+  Phase 3). In-memory only — serializable does not mean persisted.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 
 AGENT_FEED: bytes = b"claude\n"  # D-08 — bytes, not str (0.76 feed_child TypeError on str)
@@ -31,21 +37,45 @@ class SessionState(str, Enum):
 
 
 @dataclass
+class TerminalRecord:
+    """One terminal inside a worktree workspace (D-02/D-03).
+
+    ``kind`` is ``"agent"`` (the PTY fed ``AGENT_FEED`` → ``claude``) or
+    ``"shell"`` (a plain ``zsh``). ``pid``/``pgid`` come from the spawn callback
+    and are the per-terminal teardown handle (cleared on hibernate, Pitfall 3).
+    ``rss_kb`` is summed across a worktree's terminals by the caller (RAM-03).
+    """
+
+    term_id: str                          # stable leaf key, e.g. "feat:t0"
+    kind: str                             # "agent" (claude-fed) | "shell" (plain zsh)
+    pid: int | None = None                # shell pid from the spawn callback
+    pgid: int | None = None               # process-group id for teardown (RAM-01)
+    rss_kb: int | None = None             # resident set size; None until a monitor lands
+
+
+def default_terminals(session_id: str) -> list[TerminalRecord]:
+    """The default 2-terminal workspace for a worktree: one agent + one shell (D-02/D-03)."""
+    return [
+        TerminalRecord(f"{session_id}:t0", "agent"),
+        TerminalRecord(f"{session_id}:t1", "shell"),
+    ]
+
+
+@dataclass
 class WorktreeSession:
-    """One worktree's lifecycle state. Serializable, GTK-free."""
+    """One worktree's lifecycle state — a workspace of N terminals. GTK-free, serializable."""
 
     session_id: str                       # stable key (e.g. the branch name)
     branch: str
     worktree_dir: str                     # absolute sibling path ../<repo>-<branch>
     repo_root: str
     state: SessionState = SessionState.ACTIVE
-    pid: int | None = None                # shell pid from the spawn callback
-    pgid: int | None = None               # process-group id for teardown (RAM-01)
-    # --- RAM fields, present day-one (D-13); populated in Phase 3 (RAM-02/03) ---
-    rss_kb: int | None = None             # resident set size; None until a monitor lands
+    # N terminals per worktree (default 2 via default_terminals — D-02/D-03). The
+    # legacy single-terminal pid/pgid/rss_kb now live in terminals[0].
+    terminals: list[TerminalRecord] = field(default_factory=list)
 
     def to_dict(self) -> dict:
-        """Serialize to a plain dict (proves D-13 serializability, no persistence)."""
+        """Serialize to a plain dict (asdict recurses into terminals — D-10/A2)."""
         return asdict(self)
 
 
@@ -73,13 +103,15 @@ class SessionStore:
 
 
 def hibernate_fields(session: WorktreeSession) -> None:
-    """Apply the hibernate model transition (D-11).
+    """Apply the hibernate model transition (D-08/D-11, Pitfall 3).
 
-    Flip state to HIBERNATED and clear pid/pgid (the agent's group is killed by
-    the caller). Leave ``worktree_dir``/``repo_root`` (directory kept on disk) and
-    ``rss_kb`` untouched.
+    Flip state to HIBERNATED and clear EVERY terminal's pid/pgid (each group is
+    killed by the caller — no group forgotten, so RAM can't leak). Leave
+    ``worktree_dir``/``repo_root`` (directory kept on disk) and each terminal's
+    ``rss_kb`` untouched (frozen until re-spawn).
     """
     session.state = SessionState.HIBERNATED
-    session.pid = None
-    session.pgid = None
-    # worktree_dir kept on disk (D-11); rss_kb left as-is
+    for t in session.terminals:
+        t.pid = None
+        t.pgid = None
+    # worktree_dir kept on disk (D-08/D-11); rss_kb left as-is on each terminal
