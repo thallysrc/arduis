@@ -3,11 +3,11 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 3 UI-SPEC approved
-last_updated: "2026-06-09T20:50:04.429Z"
+stopped_at: Phase 03.1 context gathered
+last_updated: "2026-06-10T20:41:22.015Z"
 last_activity: 2026-06-09
 progress:
-  total_phases: 9
+  total_phases: 10
   completed_phases: 3
   total_plans: 10
   completed_plans: 10
@@ -69,6 +69,10 @@ Roadmap-shaping decisions affecting current work:
 - RAM management is cross-cutting (Phases 2/3/4/7), not a single phase.
 - Swarm is out of v1; kept cheap via GTK-free SessionStore (P2) + AgentSpec (P5) seams only.
 
+### Roadmap Evolution
+
+- Phase 03.1 inserted after Phase 3: worktree-as-terminal-workspace (URGENT)
+
 ### Pending Todos
 
 None yet.
@@ -84,6 +88,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-06-09T18:23:41.626Z
-Stopped at: Phase 3 UI-SPEC approved
+Last session: 2026-06-10T20:41:22.010Z
+Stopped at: Phase 03.1 context gathered
 Resume with: phase verification for Phase 02 (orchestrator owns this next)
