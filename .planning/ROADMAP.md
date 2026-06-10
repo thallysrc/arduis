@@ -75,6 +75,18 @@ Plans:
 - [x] 03-05-PLAN.md — window.py: C-Space prefix machine + ~2s RAM poll + cap prompt-to-hibernate + presets/zoom + manual acceptance (PAR-03/RAM-02/RAM-03)
 **UI hint**: yes
 
+### Phase 03.1: worktree-as-terminal-workspace (INSERTED)
+
+**Goal:** Pivot the workspace model to the approved 3-level interface (docs/MOTIVATION.md): the pane canvas shows the terminals of ONE worktree at a time (workspace), not multiple worktrees side by side. Each worktree owns its own layout tree and 2 default terminals (agent + shell); selecting a sidebar row swaps the whole workspace (tmux: panes = terminals, windows = worktrees). Re-targets Phase-3's PAR/LAYOUT/RAM behaviors under the new semantics; topbar/multi-repo (level 1) is out of scope.
+**Requirements**: PAR-01, PAR-02, PAR-03, LAYOUT-01, RAM-02, RAM-03 (re-targeted under workspace semantics; anchored to decisions D-02..D-11)
+**Depends on:** Phase 3
+**Plans:** 3 plans
+
+Plans:
+- [ ] 03.1-01-PLAN.md — GTK-free session model: TerminalRecord + N terminals per worktree + N-terminal hibernate (TDD)
+- [ ] 03.1-02-PLAN.md — window.py structural pivot: per-worktree LayoutModel, workspace swap, eager 2-terminal default
+- [ ] 03.1-03-PLAN.md — window.py lifecycle: re-targeted C-Space keys, per-worktree RAM sum, hibernate-all/resume-default, no-orphan close + manual UAT
+
 ### Phase 4: Attention Detection (who's waiting)
 **Goal**: Solve the Core Value pillar — always knowing which agent is waiting for you — using a HOOKS-FIRST mechanism (Claude Code `Notification`/`Stop` hooks write per-worktree state files arduis watches), with terminal BEL/OSC as a secondary signal and activity-timeout as a soft fallback. Reliability of the status dot is the differentiator; scraping is explicitly NOT the primary signal (STATUS-04 scraping fallback for non-Claude agents is v2).
 **Depends on**: Phase 3
