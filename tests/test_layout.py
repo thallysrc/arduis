@@ -100,6 +100,38 @@ def test_focus_or_swap():
     assert resolve_selection(model, "z") == ("swap", "a")
 
 
+def test_three_terminal_split_keeps_all_visible():
+    # Regression (UAT Failure 1): splitting a 2-terminal workspace a second time
+    # (focused on the left leaf) must keep ALL THREE terminals visible — the model
+    # must NOT drop a leaf. The narrow-single-column symptom was a GTK paned-position
+    # bug in the reflection layer, not a model defect; this pins the model contract.
+    model = LayoutModel()
+    model.root = LeafNode("feat:t0")
+    model.focused_id = "feat:t0"
+    model.touch("feat:t0")
+    model.split("feat:t0", "feat:t1", "h")  # eager 2-terminal default
+    model.focused_id = "feat:t0"
+    model.split("feat:t0", "feat:t2", "h")  # user splits again from the left pane
+    assert set(model.visible_ids()) == {"feat:t0", "feat:t1", "feat:t2"}
+    assert isinstance(model.root, SplitNode)
+
+
+def test_close_every_terminal_empties_the_tree():
+    # Regression (UAT Failure 2): closing terminals one by one must collapse cleanly
+    # and end with an EMPTY tree (root is None) — the window then falls back to the
+    # main workspace so the canvas is never left blank. Pins the empty-tree contract.
+    model = LayoutModel()
+    model.root = LeafNode("feat:t0")
+    model.focused_id = "feat:t0"
+    model.touch("feat:t0")
+    model.split("feat:t0", "feat:t1", "h")
+    model.close_leaf("feat:t1")
+    assert model.visible_ids() == ["feat:t0"]
+    model.close_leaf("feat:t0")
+    assert model.visible_ids() == []
+    assert model.root is None
+
+
 def test_layout_is_gtk_free():
     # the domain module must not import gi (mirror test_session pattern).
     with open(layout.__file__, encoding="utf-8") as fh:
