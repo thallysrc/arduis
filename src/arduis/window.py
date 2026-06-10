@@ -1346,37 +1346,94 @@ class ArduisWindow(Adw.ApplicationWindow):
         return self._store.get(self._menu_target_sid)
 
     def _on_hibernate(self, _action, _param) -> None:
-        """D-08: kill ALL the worktree's terminal groups, keep the dir, dim the row.
+        """D-08: kill EVERY terminal group of the worktree, discard its layout, free RAM.
 
-        Full hibernate re-targeting (active-workspace fallback, layout clearing,
-        D-09 resume) lands in plan 03; here it tears down every terminal group so RAM
-        is actually freed under the N-terminal model (Pitfall 3).
+        Hibernate (D-08/Pitfall 3): tear down EVERY terminal's process group (agent +
+        shell + any splits) so nothing is orphaned, flip the model to HIBERNATED
+        (clearing every pgid), then DISCARD the worktree's saved LayoutModel and its
+        terminal widgets/maps so resume rebuilds the DEFAULT 2-terminal layout (D-09)
+        rather than the stale tree. If the hibernated worktree IS the visible
+        workspace, fall back to the main workspace (Open Question 2 resolution).
         """
         session = self._menu_session()
         if session is None or session.state == SessionState.HIBERNATED:
             return
+        sid = session.session_id
+
         self._teardown_session_terminals(session)  # kill every group (Pitfall 3/5)
         hibernate_fields(session)  # GTK-free: state=HIBERNATED, all pid/pgid=None
+
+        # D-09: discard the worktree's saved layout so resume rebuilds the default,
+        # not the saved tree (extra splits are not restored).
+        self._layouts.pop(sid, None)
+        # Drop the worktree's terminal widgets/maps so no detached VTE widget orphans
+        # survive across the hibernate (every id is "{sid}:tN").
+        prefix = f"{sid}:"
+        for tid in [t for t in self._leaf_by_sid if t.startswith(prefix)]:
+            self._leaf_by_sid.pop(tid, None)
+        for tid in [t for t in self._term_by_sid if t.startswith(prefix)]:
+            self._term_by_sid.pop(tid, None)
+
+        # If the hibernated worktree was the visible workspace, fall back to main
+        # (always present per D-07) so the canvas isn't pointing at a discarded tree.
+        if self._active_workspace_sid == sid:
+            self._swap_workspace(_MAIN_SID)
+
         self._rebuild_sidebar()    # dim/grey-dot the row (D-08, not a tab badge)
 
     def _on_resume(self, _action, _param) -> None:
-        """D-09: cold relaunch the agent terminal (fresh zsh+claude), not a reattach.
+        """D-09: rebuild the DEFAULT 2-terminal layout (agent + shell), not a reattach.
 
-        The full D-09 default-layout rebuild (re-spawn agent + shell, discard the
-        saved tree) is plan 03's. Here we keep resume crash-free under the N-terminal
-        model by re-spawning the agent terminal (keyed by ``{sid}:t0``).
+        Resume rebuilds the worktree exactly like create (D-09): a fresh 2-terminal
+        LayoutModel (agent t0 left + shell t1 right, split "h"), both terminals made
+        via the palette factory, the worktree made the visible workspace, then BOTH
+        spawned eagerly — only the agent is fed ``AGENT_FEED``. Earlier extra splits
+        are NOT restored.
         """
         session = self._menu_session()
         if session is None or session.state == SessionState.ACTIVE:
             return
+        sid = session.session_id
+        branch = session.branch
+
+        # Fresh default terminal records (replaces the hibernated, pgid-cleared list).
+        session.terminals = default_terminals(sid)  # [agent t0, shell t1]
         session.state = SessionState.ACTIVE
+
+        agent_tid = f"{sid}:t0"
+        shell_tid = f"{sid}:t1"
+
+        # Build a fresh default 2-terminal tree: left agent, right shell (D-02/D-09).
+        model = LayoutModel()
+        model.root = LeafNode(agent_tid)
+        model.focused_id = agent_tid
+        model.touch(agent_tid)
+        model.split(agent_tid, shell_tid, "h")
+        model.focused_id = agent_tid  # refocus the agent (split focuses the new leaf)
+        model.touch(agent_tid)
+        self._layouts[sid] = model
+
+        # Two fresh terminals via the palette factory (T-04 — branch via set_text).
+        agent_terminal = self._make_terminal()
+        agent_terminal.connect("child-exited", self._on_worktree_term_exited)
+        agent_leaf = self._make_leaf(agent_tid, branch, agent_terminal, badge_label="claude")
+        self._leaf_by_sid[agent_tid] = agent_leaf
+        self._term_by_sid[agent_tid] = agent_terminal
+
+        shell_terminal = self._make_terminal()
+        shell_terminal.connect("child-exited", self._on_worktree_term_exited)
+        shell_leaf = self._make_leaf(shell_tid, branch, shell_terminal, badge_label="zsh")
+        self._leaf_by_sid[shell_tid] = shell_leaf
+        self._term_by_sid[shell_tid] = shell_terminal
+
+        # Make the resumed worktree the visible workspace and reflect it.
+        self._active_workspace_sid = sid
+        self._reflect_layout()
         self._rebuild_sidebar()
-        agent_tid = f"{session.session_id}:t0"
-        terminal = self._term_by_sid.get(agent_tid)
-        if terminal is not None:
-            self._spawn_into(
-                terminal, session.worktree_dir, session, agent_tid, kind="agent"
-            )
+
+        # Spawn BOTH eagerly (D-09): agent fed claude, shell plain.
+        self._spawn_into(agent_terminal, session.worktree_dir, session, agent_tid, kind="agent")
+        self._spawn_into(shell_terminal, session.worktree_dir, session, shell_tid, kind="shell")
 
     # --- teardown (RAM-01, D-11/D-13) ---------------------------------------
 
