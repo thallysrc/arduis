@@ -1,14 +1,16 @@
 ---
-status: partial
+status: resolved
 phase: 03-parallel-worktrees-sidebar-ram-groundwork
 source: [03-VERIFICATION.md]
 started: 2026-06-09T20:43:12Z
-updated: 2026-06-09T20:43:12Z
+updated: 2026-06-10T00:00:00Z
 ---
 
 ## Current Test
 
-[user accepted the phase to close it; a "worktree = workspace of terminals" redesign is planned as a future phase]
+[resolved — the pending checks (1–8) covered an interaction model that Phase 03.1
+(worktree-as-terminal-workspace) redesigned; the redesigned behavior was manually
+UAT-tested and approved by the user on 2026-06-10 (see 03.1-03-SUMMARY.md)]
 
 ## Tests
 
