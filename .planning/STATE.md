@@ -4,13 +4,13 @@ milestone: v1.0
 milestone_name: milestone
 status: executing
 stopped_at: Phase 03.1 context gathered
-last_updated: "2026-06-10T20:41:22.015Z"
-last_activity: 2026-06-09
+last_updated: "2026-06-10T23:21:31.714Z"
+last_activity: 2026-06-10
 progress:
   total_phases: 10
-  completed_phases: 3
-  total_plans: 10
-  completed_plans: 10
+  completed_phases: 4
+  total_plans: 13
+  completed_plans: 13
   percent: 100
 ---
 
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-08)
 
 **Core value:** Tirar a ideia "quero começar uma branch nova" e ter um agente de IA rodando numa worktree isolada em segundos — gerenciando N agentes em paralelo e sempre sabendo qual deles te espera.
-**Current focus:** Phase 03 — parallel-worktrees-sidebar-ram-groundwork
+**Current focus:** Phase 03.1 — worktree-as-terminal-workspace
 
 ## Current Position
 
 Phase: 4
 Plan: Not started
-Status: Executing Phase 03
-Last activity: 2026-06-09
+Status: Executing Phase 03.1
+Last activity: 2026-06-10
 
 Progress: [██████░░░░] 60%
 
@@ -36,7 +36,7 @@ Progress: [██████░░░░] 60%
 
 **Velocity:**
 
-- Total plans completed: 10
+- Total plans completed: 13
 - Average duration: -
 - Total execution time: 0 hours
 
@@ -47,6 +47,7 @@ Progress: [██████░░░░] 60%
 | 01 | 2 | - | - |
 | 02 | 3 | - | - |
 | 03 | 5 | - | - |
+| 03.1 | 3 | - | - |
 
 **Recent Trend:**
 
