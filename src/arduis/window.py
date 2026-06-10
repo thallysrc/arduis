@@ -1326,29 +1326,47 @@ class ArduisWindow(Adw.ApplicationWindow):
             paned.set_shrink_end_child(True)
             paned.set_start_child(self._build_widget(node.start))
             paned.set_end_child(self._build_widget(node.end))
-            self._init_paned_position(paned, orient)
+            self._init_paned_position(paned)
             return paned
         return Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
 
-    def _init_paned_position(self, paned: Gtk.Paned, orient) -> None:
-        """Set a 50/50 split handle once the paned has a real allocation.
+    def _init_paned_position(self, paned: Gtk.Paned) -> None:
+        """Keep a Gtk.Paned split proportional (50/50 default), drag-preserving.
 
-        A freshly built Gtk.Paned has position 0 until it is mapped; nested paneds
-        therefore collapse on first show (Failure 1: only one narrow column). We
-        defer the position to the paned's first ``map`` and split its allocated
-        extent in half so every split renders evenly (the user can drag after).
+        The one-shot ``map`` + ``get_width()`` approach (commit b487dfe) was wrong
+        for NESTED paneds: ``map`` fires while the paned still has a tiny transient
+        allocation, so an inner/outer split got pinned to ~half of a few pixels
+        (~6px) and never corrected — collapsing the whole subtree to a left sliver.
+
+        Instead we drive the position off ``max-position``, which reflects the REAL
+        usable extent and re-notifies as the parent distributes space (it settles
+        correctly even for nested paneds, verified headlessly). We re-apply the
+        stored ratio on every ``max-position`` change (never one-shot), and learn a
+        new ratio from any ``position`` change the USER makes (a drag) so manual
+        sizing is preserved. ``_ratio_applying`` guards against our own
+        ``set_position`` looping back through ``notify::position``.
         """
-        def _on_map(p: Gtk.Paned) -> None:
-            extent = p.get_width() if orient == Gtk.Orientation.HORIZONTAL else p.get_height()
-            if extent > 1:
-                p.set_position(extent // 2)
-            # one-shot: stop re-centering once we've placed the initial handle
-            if handler_id[0] is not None:
-                p.disconnect(handler_id[0])
-                handler_id[0] = None
+        ratio = [0.5]              # current split fraction (default centered)
+        applying = [False]         # True while WE set the position (ignore the echo)
 
-        handler_id = [None]
-        handler_id[0] = paned.connect("map", _on_map)
+        def _apply(*_args) -> None:
+            maxp = paned.get_property("max-position")
+            if maxp <= 1:
+                return  # allocation not known yet — wait for the next notify
+            applying[0] = True
+            paned.set_position(int(maxp * ratio[0]))
+            applying[0] = False
+
+        def _learn(*_args) -> None:
+            # A position change we did NOT cause is a user drag — remember its ratio.
+            if applying[0]:
+                return
+            maxp = paned.get_property("max-position")
+            if maxp > 1:
+                ratio[0] = paned.get_position() / maxp
+
+        paned.connect("notify::max-position", _apply)
+        paned.connect("notify::position", _learn)
 
     # --- helpers: session lookup + user messaging ---------------------------
 
