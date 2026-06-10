@@ -22,7 +22,7 @@ Decisions wired here:
 - D-03: ``+New`` splits the focused pane before the spawn.
 - D-04 (discretion): closing a pane HIDES the worktree (leaf removed from the
   layout, session stays ACTIVE in the store + sidebar) — no confirmation.
-- D-06: row select = focus-or-swap via ``resolve_selection``.
+- D-06 (Phase 03.1): row select swaps the WHOLE workspace (worktree), not a pane.
 - D-07: the ``$HOME`` scratch shell is a pinned ``main`` sidebar row (not a session).
 - D-08: Hibernate/Resume live on the sidebar row context menu.
 - D-10/D-11/D-12 (Phase-2): hibernate kills the group + keeps the dir; resume
@@ -52,7 +52,7 @@ from arduis.spawn import build_spawn_command, build_worktree_spawn  # noqa: E402
 from arduis.exit_status import decode_exit  # noqa: E402
 from arduis.git_service import run_git_async  # noqa: E402
 from arduis import caps, keymap, resource_monitor  # noqa: E402
-from arduis.layout import LayoutModel, LeafNode, SplitNode, resolve_selection  # noqa: E402
+from arduis.layout import LayoutModel, LeafNode, SplitNode  # noqa: E402
 from arduis.session import (  # noqa: E402
     AGENT_FEED,
     SessionState,
@@ -608,39 +608,29 @@ class ArduisWindow(Adw.ApplicationWindow):
             popover.popup()
         return _on_secondary
 
+    def _swap_workspace(self, sid: str) -> None:
+        """Swap the visible canvas to worktree ``sid``'s terminals (D-04/D-07).
+
+        Phase 03.1: selecting a sidebar row swaps the WHOLE workspace (tmux:
+        windows = worktrees), not a single pane. ``_reflect_layout`` unparents every
+        mapped leaf before re-hanging the active subset, so the detached terminals
+        (and their live PTY children) survive the swap intact (A1/Pitfall 2 — no
+        respawn). The pinned ``main`` row goes through this same path — no branch.
+        """
+        self._active_workspace_sid = sid
+        self._reflect_layout()
+        # Focus the swapped-in workspace's focused terminal.
+        model = self._workspace_layout(sid)
+        term = self._term_by_sid.get(model.focused_id)
+        if term is not None:
+            term.grab_focus()
+
     def _on_row_activated(self, _listbox, row: Gtk.ListBoxRow) -> None:
-        """D-06 focus-or-swap: focus the pane if visible, else swap into focused."""
+        """Row activation swaps the entire workspace to that worktree (D-04/D-07)."""
         sid = self._sid_by_row.get(row)
         if sid is None:
             return
-        action, target = resolve_selection(self._layout, sid)
-        if action == "focus":
-            self._layout.focused_id = target
-            self._layout.touch(target)
-            self._reflect_layout()
-            term = self._term_by_sid.get(target)
-            if term is not None:
-                term.grab_focus()
-        else:  # swap the hidden worktree into the currently-focused pane
-            focused = self._layout.focused_id
-            self._layout.set_leaf_session(focused, sid)
-            # The focused leaf now carries `sid` — remap its widget + terminal.
-            self._rebind_leaf(focused, sid)
-            self._reflect_layout()
-            term = self._term_by_sid.get(sid)
-            if term is not None:
-                term.grab_focus()
-
-    def _rebind_leaf(self, old_sid: str, new_sid: str) -> None:
-        """Move the leaf widget/terminal from old_sid's key to new_sid's after a swap."""
-        if old_sid == new_sid:
-            return
-        leaf = self._leaf_by_sid.pop(old_sid, None)
-        term = self._term_by_sid.pop(old_sid, None)
-        if leaf is not None:
-            self._leaf_by_sid[new_sid] = leaf
-        if term is not None:
-            self._term_by_sid[new_sid] = term
+        self._swap_workspace(sid)
 
     # --- ⌥ Layout presets + zoom (LAYOUT-01/D-04) ---------------------------
 
@@ -977,10 +967,13 @@ class ArduisWindow(Adw.ApplicationWindow):
             parsed = parse_worktrees(out) if status == 0 else []
             path = branch_checked_out_path(branch, parsed)
             if path:
-                # D-07: focus the tracked worktree if arduis owns it...
+                # D-07: swap to the tracked worktree's workspace if arduis owns it...
                 session = self._session_for_worktree_dir(path)
                 if session is not None:
-                    self._focus_or_swap_session(session.session_id)
+                    row = self._row_by_sid.get(session.session_id)
+                    if row is not None:
+                        self._listbox.select_row(row)
+                    self._swap_workspace(session.session_id)
                     return
                 # ...else it's the main checkout or an untracked worktree: abort.
                 self._abort_already_checked_out(branch, path)
@@ -991,13 +984,6 @@ class ArduisWindow(Adw.ApplicationWindow):
         run_git_async(
             argv_worktree_list_porcelain(self._repo_root), _porcelain_done, self._runner
         )
-
-    def _focus_or_swap_session(self, sid: str) -> None:
-        """Route an existing session through the D-06 focus-or-swap path."""
-        row = self._row_by_sid.get(sid)
-        if row is not None:
-            self._listbox.select_row(row)
-            self._on_row_activated(self._listbox, row)
 
     def _resolve_base_then_add(self, branch: str, kind: str) -> None:
         """Default-branch chain (D-04): origin/HEAD -> local HEAD fallback."""
