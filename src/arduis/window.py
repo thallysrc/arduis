@@ -786,8 +786,13 @@ class ArduisWindow(Adw.ApplicationWindow):
             term.grab_focus()
 
     def _cycle_worktree(self, direction: str) -> None:
-        """C-Space n/p: cycle the sidebar selection, then focus-or-swap (D-06)."""
-        rows = self._session_rows()
+        """C-Space n/p: cycle the sidebar selection, swapping the WHOLE workspace (D-06/D-07).
+
+        Phase 03.1 re-target: n/p step through EVERY sidebar row in order — the
+        pinned ``main`` workspace included (D-07) — and activation swaps the whole
+        workspace via ``_on_row_activated`` → ``_swap_workspace`` (not a pane).
+        """
+        rows = self._all_workspace_rows()
         if not rows:
             return
         current = self._listbox.get_selected_row()
@@ -801,17 +806,29 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._on_row_activated(self._listbox, target)
 
     def _jump_to_row(self, n: int) -> None:
-        """C-Space <N>: select the Nth worktree row (1-indexed) + focus-or-swap."""
-        rows = self._session_rows()
+        """C-Space <N>: select the Nth sidebar row (1-indexed) + swap the workspace.
+
+        Sidebar order including the pinned ``main`` as row 1 (Discretion A3 / D-07);
+        activation swaps the whole workspace via ``_on_row_activated``.
+        """
+        rows = self._all_workspace_rows()
         if not (1 <= n <= len(rows)):
             return
         target = rows[n - 1]
         self._listbox.select_row(target)
         self._on_row_activated(self._listbox, target)
 
-    def _session_rows(self) -> list[Gtk.ListBoxRow]:
-        """The sidebar rows for real worktree sessions (excludes the main row)."""
+    def _all_workspace_rows(self) -> list[Gtk.ListBoxRow]:
+        """Every sidebar row in display order: the pinned main row, then worktrees.
+
+        n/p and ``C-Space <number>`` cycle/jump across whole workspaces, and the
+        pinned ``main`` workspace is a regular row in this order (D-07) so n/p reaches
+        main and ``<number>`` is 1-indexed from main (A3).
+        """
         rows: list[Gtk.ListBoxRow] = []
+        main_row = self._row_by_sid.get(_MAIN_SID)
+        if main_row is not None:
+            rows.append(main_row)
         for session in self._store.all():
             row = self._row_by_sid.get(session.session_id)
             if row is not None:
