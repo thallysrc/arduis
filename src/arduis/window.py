@@ -220,8 +220,11 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._new_btn.connect("clicked", self._on_new_worktree_clicked)
         header.pack_start(self._new_btn)
 
-        # ⌥ Layout menu (LAYOUT-01/D-04): grid 2×2 / columns presets.
-        header.pack_start(self._build_layout_button())
+        # NOTE: the old "⌥ Layout" preset menu (grid 2×2 / columns) was a leftover
+        # of the pre-pivot GLOBAL-layout model — it arranged worktrees-as-panes. Under
+        # the per-worktree workspace model (plan 02) a workspace is one worktree's
+        # terminals with a default 2-terminal split, so a global layout preset has no
+        # sensible meaning. The dead button is removed (UAT Failure 4).
         view.add_top_bar(header)
 
         # Outer body: the sidebar+canvas row over a bottom tmux-hint bar.
@@ -257,8 +260,6 @@ class ArduisWindow(Adw.ApplicationWindow):
         # Hibernate / Resume actions reused from Phase 2, now driven by the row
         # context menu (D-08).
         self._install_row_actions()
-        # Layout preset actions (LAYOUT-01/D-04), driven by the ⌥ Layout menu.
-        self._install_layout_actions()
 
         # GTK4 window-close signal (NOT GTK3 "delete-event").
         self.connect("close-request", self._on_close_request)
@@ -420,15 +421,54 @@ class ArduisWindow(Adw.ApplicationWindow):
             self._reflect_layout()
         return _zoom
 
-    def _make_close_pane_cb(self, sid: str):
+    def _make_close_pane_cb(self, tid: str):
         def _close(_btn) -> None:
-            # D-04 default: HIDE — drop the terminal leaf from the active tree.
-            model = self._active_layout()
-            if model is None:
-                return
-            model.close_leaf(sid)
-            self._reflect_layout()
+            # D-04: closing a pane drops the terminal leaf from the active tree AND
+            # tears down its process group + widget maps so the canvas re-reflects
+            # cleanly (Failure 2: a stale leaf/empty root used to leave a blank
+            # canvas until the sidebar row was clicked to force a rebuild).
+            self._close_terminal(tid)
         return _close
+
+    def _close_terminal(self, tid: str) -> None:
+        """Close one terminal of the active workspace: kill it, drop it, re-reflect.
+
+        Tears down the terminal's process group (no orphan), removes it from the
+        active LayoutModel and the widget/session maps, then re-reflects. If that
+        was the workspace's LAST terminal, fall back to the main workspace so the
+        canvas is never left blank (Failure 2).
+        """
+        sid = self._active_workspace_sid
+        if sid is None:
+            return
+        model = self._workspace_layout(sid)
+
+        # Kill the closed terminal's process group (no orphan) and forget its
+        # TerminalRecord so RAM/teardown no longer track it.
+        session = self._store.get(sid)
+        if session is not None:
+            record = next((t for t in session.terminals if t.term_id == tid), None)
+            if record is not None:
+                if record.pid:
+                    self._teardown_pgid(record.pid)
+                session.terminals.remove(record)
+
+        # Drop the terminal from the layout tree + widget maps.
+        model.close_leaf(tid)
+        self._leaf_by_sid.pop(tid, None)
+        self._term_by_sid.pop(tid, None)
+
+        # Empty workspace -> fall back to main so the canvas isn't blank.
+        if not model.visible_ids():
+            self._swap_workspace(_MAIN_SID)
+            return
+
+        self._reflect_layout()
+        # Re-grab the now-focused terminal so typing keeps working after a close.
+        term = self._term_by_sid.get(model.focused_id)
+        if term is not None:
+            term.grab_focus()
+        return
 
     # --- per-worktree layout lookup (D-04, rebuild-on-switch) ----------------
 
@@ -543,6 +583,13 @@ class ArduisWindow(Adw.ApplicationWindow):
                 self._make_row(session.session_id, session.branch, "claude · —", active=active)
             )
 
+        # Rebuilding discards the old selection; restore it to the visible
+        # workspace so C-Space n/p/number stay anchored to what's on screen.
+        if self._active_workspace_sid is not None:
+            row = self._row_by_sid.get(self._active_workspace_sid)
+            if row is not None:
+                self._listbox.select_row(row)
+
     def _make_row(self, sid: str, branch: str, subline: str, active: bool) -> Gtk.ListBoxRow:
         """One sidebar row: dot (8px) + branch (13/600) + RAM sub-line (11/400)."""
         row = Gtk.ListBoxRow()
@@ -621,6 +668,12 @@ class ArduisWindow(Adw.ApplicationWindow):
         """
         self._active_workspace_sid = sid
         self._reflect_layout()
+        # Keep the sidebar selection in sync with the visible workspace so the
+        # C-Space n/p/number cycle always steps relative to what is on screen
+        # (Failure 3: a stale selection made the prefix jumps unpredictable).
+        row = self._row_by_sid.get(sid)
+        if row is not None and self._listbox.get_selected_row() is not row:
+            self._listbox.select_row(row)
         # Focus the swapped-in workspace's focused terminal.
         model = self._workspace_layout(sid)
         term = self._term_by_sid.get(model.focused_id)
@@ -634,55 +687,6 @@ class ArduisWindow(Adw.ApplicationWindow):
             return
         self._swap_workspace(sid)
 
-    # --- ⌥ Layout presets + zoom (LAYOUT-01/D-04) ---------------------------
-
-    def _build_layout_button(self) -> Gtk.Widget:
-        """Header menu button (``⌥ Layout``) with grid 2×2 / columns presets."""
-        menu = Gio.Menu()
-        menu.append("Grade 2×2", "win.preset_grid2x2")
-        menu.append("Colunas", "win.preset_columns")
-
-        button = Gtk.MenuButton()
-        button.set_label("⌥ Layout")
-        button.set_tooltip_text("Layout")
-        button.set_menu_model(menu)
-        return button
-
-    def _install_layout_actions(self) -> None:
-        """Register win.preset_grid2x2 / win.preset_columns (LAYOUT-01/D-04)."""
-        grid = Gio.SimpleAction.new("preset_grid2x2", None)
-        grid.connect("activate", lambda *_: self._apply_preset("grid2x2"))
-        self.add_action(grid)
-
-        columns = Gio.SimpleAction.new("preset_columns", None)
-        columns.connect("activate", lambda *_: self._apply_preset("columns"))
-        self.add_action(columns)
-
-    def _apply_preset(self, kind: str) -> None:
-        """Rebuild the active workspace with a preset over its terminals (D-04).
-
-        Phase 03.1: presets now act WITHIN the visible worktree's terminals, not
-        across worktrees — the more natural per-workspace arrangement.
-        """
-        model = self._active_layout()
-        if model is None:
-            return
-        ids = self._mru_active_ids(model)
-        if not ids:
-            return
-        model.preset(kind, ids)
-        self._reflect_layout()
-
-    def _mru_active_ids(self, model: LayoutModel) -> list[str]:
-        """The active workspace's most-recently-focused visible terminal ids (D-04)."""
-        visible = set(model.visible_ids())
-        ordered = [sid for sid in model.mru_order() if sid in visible]
-        # Include any visible ids the MRU hasn't seen yet (deterministic tail).
-        for sid in model.visible_ids():
-            if sid not in ordered:
-                ordered.append(sid)
-        return ordered
-
     # --- bottom tmux-hint bar (UI-SPEC Copywriting) -------------------------
 
     def _build_hint_bar(self) -> Gtk.Widget:
@@ -695,10 +699,14 @@ class ArduisWindow(Adw.ApplicationWindow):
         hints.set_xalign(0)
         hints.set_use_markup(True)
         key = _FOCUS_RING
+        # Only advertise keys that the keymap actually dispatches: hjkl move focus
+        # between the workspace's terminals; n/p (and a number) switch worktree.
+        # ``z`` zoom stays a per-pane button (not in the keymap), so it is not shown
+        # here as a C-Space chord (UAT: the hint must match real behavior).
         hints.set_markup(
-            f'<span foreground="{key}" weight="bold">C-Space n</span> nova · '
-            f'<span foreground="{key}" weight="bold">C-Space hjkl</span> mover · '
-            f'<span foreground="{key}" weight="bold">C-Space z</span> zoom'
+            f'<span foreground="{key}" weight="bold">C-Space hjkl</span> mover painel · '
+            f'<span foreground="{key}" weight="bold">C-Space n/p</span> trocar worktree · '
+            f'<span foreground="{key}" weight="bold">C-Space 1-9</span> ir para'
         )
         bar.append(hints)
 
@@ -774,16 +782,31 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._focus_leaf(target)
 
     def _focus_leaf(self, sid: str) -> None:
-        """Focus a visible terminal in the active workspace: model, ring, grab."""
+        """Focus a visible terminal in the active workspace: model, ring, grab.
+
+        Focus movement must NOT rebuild the canvas: a full ``_reflect_layout`` here
+        tore down and recreated every Gtk.Paned on each h/j/k/l press, resetting the
+        split handles (Failure 1's collapse) and re-mapping the VTE widgets — the
+        "undescribable" prefix behavior (Failure 3). Instead we update only the
+        focus ring in place and grab the target terminal.
+        """
         model = self._active_layout()
         if model is None:
             return
         model.focused_id = sid
         model.touch(sid)
-        self._reflect_layout()
+        self._refresh_focus_ring(model.focused_id)
         term = self._term_by_sid.get(sid)
         if term is not None:
             term.grab_focus()
+
+    def _refresh_focus_ring(self, focused_id: str | None) -> None:
+        """Apply the purple focus ring to exactly one leaf without rebuilding."""
+        for tid, leaf in self._leaf_by_sid.items():
+            if tid == focused_id:
+                leaf.add_css_class("focus")
+            else:
+                leaf.remove_css_class("focus")
 
     def _cycle_worktree(self, direction: str) -> None:
         """C-Space n/p: cycle the sidebar selection, swapping the WHOLE workspace (D-06/D-07).
@@ -1269,12 +1292,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._canvas_slot.set_child(self._build_widget(model.root))
 
         # Apply the focused-pane purple ring to exactly one leaf (UI-SPEC).
-        focused = model.focused_id
-        for sid, leaf in self._leaf_by_sid.items():
-            if sid == focused:
-                leaf.add_css_class("focus")
-            else:
-                leaf.remove_css_class("focus")
+        self._refresh_focus_ring(model.focused_id)
 
     def _build_widget(self, node) -> Gtk.Widget:
         """Reflect one layout node into a widget (SplitNode->Paned, LeafNode->leaf)."""
@@ -1296,12 +1314,41 @@ class ArduisWindow(Adw.ApplicationWindow):
             )
             paned = Gtk.Paned(orientation=orient)
             paned.set_wide_handle(True)            # visible draggable gutter
-            paned.set_shrink_start_child(False)    # honor each leaf's min size
-            paned.set_shrink_end_child(False)
+            # Both children resize and CAN shrink: with shrink=False a nested
+            # Paned whose children each demand a min-size collapses to a single
+            # narrow column on first allocation (the position handle is never
+            # initialized). Keep the GTK4 defaults (resize+shrink True) and set an
+            # explicit proportional position once the paned is mapped so every
+            # split — including nested ones — divides its space 50/50 (Failure 1/2).
+            paned.set_resize_start_child(True)
+            paned.set_resize_end_child(True)
+            paned.set_shrink_start_child(True)
+            paned.set_shrink_end_child(True)
             paned.set_start_child(self._build_widget(node.start))
             paned.set_end_child(self._build_widget(node.end))
+            self._init_paned_position(paned, orient)
             return paned
         return Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+
+    def _init_paned_position(self, paned: Gtk.Paned, orient) -> None:
+        """Set a 50/50 split handle once the paned has a real allocation.
+
+        A freshly built Gtk.Paned has position 0 until it is mapped; nested paneds
+        therefore collapse on first show (Failure 1: only one narrow column). We
+        defer the position to the paned's first ``map`` and split its allocated
+        extent in half so every split renders evenly (the user can drag after).
+        """
+        def _on_map(p: Gtk.Paned) -> None:
+            extent = p.get_width() if orient == Gtk.Orientation.HORIZONTAL else p.get_height()
+            if extent > 1:
+                p.set_position(extent // 2)
+            # one-shot: stop re-centering once we've placed the initial handle
+            if handler_id[0] is not None:
+                p.disconnect(handler_id[0])
+                handler_id[0] = None
+
+        handler_id = [None]
+        handler_id[0] = paned.connect("map", _on_map)
 
     # --- helpers: session lookup + user messaging ---------------------------
 
