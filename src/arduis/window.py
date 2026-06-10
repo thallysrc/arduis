@@ -176,10 +176,14 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._repo_root: str | None = None
         self._repo_name: str | None = None
 
-        # GTK-free layout model is the single source of truth for what is visible.
-        self._layout = LayoutModel()
+        # Phase 03.1 pivot (D-04): ONE LayoutModel PER worktree (keyed by worktree
+        # sid) instead of one global tree. The canvas shows exactly ONE worktree's
+        # terminals at a time; selecting a sidebar row swaps the whole workspace.
+        self._layouts: dict[str, LayoutModel] = {}            # worktree sid -> its tree
+        self._active_workspace_sid: str | None = None         # which worktree is visible
 
-        # session_id -> widgets. The "main" key maps to the scratch-shell leaf.
+        # Widget maps are now keyed by TERMINAL id (e.g. "main:t0", "feat:t0",
+        # "feat:t1"), NOT by worktree sid — a worktree owns N terminals (D-02/D-03).
         self._leaf_by_sid: dict[str, Gtk.Widget] = {}
         self._term_by_sid: dict[str, Vte.Terminal] = {}
         # sidebar row <-> session_id (the main row maps to the scratch shell).
@@ -393,26 +397,48 @@ class ArduisWindow(Adw.ApplicationWindow):
 
     def _make_split_pane_cb(self, sid: str):
         def _split(_btn) -> None:
-            # ⊟ re-presents the +New dialog targeting this pane as the split point.
-            self._layout.focused_id = sid
-            self._on_new_worktree_clicked(None)
+            # ⊟ splits the active workspace, adding a new agent terminal beside
+            # this one (D-05). ``sid`` here is a TERMINAL id in the active tree.
+            model = self._active_layout()
+            if model is None:
+                return
+            model.focused_id = sid
+            self._split_active_pane(sid)
         return _split
 
     def _make_zoom_pane_cb(self, sid: str):
         def _zoom(_btn) -> None:
-            if self._layout.is_zoomed():
-                self._layout.unzoom()
+            model = self._active_layout()
+            if model is None:
+                return
+            if model.is_zoomed():
+                model.unzoom()
             else:
-                self._layout.zoom(sid)
+                model.zoom(sid)
             self._reflect_layout()
         return _zoom
 
     def _make_close_pane_cb(self, sid: str):
         def _close(_btn) -> None:
-            # D-04 default: HIDE — drop the leaf; the session stays ACTIVE/in sidebar.
-            self._layout.close_leaf(sid)
+            # D-04 default: HIDE — drop the terminal leaf from the active tree.
+            model = self._active_layout()
+            if model is None:
+                return
+            model.close_leaf(sid)
             self._reflect_layout()
         return _close
+
+    # --- per-worktree layout lookup (D-04, rebuild-on-switch) ----------------
+
+    def _workspace_layout(self, sid: str) -> LayoutModel:
+        """Return the LayoutModel for worktree ``sid`` (created lazily, D-04)."""
+        return self._layouts.setdefault(sid, LayoutModel())
+
+    def _active_layout(self) -> LayoutModel | None:
+        """The visible worktree's LayoutModel (None when no workspace is active)."""
+        if self._active_workspace_sid is None:
+            return None
+        return self._layouts.get(self._active_workspace_sid)
 
     # --- the pinned main-checkout scratch shell as the "main" leaf (D-07) ----
 
@@ -428,15 +454,21 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         # Label the pinned leaf with the repo name (its main checkout); fall back
         # to "main" when launched outside a repo. The badge is "zsh" (not claude).
+        # D-07: the main row is a REGULAR 1-terminal workspace — its single terminal
+        # id is "main:t0", keyed by terminal id like every other workspace.
         main_label = self._repo_name or "main"
-        leaf = self._make_leaf(_MAIN_SID, main_label, terminal, badge_label="zsh")
-        self._leaf_by_sid[_MAIN_SID] = leaf
-        self._term_by_sid[_MAIN_SID] = terminal
+        main_tid = f"{_MAIN_SID}:t0"
+        leaf = self._make_leaf(main_tid, main_label, terminal, badge_label="zsh")
+        self._leaf_by_sid[main_tid] = leaf
+        self._term_by_sid[main_tid] = terminal
 
-        # The main leaf is the root of the layout tree.
-        self._layout.root = LeafNode(_MAIN_SID)
-        self._layout.focused_id = _MAIN_SID
-        self._layout.touch(_MAIN_SID)
+        # Build the main workspace's OWN LayoutModel (D-04/D-07) — no special-casing;
+        # it goes through the same swap/reflect path as any worktree.
+        model = self._workspace_layout(_MAIN_SID)
+        model.root = LeafNode(main_tid)
+        model.focused_id = main_tid
+        model.touch(main_tid)
+        self._active_workspace_sid = _MAIN_SID
         self._reflect_layout()
 
         main_cwd = self._repo_root or GLib.get_home_dir()
@@ -635,19 +667,26 @@ class ArduisWindow(Adw.ApplicationWindow):
         self.add_action(columns)
 
     def _apply_preset(self, kind: str) -> None:
-        """Rebuild the canvas with a preset over the MRU active subset (D-04)."""
-        ids = self._mru_active_ids()
+        """Rebuild the active workspace with a preset over its terminals (D-04).
+
+        Phase 03.1: presets now act WITHIN the visible worktree's terminals, not
+        across worktrees — the more natural per-workspace arrangement.
+        """
+        model = self._active_layout()
+        if model is None:
+            return
+        ids = self._mru_active_ids(model)
         if not ids:
             return
-        self._layout.preset(kind, ids)
+        model.preset(kind, ids)
         self._reflect_layout()
 
-    def _mru_active_ids(self) -> list[str]:
-        """The most-recently-focused mapped leaf ids (the D-04 preset subset)."""
-        mapped = set(self._leaf_by_sid.keys())
-        ordered = [sid for sid in self._layout.mru_order() if sid in mapped]
-        # Include any mapped ids the MRU hasn't seen yet (deterministic tail).
-        for sid in self._leaf_by_sid:
+    def _mru_active_ids(self, model: LayoutModel) -> list[str]:
+        """The active workspace's most-recently-focused visible terminal ids (D-04)."""
+        visible = set(model.visible_ids())
+        ordered = [sid for sid in model.mru_order() if sid in visible]
+        # Include any visible ids the MRU hasn't seen yet (deterministic tail).
+        for sid in model.visible_ids():
             if sid not in ordered:
                 ordered.append(sid)
         return ordered
@@ -721,15 +760,19 @@ class ArduisWindow(Adw.ApplicationWindow):
             self._jump_to_row(action[1])
 
     def _focus_neighbor(self, direction: str) -> None:
-        """Move pane focus to the neighbor leaf (tree-order traversal — A2).
+        """Move focus to the neighbor TERMINAL in the active worktree (D-06, A2).
 
-        Phase 3 accepts tree-order (not true geometric) directional focus: h/k
-        step toward the previous visible leaf, j/l toward the next (Assumption A2).
+        Phase 03.1 re-target (D-06): h/j/k/l now moves between the terminals of the
+        VISIBLE worktree (tmux: panes = terminals). Tree-order, not geometric: h/k
+        step toward the previous visible terminal, j/l toward the next (A2).
         """
-        visible = self._layout.visible_ids()
+        model = self._active_layout()
+        if model is None:
+            return
+        visible = model.visible_ids()
         if len(visible) < 2:
             return
-        focused = self._layout.focused_id
+        focused = model.focused_id
         try:
             idx = visible.index(focused)
         except ValueError:
@@ -739,9 +782,12 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._focus_leaf(target)
 
     def _focus_leaf(self, sid: str) -> None:
-        """Focus a visible leaf: update the model, ring, and grab its terminal."""
-        self._layout.focused_id = sid
-        self._layout.touch(sid)
+        """Focus a visible terminal in the active workspace: model, ring, grab."""
+        model = self._active_layout()
+        if model is None:
+            return
+        model.focused_id = sid
+        model.touch(sid)
         self._reflect_layout()
         term = self._term_by_sid.get(sid)
         if term is not None:
@@ -1105,18 +1151,23 @@ class ArduisWindow(Adw.ApplicationWindow):
         so widgets can be re-hung without "already has a parent" crashes.
         """
         # Detach the old root + every mapped leaf so they are parent-free before
-        # we re-hang them (GTK4 single-parent rule, Pitfall 1).
+        # we re-hang them (GTK4 single-parent rule, Pitfall 1). VTE widgets + their
+        # PTY children SURVIVE unparenting (A1/Pitfall 2) — a swap never respawns.
         if self._canvas_slot.get_child() is not None:
             self._canvas_slot.set_child(None)
         for leaf in self._leaf_by_sid.values():
             if leaf.get_parent() is not None:
                 leaf.unparent()
 
-        new_root = self._build_widget(self._layout.root)
-        self._canvas_slot.set_child(new_root)
+        # Phase 03.1: read the ACTIVE worktree's tree, not a global tree (D-04).
+        model = self._active_layout()
+        if model is None or model.root is None:
+            self._canvas_slot.set_child(self._build_widget(None))
+            return
+        self._canvas_slot.set_child(self._build_widget(model.root))
 
         # Apply the focused-pane purple ring to exactly one leaf (UI-SPEC).
-        focused = self._layout.focused_id
+        focused = model.focused_id
         for sid, leaf in self._leaf_by_sid.items():
             if sid == focused:
                 leaf.add_css_class("focus")
