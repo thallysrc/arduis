@@ -57,7 +57,9 @@ from arduis.session import (  # noqa: E402
     AGENT_FEED,
     SessionState,
     SessionStore,
+    TerminalRecord,
     WorktreeSession,
+    default_terminals,
     hibernate_fields,
 )
 from arduis.worktree import (  # noqa: E402
@@ -902,9 +904,9 @@ class ArduisWindow(Adw.ApplicationWindow):
             if idx < 0 or idx >= len(active):
                 return
             session = active[idx]
-            # Run the existing hibernate path on the chosen session (D-16).
-            if session.pid:
-                self._teardown_pgid(session.pid)
+            # Run the existing hibernate path on the chosen session (D-16). Kill
+            # EVERY terminal group so RAM is actually freed (Pitfall 3).
+            self._teardown_session_terminals(session)
             hibernate_fields(session)
             self._rebuild_sidebar()
             proceed()  # cap freed — resume the original creation
@@ -1004,25 +1006,44 @@ class ArduisWindow(Adw.ApplicationWindow):
         run_git_async(argv_default_branch_via_origin(repo), _origin_done, self._runner)
 
     def _open_and_add(self, branch: str, kind: str, base: str) -> None:
-        """Split the focused pane (D-03), then run worktree add + spawn into it."""
+        """Born-with-2-terminals workspace (D-02/D-03), then worktree add + spawn.
+
+        Phase 03.1: a new worktree owns its OWN LayoutModel with two terminals side
+        by side — left agent (``claude`` fed) + right plain shell. After ``git
+        worktree add`` succeeds, BOTH terminals spawn eagerly (D-03); only the agent
+        is fed ``AGENT_FEED``.
+        """
         repo = self._repo_root
         wt_dir = worktree_dir_for(repo, branch)
 
-        # D-03: split the focused pane so the new agent appears beside it.
-        terminal = self._make_terminal()
-        terminal.connect("child-exited", self._on_worktree_term_exited)
-        leaf = self._make_leaf(branch, branch, terminal)
-        self._leaf_by_sid[branch] = leaf
-        self._term_by_sid[branch] = terminal
+        agent_tid = f"{branch}:t0"
+        shell_tid = f"{branch}:t1"
 
-        focused = self._layout.focused_id
-        if focused is None or self._layout.root is None:
-            # Empty canvas — seed the first leaf instead of splitting.
-            self._layout.root = LeafNode(branch)
-            self._layout.focused_id = branch
-            self._layout.touch(branch)
-        else:
-            self._layout.split(focused, branch, "h")
+        # Build the worktree's own 2-terminal tree: left agent, right shell (D-02).
+        model = self._workspace_layout(branch)
+        model.root = LeafNode(agent_tid)
+        model.focused_id = agent_tid
+        model.touch(agent_tid)
+        model.split(agent_tid, shell_tid, "h")  # left agent, right shell (horizontal)
+        # split() sets focused to the new (shell) leaf — refocus the agent (left).
+        model.focused_id = agent_tid
+        model.touch(agent_tid)
+
+        # Two terminals via the palette factory (T-04 — branch rendered with set_text).
+        agent_terminal = self._make_terminal()
+        agent_terminal.connect("child-exited", self._on_worktree_term_exited)
+        agent_leaf = self._make_leaf(agent_tid, branch, agent_terminal, badge_label="claude")
+        self._leaf_by_sid[agent_tid] = agent_leaf
+        self._term_by_sid[agent_tid] = agent_terminal
+
+        shell_terminal = self._make_terminal()
+        shell_terminal.connect("child-exited", self._on_worktree_term_exited)
+        shell_leaf = self._make_leaf(shell_tid, branch, shell_terminal, badge_label="zsh")
+        self._leaf_by_sid[shell_tid] = shell_leaf
+        self._term_by_sid[shell_tid] = shell_terminal
+
+        # Make the new worktree the visible workspace (D-04).
+        self._active_workspace_sid = branch
         self._reflect_layout()
 
         if kind == "new":
@@ -1032,29 +1053,90 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         def _add_done(status, _out, err):
             if status != 0:
-                # Creation failed — drop the pane; surface the git error.
+                # Creation failed — drop BOTH leaves; surface the git error.
                 self._show_error("Não foi possível criar a worktree.", err)
-                self._layout.close_leaf(branch)
-                self._leaf_by_sid.pop(branch, None)
-                self._term_by_sid.pop(branch, None)
-                self._reflect_layout()
+                model.close_leaf(agent_tid)
+                model.close_leaf(shell_tid)
+                self._leaf_by_sid.pop(agent_tid, None)
+                self._leaf_by_sid.pop(shell_tid, None)
+                self._term_by_sid.pop(agent_tid, None)
+                self._term_by_sid.pop(shell_tid, None)
+                # Fall back to the main workspace so the canvas isn't empty.
+                self._swap_workspace(_MAIN_SID)
                 return
             session = WorktreeSession(
                 session_id=branch,
                 branch=branch,
                 worktree_dir=wt_dir,
                 repo_root=repo,
+                terminals=default_terminals(branch),  # [agent t0, shell t1]
             )
             self._store.add(session)
             self._rebuild_sidebar()
-            self._spawn_into(terminal, wt_dir, session)
+            # D-03: spawn BOTH eagerly. Agent is fed claude; shell stays plain.
+            self._spawn_into(agent_terminal, wt_dir, session, agent_tid, kind="agent")
+            self._spawn_into(shell_terminal, wt_dir, session, shell_tid, kind="shell")
 
         run_git_async(argv, _add_done, self._runner)
 
+    def _split_active_pane(self, focused_tid: str) -> None:
+        """Split the active workspace, spawning a new agent terminal beside ``focused_tid`` (D-05).
+
+        Every split is an agent terminal by default (D-05) — Ctrl+C drops to the
+        shell. The new terminal id is ``f"{sid}:tN"`` where N is the next free index
+        for the active worktree; it spawns into the worktree dir and is fed claude.
+        """
+        sid = self._active_workspace_sid
+        if sid is None:
+            return
+        model = self._workspace_layout(sid)
+        new_tid = self._next_term_id(sid)
+
+        session = self._store.get(sid)
+        cwd = session.worktree_dir if session is not None else (self._repo_root or GLib.get_home_dir())
+
+        terminal = self._make_terminal()
+        terminal.connect("child-exited", self._on_worktree_term_exited)
+        label = session.branch if session is not None else (self._repo_name or "main")
+        leaf = self._make_leaf(new_tid, label, terminal, badge_label="claude")
+        self._leaf_by_sid[new_tid] = leaf
+        self._term_by_sid[new_tid] = terminal
+
+        model.split(focused_tid, new_tid, "h")
+        self._reflect_layout()
+
+        if session is not None:
+            # Track the new split terminal on the session so RAM/teardown see it.
+            session.terminals.append(TerminalRecord(new_tid, "agent"))
+            self._spawn_into(terminal, cwd, session, new_tid, kind="agent")
+        else:
+            # main workspace has no store session — spawn plain via the agent path
+            # but with no TerminalRecord to write (cwd is repo root / $HOME).
+            self._spawn_into(terminal, cwd, None, new_tid, kind="agent")
+
+    def _next_term_id(self, sid: str) -> str:
+        """Return the next free ``{sid}:tN`` terminal id for worktree ``sid``."""
+        n = 0
+        while f"{sid}:t{n}" in self._term_by_sid:
+            n += 1
+        return f"{sid}:t{n}"
+
     # --- spawn + feed claude (WT-03, D-08) ----------------------------------
 
-    def _spawn_into(self, terminal: Vte.Terminal, cwd: str, session: WorktreeSession) -> None:
-        """Spawn zsh -l -i in the worktree dir; feed AGENT_FEED in the callback."""
+    def _spawn_into(
+        self,
+        terminal: Vte.Terminal,
+        cwd: str,
+        session: WorktreeSession | None,
+        term_id: str,
+        kind: str = "agent",
+    ) -> None:
+        """Spawn zsh -l -i in ``cwd``; feed AGENT_FEED only when ``kind == "agent"``.
+
+        Writes the spawned ``pid``/``pgid`` onto the matching ``TerminalRecord`` in
+        ``session.terminals`` (found by ``term_id``). A plain ``shell`` terminal
+        (D-02 right pane) is NOT fed ``claude``.
+        """
         argv, envv = build_worktree_spawn(self._runner)
         terminal.spawn_async(
             Vte.PtyFlags.DEFAULT,
@@ -1066,20 +1148,27 @@ class ArduisWindow(Adw.ApplicationWindow):
             None,                 # child_setup_data
             -1,                   # timeout (-1 = none)
             None,                 # cancellable
-            self._make_wt_spawn_cb(session),
+            self._make_wt_spawn_cb(session, term_id, kind),
         )
         terminal.grab_focus()
 
-    def _make_wt_spawn_cb(self, session: WorktreeSession):
+    def _make_wt_spawn_cb(self, session: WorktreeSession | None, term_id: str, kind: str):
         def _on_wt_spawned(terminal, pid, error):
             if error is not None or pid == -1:
                 return  # D-09: no banner; the pane stays a usable shell
-            session.pid = pid
-            try:
-                session.pgid = os.getpgid(pid)  # A1: don't assume pgid == pid
-            except ProcessLookupError:
-                session.pgid = None
-            terminal.feed_child(AGENT_FEED)  # b"claude\n" — bytes (Pitfall 1)
+            # Write pid/pgid onto the matching TerminalRecord (N-terminal model).
+            if session is not None:
+                record = next(
+                    (t for t in session.terminals if t.term_id == term_id), None
+                )
+                if record is not None:
+                    record.pid = pid
+                    try:
+                        record.pgid = os.getpgid(pid)  # A1: don't assume pgid == pid
+                    except ProcessLookupError:
+                        record.pgid = None
+            if kind == "agent":
+                terminal.feed_child(AGENT_FEED)  # b"claude\n" — bytes (Pitfall 5)
         return _on_wt_spawned
 
     def _on_worktree_term_exited(self, terminal, status):
@@ -1098,13 +1187,20 @@ class ArduisWindow(Adw.ApplicationWindow):
         ``group_rss_kb``. Returns ``SOURCE_CONTINUE`` so the timeout keeps firing.
         """
         for session in self._store.all():
-            if session.state != SessionState.ACTIVE or session.pgid is None:
-                continue  # skip hibernated / not-yet-spawned (Pitfall 3)
-            session.rss_kb = resource_monitor.group_rss_kb(session.pgid)
+            if session.state != SessionState.ACTIVE:
+                continue  # skip hibernated (Pitfall 3)
+            # D-10: a worktree's RAM is the SUM of all its terminal process groups.
+            total = 0
+            for t in session.terminals:
+                if t.pgid is None:
+                    continue  # not-yet-spawned terminal
+                t.rss_kb = resource_monitor.group_rss_kb(t.pgid)
+                if t.rss_kb:
+                    total += t.rss_kb
             label = self._subline_by_sid.get(session.session_id)
             if label is not None:
                 label.set_text(
-                    f"claude · {resource_monitor.format_ram_kb(session.rss_kb)}"
+                    f"claude · {resource_monitor.format_ram_kb(total or None)}"
                 )
         self._update_footer()
         return GLib.SOURCE_CONTINUE
@@ -1115,10 +1211,13 @@ class ArduisWindow(Adw.ApplicationWindow):
             return
         sessions = self._store.all()
         n = caps.active_count(sessions)
+        # D-10: aggregate sums every active worktree's terminal RAM.
         total = sum(
-            s.rss_kb
+            t.rss_kb
             for s in sessions
-            if s.state == SessionState.ACTIVE and s.rss_kb is not None
+            if s.state == SessionState.ACTIVE
+            for t in s.terminals
+            if t.rss_kb is not None
         )
         total_str = resource_monitor.format_ram_kb(total if total else None)
         self._footer_label.set_markup(
@@ -1230,25 +1329,37 @@ class ArduisWindow(Adw.ApplicationWindow):
         return self._store.get(self._menu_target_sid)
 
     def _on_hibernate(self, _action, _param) -> None:
-        """D-11: kill the worktree process GROUP, keep the dir, dim the row."""
+        """D-08: kill ALL the worktree's terminal groups, keep the dir, dim the row.
+
+        Full hibernate re-targeting (active-workspace fallback, layout clearing,
+        D-09 resume) lands in plan 03; here it tears down every terminal group so RAM
+        is actually freed under the N-terminal model (Pitfall 3).
+        """
         session = self._menu_session()
         if session is None or session.state == SessionState.HIBERNATED:
             return
-        if session.pid:
-            self._teardown_pgid(session.pid)  # kills zsh + claude GROUP (Pitfall 5)
-        hibernate_fields(session)  # GTK-free: state=HIBERNATED, pid/pgid=None
+        self._teardown_session_terminals(session)  # kill every group (Pitfall 3/5)
+        hibernate_fields(session)  # GTK-free: state=HIBERNATED, all pid/pgid=None
         self._rebuild_sidebar()    # dim/grey-dot the row (D-08, not a tab badge)
 
     def _on_resume(self, _action, _param) -> None:
-        """D-12: cold relaunch (fresh zsh+claude) — not a reattach (v2/PERSIST-01)."""
+        """D-09: cold relaunch the agent terminal (fresh zsh+claude), not a reattach.
+
+        The full D-09 default-layout rebuild (re-spawn agent + shell, discard the
+        saved tree) is plan 03's. Here we keep resume crash-free under the N-terminal
+        model by re-spawning the agent terminal (keyed by ``{sid}:t0``).
+        """
         session = self._menu_session()
         if session is None or session.state == SessionState.ACTIVE:
             return
         session.state = SessionState.ACTIVE
         self._rebuild_sidebar()
-        terminal = self._term_by_sid.get(session.session_id)
+        agent_tid = f"{session.session_id}:t0"
+        terminal = self._term_by_sid.get(agent_tid)
         if terminal is not None:
-            self._spawn_into(terminal, session.worktree_dir, session)  # re-feeds AGENT_FEED
+            self._spawn_into(
+                terminal, session.worktree_dir, session, agent_tid, kind="agent"
+            )
 
     # --- teardown (RAM-01, D-11/D-13) ---------------------------------------
 
@@ -1261,6 +1372,19 @@ class ArduisWindow(Adw.ApplicationWindow):
         except ProcessLookupError:
             pass  # already gone
 
+    def _teardown_session_terminals(self, session: WorktreeSession) -> None:
+        """Tear down EVERY terminal's process group for a worktree (Pitfall 3/4).
+
+        The N-terminal model means a worktree owns a list of terminals (agent +
+        shell + any splits); each carries its own pid. Killing only ``terminals[0]``
+        would orphan the split agents and leak RAM (D-08). Plan 03 adds the rest of
+        the hibernate/resume re-targeting; this iterates the groups so no terminal
+        is forgotten by the existing hibernate/close call sites.
+        """
+        for t in session.terminals:
+            if t.pid:
+                self._teardown_pgid(t.pid)
+
     def _on_close_request(self, *_):
         """No-orphan teardown across ALL panes (D-13): scratch shell + sessions."""
         # Stop the ~2s RAM poll first so no source outlives the window (RAM-03).
@@ -1269,9 +1393,10 @@ class ArduisWindow(Adw.ApplicationWindow):
             self._ram_source = None
         if self._shell_pid:
             self._teardown_pgid(self._shell_pid)
+        # D-13: tear down EVERY terminal group of EVERY session (N-terminal model);
+        # iterating session.pid alone would orphan split agents (Pitfall 3/4).
         for session in self._store.all():
-            if session.pid:
-                self._teardown_pgid(session.pid)
+            self._teardown_session_terminals(session)
         return False  # allow the window to close
 
     def _sigkill_if_alive(self, pgid):
