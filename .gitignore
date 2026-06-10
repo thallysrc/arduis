@@ -12,3 +12,6 @@ repo/
 
 # Mockup renders (gerados a partir do .html)
 docs/mockup/*.png
+
+# Claude Code agent worktrees (execução GSD)
+.claude/worktrees/

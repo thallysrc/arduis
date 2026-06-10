@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>arduis — mockup v1</title>
+<style>
+  /* ---- Dracula palette (mesma do seu tmux/nvim) ---- */
+  :root{
+    --bg:#282a36; --bg2:#21222c; --line:#44475a; --fg:#f8f8f2;
+    --comment:#6272a4; --cyan:#8be9fd; --green:#50fa7b; --orange:#ffb86c;
+    --pink:#ff79c6; --purple:#bd93f9; --red:#ff5555; --yellow:#f1fa8c;
+    --radius:12px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:#13141a; color:var(--fg);
+    font-family:"Cantarell","Inter",system-ui,sans-serif;
+    display:flex; align-items:center; justify-content:center; padding:24px;
+  }
+  /* ---- Janela do app (estilo libadwaita) ---- */
+  .window{
+    width:1180px; height:760px; background:var(--bg);
+    border-radius:14px; overflow:hidden; display:flex; flex-direction:column;
+    box-shadow:0 24px 70px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.04);
+  }
+  /* ---- Header bar do GNOME ---- */
+  .headerbar{
+    height:48px; background:var(--bg2); display:flex; align-items:center;
+    padding:0 8px 0 12px; gap:10px; border-bottom:1px solid var(--line);
+    -webkit-app-region:drag;
+  }
+  .btn{
+    background:var(--line); color:var(--fg); border:0; border-radius:8px;
+    padding:7px 12px; font-size:13px; font-weight:600; cursor:pointer;
+    display:flex; align-items:center; gap:7px;
+  }
+  .btn.suggested{background:var(--purple); color:#21222c}
+  .btn:hover{filter:brightness(1.12)}
+  .title{font-size:13px; font-weight:700; letter-spacing:.2px}
+  .title .sub{color:var(--comment); font-weight:500}
+  .spacer{flex:1}
+  .winctl{width:24px;height:24px;border-radius:50%;background:var(--line);
+    display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--comment);cursor:pointer}
+  .winctl:hover{background:var(--red);color:#fff}
+
+  .body{flex:1; display:flex; min-height:0}
+
+  /* ---- Sidebar ---- */
+  .sidebar{width:248px; background:var(--bg2); border-right:1px solid var(--line);
+    display:flex; flex-direction:column; padding:10px 8px; gap:2px}
+  .side-h{font-size:11px; letter-spacing:1.5px; color:var(--comment);
+    font-weight:700; padding:8px 10px 4px}
+  .wt{padding:9px 10px; border-radius:9px; cursor:pointer; display:flex;
+    align-items:center; gap:9px}
+  .wt:hover{background:var(--line)}
+  .wt.active{background:var(--line)}
+  .dot{width:8px;height:8px;border-radius:50%;flex:none}
+  .dot.run{background:var(--green); box-shadow:0 0 8px var(--green)}
+  .dot.wait{background:var(--orange)}
+  .dot.idle{background:var(--comment)}
+  .dot.done{background:var(--cyan)}
+  .wt-meta{min-width:0}
+  .wt-name{font-size:13px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .wt-sub{font-size:11px; color:var(--comment); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .side-foot{margin-top:auto; padding:8px 10px; font-size:11px; color:var(--comment);
+    border-top:1px solid var(--line)}
+  .side-foot b{color:var(--green)}
+
+  /* ---- Grid de terminais ---- */
+  .grid{flex:1; display:grid; grid-template-columns:1fr 1fr; grid-template-rows:1fr 1fr;
+    gap:10px; padding:10px; min-width:0}
+  .term{background:var(--bg); border:1px solid var(--line); border-radius:var(--radius);
+    display:flex; flex-direction:column; overflow:hidden; min-width:0}
+  .term.focus{border-color:var(--purple); box-shadow:0 0 0 1px var(--purple)}
+  .term-h{height:34px; background:var(--bg2); display:flex; align-items:center;
+    gap:8px; padding:0 10px; border-bottom:1px solid var(--line)}
+  .branch{font-size:12px; font-weight:700; color:var(--pink)}
+  .badge{font-size:10px; padding:2px 7px; border-radius:20px; font-weight:600}
+  .badge.agent{background:rgba(189,147,249,.18); color:var(--purple)}
+  .badge.cont{background:rgba(80,250,123,.14); color:var(--green)}
+  .badge.cont.iso{background:rgba(255,184,108,.16); color:var(--orange)}
+  .term-h .spacer{flex:1}
+  .icn{color:var(--comment); cursor:pointer; font-size:13px}
+  .icn:hover{color:var(--fg)}
+  .term-body{flex:1; padding:10px 12px; font-family:"JetBrains Mono","Fira Code",
+    "DejaVu Sans Mono",monospace; font-size:11.5px; line-height:1.55; overflow:hidden}
+  .c-comment{color:var(--comment)} .c-green{color:var(--green)}
+  .c-cyan{color:var(--cyan)} .c-pink{color:var(--pink)} .c-purple{color:var(--purple)}
+  .c-orange{color:var(--orange)} .c-yellow{color:var(--yellow)} .c-red{color:var(--red)}
+  .prompt{color:var(--green)} .prompt b{color:var(--cyan)}
+  .cursor{display:inline-block;width:7px;height:14px;background:var(--fg);
+    vertical-align:-2px; animation:blink 1s steps(1) infinite}
+  @keyframes blink{50%{opacity:0}}
+
+  /* ---- Status bar (vibe tmux) ---- */
+  .statusbar{height:28px; background:var(--bg2); border-top:1px solid var(--line);
+    display:flex; align-items:center; gap:16px; padding:0 14px; font-size:11px; color:var(--comment)}
+  .statusbar .k{color:var(--purple); font-weight:700}
+  .statusbar .spacer{flex:1}
+  .pill{background:var(--line); padding:2px 8px; border-radius:20px; color:var(--fg)}
+</style>
+</head>
+<body>
+<div class="window">
+
+  <!-- Header bar -->
+  <div class="headerbar">
+    <button class="btn suggested">＋ Nova worktree</button>
+    <button class="btn">⌥ Layout</button>
+    <div class="spacer"></div>
+    <div class="title">arduis <span class="sub">— Livon-Saúde</span></div>
+    <div class="spacer"></div>
+    <button class="btn">☰</button>
+    <div class="winctl">✕</div>
+  </div>
+
+  <div class="body">
+    <!-- Sidebar -->
+    <div class="sidebar">
+      <div class="side-h">WORKTREES</div>
+
+      <div class="wt active">
+        <span class="dot run"></span>
+        <div class="wt-meta"><div class="wt-name">feat/agendamento</div>
+          <div class="wt-sub">claude · editando · shared db</div></div>
+      </div>
+      <div class="wt">
+        <span class="dot wait"></span>
+        <div class="wt-meta"><div class="wt-name">fix/login-token</div>
+          <div class="wt-sub">claude · aguardando você</div></div>
+      </div>
+      <div class="wt">
+        <span class="dot run"></span>
+        <div class="wt-meta"><div class="wt-name">chore/upgrade-deps</div>
+          <div class="wt-sub">claude · rodando testes</div></div>
+      </div>
+      <div class="wt">
+        <span class="dot done"></span>
+        <div class="wt-meta"><div class="wt-name">feat/relatorios-pdf</div>
+          <div class="wt-sub">claude · PR #482 aberto</div></div>
+      </div>
+      <div class="wt">
+        <span class="dot idle"></span>
+        <div class="wt-meta"><div class="wt-name">main</div>
+          <div class="wt-sub">zsh · ocioso</div></div>
+      </div>
+
+      <div class="side-foot">4 agentes ativos · <b>compose</b> compartilhado<br>↑ portas 5432, 8000, 5173</div>
+    </div>
+
+    <!-- Grid de terminais -->
+    <div class="grid">
+
+      <!-- Pane 1 -->
+      <div class="term focus">
+        <div class="term-h">
+          <span class="branch">feat/agendamento</span>
+          <span class="badge agent">claude · backend</span>
+          <span class="badge cont">db compartilhado</span>
+          <span class="spacer"></span>
+          <span class="icn">⊟</span><span class="icn">⊞</span><span class="icn">✕</span>
+        </div>
+        <div class="term-body">
+          <div class="c-comment">● Vou criar o endpoint de agendamento e o teste.</div>
+          <div class="c-purple">⏺ Edit</div> <span class="c-cyan">app/api/scheduling.py</span>
+          <div class="c-green">  + 38 linhas</div>
+          <div class="c-purple">⏺ Bash</div> <span class="c-comment">pytest app/tests/test_scheduling.py</span>
+          <div class="c-green">  ✓ 12 passed</div> <span class="c-comment">in 2.4s</span>
+          <div style="margin-top:6px" class="prompt">claude&gt; <span class="cursor"></span></div>
+        </div>
+      </div>
+
+      <!-- Pane 2 -->
+      <div class="term">
+        <div class="term-h">
+          <span class="branch">fix/login-token</span>
+          <span class="badge agent">claude · backend</span>
+          <span class="badge cont iso">db isolado :5433</span>
+          <span class="spacer"></span>
+          <span class="icn">⊟</span><span class="icn">⊞</span><span class="icn">✕</span>
+        </div>
+        <div class="term-body">
+          <div class="c-comment">● Encontrei a causa: refresh token expira cedo.</div>
+          <div class="c-orange">⏺ Quer que eu altere o TTL para 7 dias?</div>
+          <div class="c-comment">  1. Sim, aplicar</div>
+          <div class="c-comment">  2. Não, manter</div>
+          <div style="margin-top:6px" class="c-yellow">⠿ aguardando sua resposta…</div>
+        </div>
+      </div>
+
+      <!-- Pane 3 -->
+      <div class="term">
+        <div class="term-h">
+          <span class="branch">chore/upgrade-deps</span>
+          <span class="badge agent">claude · frontend</span>
+          <span class="badge cont">vite compartilhado</span>
+          <span class="spacer"></span>
+          <span class="icn">⊟</span><span class="icn">⊞</span><span class="icn">✕</span>
+        </div>
+        <div class="term-body">
+          <div class="c-purple">⏺ Bash</div> <span class="c-comment">npm run build</span>
+          <div class="c-cyan">  vite v5.2 building for production…</div>
+          <div class="c-green">  ✓ 1423 modules transformed</div>
+          <div class="c-comment">  dist/assets/index-9f2.js  214 kB</div>
+          <div class="c-green">  ✓ built in 6.1s</div>
+          <div style="margin-top:6px" class="prompt">claude&gt; <span class="c-comment">rodando lint…</span> <span class="cursor"></span></div>
+        </div>
+      </div>
+
+      <!-- Pane 4 -->
+      <div class="term">
+        <div class="term-h">
+          <span class="branch">feat/relatorios-pdf</span>
+          <span class="badge agent">claude · backend</span>
+          <span class="badge cont">db compartilhado</span>
+          <span class="spacer"></span>
+          <span class="icn">⊟</span><span class="icn">⊞</span><span class="icn">✕</span>
+        </div>
+        <div class="term-body">
+          <div class="c-green">✓ Tudo pronto.</div>
+          <div class="c-purple">⏺ Bash</div> <span class="c-comment">gh pr create --fill</span>
+          <div class="c-cyan">  https://github.com/livon/saude/pull/482</div>
+          <div class="c-comment">  ↑ 7 commits · +312 −41</div>
+          <div style="margin-top:6px" class="c-comment">● Posso seguir pro próximo card?</div>
+          <div class="prompt" style="margin-top:4px">claude&gt; <span class="cursor"></span></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Status bar -->
+  <div class="statusbar">
+    <span><span class="k">⎇</span> 4 worktrees</span>
+    <span><span class="k">◳</span> grid 2×2</span>
+    <span><span class="k">⊞</span> compose: <span class="pill">shared</span></span>
+    <div class="spacer"></div>
+    <span><span class="k">C-Space n</span> nova</span>
+    <span><span class="k">C-Space hjkl</span> mover</span>
+    <span><span class="k">C-Space z</span> zoom</span>
+  </div>
+
+</div>
+</body>
+</html>
