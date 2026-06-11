@@ -457,14 +457,19 @@ class ArduisWindow(Adw.ApplicationWindow):
         model = self._workspace_layout(sid)
 
         # Kill the closed terminal's process group (no orphan) and forget its
-        # TerminalRecord so RAM/teardown no longer track it.
-        session = self._store.get(sid)
-        if session is not None:
-            record = next((t for t in session.terminals if t.term_id == tid), None)
-            if record is not None:
-                if record.pid:
-                    self._teardown_pgid(record.pid)
-                session.terminals.remove(record)
+        # TerminalRecord so RAM/teardown no longer track it. The record lives in
+        # one of the task's repos' terminal lists (the N-repo model).
+        task = self._store.get(sid)
+        if task is not None:
+            for repo in task.repos:
+                record = next(
+                    (t for t in repo.terminals if t.term_id == tid), None
+                )
+                if record is not None:
+                    if record.pid:
+                        self._teardown_pgid(record.pid)
+                    repo.terminals.remove(record)
+                    break
 
         # Drop the terminal from the layout tree + widget maps.
         model.close_leaf(tid)
@@ -582,18 +587,20 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._row_by_sid.clear()
         self._subline_by_sid.clear()
 
-        # Pinned main row (D-07 revised): the repo's main-checkout scratch shell,
-        # not a session. Titled with the repo name so you see which repo you're in.
-        main_title = self._repo_name or "main"
+        # Pinned project row (D-12): ONE terminal at the project root, not a task.
+        # Title = the project name; subline = "<project> · zsh".
+        main_title = self._project_name or "main"
         self._listbox.append(
-            self._make_row(_MAIN_SID, main_title, "main · zsh", active=True)
+            self._make_row(
+                _MAIN_SID, main_title, f"{main_title} · zsh", active=True
+            )
         )
 
-        # One row per worktree session.
-        for session in self._store.all():
-            active = session.state == SessionState.ACTIVE
+        # One row per Task (a branch across N repos). The row sid is the task_id.
+        for task in self._store.all():
+            active = task.state == SessionState.ACTIVE
             self._listbox.append(
-                self._make_row(session.session_id, session.branch, "claude · —", active=active)
+                self._make_row(task.task_id, task.branch, "claude · —", active=active)
             )
 
         # Rebuilding discards the old selection; restore it to the visible
@@ -865,8 +872,8 @@ class ArduisWindow(Adw.ApplicationWindow):
         main_row = self._row_by_sid.get(_MAIN_SID)
         if main_row is not None:
             rows.append(main_row)
-        for session in self._store.all():
-            row = self._row_by_sid.get(session.session_id)
+        for task in self._store.all():
+            row = self._row_by_sid.get(task.task_id)
             if row is not None:
                 rows.append(row)
         return rows
@@ -1404,18 +1411,21 @@ class ArduisWindow(Adw.ApplicationWindow):
         are skipped (Pitfall 3) and per-pid errors are swallowed inside
         ``group_rss_kb``. Returns ``SOURCE_CONTINUE`` so the timeout keeps firing.
         """
-        for session in self._store.all():
-            if session.state != SessionState.ACTIVE:
+        for task in self._store.all():
+            if task.state != SessionState.ACTIVE:
                 continue  # skip hibernated (Pitfall 3)
-            # D-10: a worktree's RAM is the SUM of all its terminal process groups.
+            # D-10: a task's RAM is the SUM of every repo's every terminal group.
+            # (Per-repo grouping in the subline is Plan 03; here just iterate the
+            # new repos[*].terminals shape and surface one task total.)
             total = 0
-            for t in session.terminals:
-                if t.pgid is None:
-                    continue  # not-yet-spawned terminal
-                t.rss_kb = resource_monitor.group_rss_kb(t.pgid)
-                if t.rss_kb:
-                    total += t.rss_kb
-            label = self._subline_by_sid.get(session.session_id)
+            for repo in task.repos:
+                for t in repo.terminals:
+                    if t.pgid is None:
+                        continue  # not-yet-spawned terminal
+                    t.rss_kb = resource_monitor.group_rss_kb(t.pgid)
+                    if t.rss_kb:
+                        total += t.rss_kb
+            label = self._subline_by_sid.get(task.task_id)
             if label is not None:
                 label.set_text(
                     f"claude · {resource_monitor.format_ram_kb(total or None)}"
@@ -1427,14 +1437,15 @@ class ArduisWindow(Adw.ApplicationWindow):
         """Render ``N agentes ativos · <total> RAM`` (active count in green)."""
         if self._footer_label is None:
             return
-        sessions = self._store.all()
-        n = caps.active_count(sessions)
-        # D-10: aggregate sums every active worktree's terminal RAM.
+        tasks = self._store.all()
+        n = caps.active_count(tasks)
+        # D-10: aggregate sums every active task's every repo's terminal RAM.
         total = sum(
             t.rss_kb
-            for s in sessions
-            if s.state == SessionState.ACTIVE
-            for t in s.terminals
+            for task in tasks
+            if task.state == SessionState.ACTIVE
+            for r in task.repos
+            for t in r.terminals
             if t.rss_kb is not None
         )
         total_str = resource_monitor.format_ram_kb(total if total else None)
@@ -1548,20 +1559,14 @@ class ArduisWindow(Adw.ApplicationWindow):
 
     # --- helpers: session lookup + user messaging ---------------------------
 
-    def _session_for_worktree_dir(self, path: str) -> WorktreeSession | None:
-        """Return the tracked session whose worktree_dir matches ``path``."""
+    def _session_for_worktree_dir(self, path: str) -> Task | None:
+        """Return the Task owning a repo whose worktree_dir matches ``path``."""
         norm = path.rstrip("/")
-        for s in self._store.all():
-            if s.worktree_dir.rstrip("/") == norm:
-                return s
+        for task in self._store.all():
+            for repo in task.repos:
+                if repo.worktree_dir.rstrip("/") == norm:
+                    return task
         return None
-
-    def _abort_already_checked_out(self, branch: str, path: str) -> None:
-        """D-07: clear abort message — NEVER --force."""
-        self._show_error(
-            f"A branch '{branch}' já está em uso",
-            f"Ela está em uso em {path}. Escolha outra branch.",
-        )
 
     def _show_error(self, heading: str, body: str) -> None:
         dialog = Adw.AlertDialog(heading=heading, body=body or "")
@@ -1582,8 +1587,8 @@ class ArduisWindow(Adw.ApplicationWindow):
         resume.connect("activate", self._on_resume)
         self.add_action(resume)
 
-    def _menu_session(self) -> WorktreeSession | None:
-        """Resolve the right-clicked row back to its tracked session (D-08)."""
+    def _menu_session(self) -> Task | None:
+        """Resolve the right-clicked row back to its tracked Task (D-08)."""
         if self._menu_target_sid is None:
             return None
         return self._store.get(self._menu_target_sid)
@@ -1598,13 +1603,13 @@ class ArduisWindow(Adw.ApplicationWindow):
         rather than the stale tree. If the hibernated worktree IS the visible
         workspace, fall back to the main workspace (Open Question 2 resolution).
         """
-        session = self._menu_session()
-        if session is None or session.state == SessionState.HIBERNATED:
+        task = self._menu_session()
+        if task is None or task.state == SessionState.HIBERNATED:
             return
-        sid = session.session_id
+        sid = task.task_id
 
-        self._teardown_session_terminals(session)  # kill every group (Pitfall 3/5)
-        hibernate_fields(session)  # GTK-free: state=HIBERNATED, all pid/pgid=None
+        self._teardown_session_terminals(task)  # kill every group (Pitfall 3/5)
+        hibernate_fields(task)  # GTK-free: state=HIBERNATED, all pid/pgid=None
 
         # D-09: discard the worktree's saved layout so resume rebuilds the default,
         # not the saved tree (extra splits are not restored).
@@ -1625,58 +1630,61 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._rebuild_sidebar()    # dim/grey-dot the row (D-08, not a tab badge)
 
     def _on_resume(self, _action, _param) -> None:
-        """D-09: rebuild the DEFAULT 2-terminal layout (agent + shell), not a reattach.
+        """D-09: rebuild the DEFAULT 2×N layout (agent + shell per repo), not a reattach.
 
-        Resume rebuilds the worktree exactly like create (D-09): a fresh 2-terminal
-        LayoutModel (agent t0 left + shell t1 right, split "h"), both terminals made
-        via the palette factory, the worktree made the visible workspace, then BOTH
-        spawned eagerly — only the agent is fed ``AGENT_FEED``. Earlier extra splits
-        are NOT restored.
+        Resume rebuilds the task like create (D-09): fresh per-repo terminal
+        records, a fresh 2×N LayoutModel (one column per repo: agent t0 over shell
+        t1), terminals made via the palette factory, the task made the visible
+        workspace, then every terminal spawned eagerly — only agents are fed
+        ``AGENT_FEED``. Earlier extra splits are NOT restored.
+
+        # Plan 03: re-target per-repo default — full hibernate/resume correctness
+        # (per-task RAM grouping, startup scan, layout polish) lands in Plan 03;
+        # this rebuild keeps resume valid against the Task/RepoCheckout model.
         """
-        session = self._menu_session()
-        if session is None or session.state == SessionState.ACTIVE:
+        task = self._menu_session()
+        if task is None or task.state == SessionState.ACTIVE:
             return
-        sid = session.session_id
-        branch = session.branch
+        sid = task.task_id
+        branch = task.branch
 
-        # Fresh default terminal records (replaces the hibernated, pgid-cleared list).
-        session.terminals = default_terminals(sid)  # [agent t0, shell t1]
-        session.state = SessionState.ACTIVE
+        # Fresh per-repo terminal records (replaces the hibernated, pgid-cleared
+        # lists) so spawn callbacks can write pid/pgid back onto them.
+        repo_names = [r.repo_name for r in task.repos]
+        for repo in task.repos:
+            repo.terminals = default_repo_terminals(branch, repo.repo_name)
+        task.state = SessionState.ACTIVE
 
-        agent_tid = f"{sid}:t0"
-        shell_tid = f"{sid}:t1"
-
-        # Build a fresh default 2-terminal tree: left agent, right shell (D-02/D-09).
+        # Build a fresh 2×N tree: one column per repo (agent over shell — D-02/D-09).
         model = LayoutModel()
-        model.root = LeafNode(agent_tid)
-        model.focused_id = agent_tid
-        model.touch(agent_tid)
-        model.split(agent_tid, shell_tid, "h")
-        model.focused_id = agent_tid  # refocus the agent (split focuses the new leaf)
-        model.touch(agent_tid)
+        prev_top: str | None = None
+        for name in repo_names:
+            agent_tid = f"{branch}:{name}:t0"
+            shell_tid = f"{branch}:{name}:t1"
+            if model.root is None:
+                model.root = LeafNode(agent_tid)
+                model.focused_id = agent_tid
+                model.touch(agent_tid)
+            else:
+                model.split(prev_top, agent_tid, "h")
+            model.split(agent_tid, shell_tid, "v")
+            prev_top = agent_tid
+            self._make_repo_leaf(agent_tid, branch, "claude")
+            self._make_repo_leaf(shell_tid, branch, "zsh")
+        if repo_names:
+            first_agent = f"{branch}:{repo_names[0]}:t0"
+            model.focused_id = first_agent
+            model.touch(first_agent)
         self._layouts[sid] = model
 
-        # Two fresh terminals via the palette factory (T-04 — branch via set_text).
-        agent_terminal = self._make_terminal()
-        agent_terminal.connect("child-exited", self._on_worktree_term_exited)
-        agent_leaf = self._make_leaf(agent_tid, branch, agent_terminal, badge_label="claude")
-        self._leaf_by_sid[agent_tid] = agent_leaf
-        self._term_by_sid[agent_tid] = agent_terminal
-
-        shell_terminal = self._make_terminal()
-        shell_terminal.connect("child-exited", self._on_worktree_term_exited)
-        shell_leaf = self._make_leaf(shell_tid, branch, shell_terminal, badge_label="zsh")
-        self._leaf_by_sid[shell_tid] = shell_leaf
-        self._term_by_sid[shell_tid] = shell_terminal
-
-        # Make the resumed worktree the visible workspace and reflect it.
+        # Make the resumed task the visible workspace and reflect it.
         self._active_workspace_sid = sid
         self._reflect_layout()
         self._rebuild_sidebar()
 
-        # Spawn BOTH eagerly (D-09): agent fed claude, shell plain.
-        self._spawn_into(agent_terminal, session.worktree_dir, session, agent_tid, kind="agent")
-        self._spawn_into(shell_terminal, session.worktree_dir, session, shell_tid, kind="shell")
+        # Spawn every terminal eagerly (D-09): agents fed claude, shells plain.
+        for repo in task.repos:
+            self._spawn_repo_terminals(task, repo.repo_name, repo.worktree_dir)
 
     # --- teardown (RAM-01, D-11/D-13) ---------------------------------------
 
@@ -1689,18 +1697,18 @@ class ArduisWindow(Adw.ApplicationWindow):
         except ProcessLookupError:
             pass  # already gone
 
-    def _teardown_session_terminals(self, session: WorktreeSession) -> None:
-        """Tear down EVERY terminal's process group for a worktree (Pitfall 3/4).
+    def _teardown_session_terminals(self, task: Task) -> None:
+        """Tear down EVERY terminal's process group across EVERY repo (Pitfall 3/4).
 
-        The N-terminal model means a worktree owns a list of terminals (agent +
-        shell + any splits); each carries its own pid. Killing only ``terminals[0]``
-        would orphan the split agents and leak RAM (D-08). Plan 03 adds the rest of
-        the hibernate/resume re-targeting; this iterates the groups so no terminal
-        is forgotten by the existing hibernate/close call sites.
+        A task owns N repos, each owning its own terminals (agent + shell + any
+        splits); each carries its own pid. Killing only one repo's terminals would
+        orphan the others and leak RAM (D-08). Iterating ``task.repos[*].terminals``
+        ensures no group is forgotten by the hibernate/close/exit call sites.
         """
-        for t in session.terminals:
-            if t.pid:
-                self._teardown_pgid(t.pid)
+        for repo in task.repos:
+            for t in repo.terminals:
+                if t.pid:
+                    self._teardown_pgid(t.pid)
 
     def _on_close_request(self, *_):
         """No-orphan teardown across ALL panes (D-13): scratch shell + sessions."""
