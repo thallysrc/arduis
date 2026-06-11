@@ -1066,143 +1066,206 @@ class ArduisWindow(Adw.ApplicationWindow):
         dialog.connect("response", _on_response)
         dialog.present(self)
 
-    # --- create flow (WT-01/WT-02/WT-03, D-04/D-05/D-07) --------------------
+    # --- create flow: per-repo chained sequence (D-01/D-02/D-08/D-09/D-13) --
 
-    def _create_worktree(self, branch: str, existing: list[str]) -> None:
-        """Born-HEAD guard, porcelain pre-check (D-07), then base chain + add."""
-        kind = infer_new_vs_existing(branch, existing)
+    def _create_task(
+        self, branch: str, chosen_repos: list[str], existing_in_primary: list[str]
+    ) -> None:
+        """Materialize the task folder, build the 2×N workspace, kick the per-repo chain.
 
-        def _has_commit_done(hstatus, _hout, _herr):
-            if hstatus != 0:
-                # UAT: a freshly init'd repo (unborn HEAD) cannot host a worktree.
-                # Show a friendly message instead of git's "invalid reference: HEAD".
-                self._show_error(
-                    "Este repositório ainda não tem commits.",
-                    "Faça um commit antes de criar worktrees.",
-                )
-                return
-            self._continue_create_worktree(branch, kind)
-
-        run_git_async(
-            argv_repo_has_commit(self._repo_root), _has_commit_done, self._runner
-        )
-
-    def _continue_create_worktree(self, branch: str, kind: str) -> None:
-        """Porcelain pre-check (D-07), then default-branch chain + add (async)."""
-
-        def _porcelain_done(status, out, _err):
-            parsed = parse_worktrees(out) if status == 0 else []
-            path = branch_checked_out_path(branch, parsed)
-            if path:
-                # D-07: swap to the tracked worktree's workspace if arduis owns it...
-                session = self._session_for_worktree_dir(path)
-                if session is not None:
-                    row = self._row_by_sid.get(session.session_id)
-                    if row is not None:
-                        self._listbox.select_row(row)
-                    self._swap_workspace(session.session_id)
-                    return
-                # ...else it's the main checkout or an untracked worktree: abort.
-                self._abort_already_checked_out(branch, path)
-                return
-            # Not checked out anywhere — resolve the base branch, then add.
-            self._resolve_base_then_add(branch, kind)
-
-        run_git_async(
-            argv_worktree_list_porcelain(self._repo_root), _porcelain_done, self._runner
-        )
-
-    def _resolve_base_then_add(self, branch: str, kind: str) -> None:
-        """Default-branch chain (D-04): origin/HEAD -> local HEAD fallback."""
-        repo = self._repo_root
-
-        def _origin_done(status, out, _err):
-            if status == 0 and out.strip():
-                base = parse_default_branch(out)
-                self._open_and_add(branch, kind, base)
-                return
-
-            def _local_done(lstatus, lout, _lerr):
-                base = lout.strip() if lstatus == 0 else "HEAD"
-                self._open_and_add(branch, kind, base)
-
-            run_git_async(argv_default_branch_local(repo), _local_done, self._runner)
-
-        run_git_async(argv_default_branch_via_origin(repo), _origin_done, self._runner)
-
-    def _open_and_add(self, branch: str, kind: str, base: str) -> None:
-        """Born-with-2-terminals workspace (D-02/D-03), then worktree add + spawn.
-
-        Phase 03.1: a new worktree owns its OWN LayoutModel with two terminals side
-        by side — left agent (``claude`` fed) + right plain shell. After ``git
-        worktree add`` succeeds, BOTH terminals spawn eagerly (D-03); only the agent
-        is fed ``AGENT_FEED``.
+        D-08/D-09: a task is one branch across N chosen member repos. We FIRST
+        create the task folder and materialize the relative symlinks (so relative
+        compose build-contexts/bind-mounts resolve before any worktree add —
+        Pitfall 4), then build a 2×N workspace (one COLUMN per repo: agent over
+        shell, D-01/D-02), then run a per-repo CHAINED ``run_git_async`` sequence
+        (RESEARCH Pattern 2 — never threads/asyncio). Best-effort: a repo that
+        aborts is skipped and surfaced; succeeded repos are kept (D-10/OQ2).
         """
-        repo = self._repo_root
-        wt_dir = worktree_dir_for(repo, branch)
+        root = self._project_root
+        if not root:
+            return
+        task_dir = task_dir_for(root, branch)
+        os.makedirs(task_dir, exist_ok=True)
 
-        agent_tid = f"{branch}:t0"
-        shell_tid = f"{branch}:t1"
+        # Materialize the mirror symlinks FIRST (D-09, before worktree add so
+        # relative build contexts resolve — Pitfall 4). Best-effort: collect
+        # failures and surface them at the end; one bad symlink never aborts the
+        # whole task (D-10/OQ2). Targets are RELATIVE (relocatable, T-03.2-05).
+        symlink_errors: list[str] = []
+        for src, dst in symlink_plan(root, task_dir, set(chosen_repos)):
+            if os.path.lexists(dst):
+                continue
+            try:
+                os.symlink(os.path.relpath(src, task_dir), dst)
+            except OSError as exc:
+                symlink_errors.append(f"{os.path.basename(dst)}: {exc}")
 
-        # Build the worktree's own 2-terminal tree: left agent, right shell (D-02).
+        # Register the Task NOW (so the sidebar row appears); repos get appended as
+        # each succeeds (best-effort partial creation, OQ2).
+        task = Task(task_id=branch, branch=branch, task_dir=task_dir, repos=[])
+        self._store.add(task)
+
+        # Build the 2×N workspace: one COLUMN per repo (agent t0 over shell t1,
+        # vertical split within a column; columns joined horizontally — D-01/D-02).
+        # For a 1-repo task this is exactly the 03.1 default (agent over shell), via
+        # the identical code path (criterion 5 — no len==1 branch).
         model = self._workspace_layout(branch)
-        model.root = LeafNode(agent_tid)
-        model.focused_id = agent_tid
-        model.touch(agent_tid)
-        model.split(agent_tid, shell_tid, "h")  # left agent, right shell (horizontal)
-        # split() sets focused to the new (shell) leaf — refocus the agent (left).
-        model.focused_id = agent_tid
-        model.touch(agent_tid)
+        prev_top: str | None = None  # the previous column's TOP (agent) leaf id
+        for repo in chosen_repos:
+            agent_tid = f"{branch}:{repo}:t0"
+            shell_tid = f"{branch}:{repo}:t1"
+            if model.root is None:
+                model.root = LeafNode(agent_tid)
+                model.focused_id = agent_tid
+                model.touch(agent_tid)
+            else:
+                # New column: split the previous column's agent horizontally.
+                model.split(prev_top, agent_tid, "h")
+            # Within the column: shell below the agent (vertical split).
+            model.split(agent_tid, shell_tid, "v")
+            prev_top = agent_tid
 
-        # Two terminals via the palette factory (T-04 — branch rendered with set_text).
-        agent_terminal = self._make_terminal()
-        agent_terminal.connect("child-exited", self._on_worktree_term_exited)
-        agent_leaf = self._make_leaf(agent_tid, branch, agent_terminal, badge_label="claude")
-        self._leaf_by_sid[agent_tid] = agent_leaf
-        self._term_by_sid[agent_tid] = agent_terminal
+            # Build both VTE leaves up front (badge "claude" agent / "zsh" shell).
+            self._make_repo_leaf(agent_tid, branch, "claude")
+            self._make_repo_leaf(shell_tid, branch, "zsh")
 
-        shell_terminal = self._make_terminal()
-        shell_terminal.connect("child-exited", self._on_worktree_term_exited)
-        shell_leaf = self._make_leaf(shell_tid, branch, shell_terminal, badge_label="zsh")
-        self._leaf_by_sid[shell_tid] = shell_leaf
-        self._term_by_sid[shell_tid] = shell_terminal
-
-        # Make the new worktree the visible workspace (D-04).
+        # Focus the first repo's agent and make the task the visible workspace.
+        first_agent = f"{branch}:{chosen_repos[0]}:t0"
+        model.focused_id = first_agent
+        model.touch(first_agent)
         self._active_workspace_sid = branch
         self._reflect_layout()
 
-        if kind == "new":
-            argv = argv_worktree_add_new(repo, branch, wt_dir, base)
-        else:
-            argv = argv_worktree_add_existing(repo, wt_dir, branch)
+        # Per-repo errors accumulate across the chain; surfaced once at the end.
+        repo_errors: list[str] = list(symlink_errors)
 
-        def _add_done(status, _out, err):
-            if status != 0:
-                # Creation failed — drop BOTH leaves; surface the git error.
-                self._show_error("Não foi possível criar a worktree.", err)
-                model.close_leaf(agent_tid)
-                model.close_leaf(shell_tid)
-                self._leaf_by_sid.pop(agent_tid, None)
-                self._leaf_by_sid.pop(shell_tid, None)
-                self._term_by_sid.pop(agent_tid, None)
-                self._term_by_sid.pop(shell_tid, None)
-                # Fall back to the main workspace so the canvas isn't empty.
-                self._swap_workspace(_MAIN_SID)
-                return
-            session = WorktreeSession(
-                session_id=branch,
-                branch=branch,
-                worktree_dir=wt_dir,
-                repo_root=repo,
-                terminals=default_terminals(branch),  # [agent t0, shell t1]
-            )
-            self._store.add(session)
+        # Kick the per-repo chain (one repo at a time, fully async — Pattern 2).
+        self._add_repo(task, chosen_repos, 0, branch, repo_errors)
+
+    def _make_repo_leaf(self, tid: str, branch: str, badge: str) -> None:
+        """Build + register one repo terminal's VTE leaf (palette factory, T-04)."""
+        terminal = self._make_terminal()
+        terminal.connect("child-exited", self._on_worktree_term_exited)
+        leaf = self._make_leaf(tid, branch, terminal, badge_label=badge)
+        self._leaf_by_sid[tid] = leaf
+        self._term_by_sid[tid] = terminal
+
+    def _add_repo(
+        self,
+        task: Task,
+        repos: list[str],
+        i: int,
+        branch: str,
+        repo_errors: list[str],
+    ) -> None:
+        """Resolve + add ONE repo's worktree, then advance to repo ``i+1`` (D-13).
+
+        Per-repo chained async (RESEARCH Pattern 2): born-HEAD guard → porcelain
+        pre-check → branch list → base detection → ``resolve_repo_add`` → ``git
+        worktree add``. Each repo resolves INDEPENDENTLY (best-effort, OQ2); an
+        ``("abort", reason)`` (branch checked out elsewhere — NEVER ``--force``,
+        D-13) is collected and the chain advances. After the last repo any
+        accumulated per-repo errors are surfaced once (D-10).
+        """
+        if i >= len(repos):
+            # Chain done — finalize: surface any errors, refresh the sidebar.
+            if repo_errors:
+                self._show_error(
+                    "Algumas repos não foram criadas", "\n".join(repo_errors)
+                )
             self._rebuild_sidebar()
-            # D-03: spawn BOTH eagerly. Agent is fed claude; shell stays plain.
-            self._spawn_into(agent_terminal, wt_dir, session, agent_tid, kind="agent")
-            self._spawn_into(shell_terminal, wt_dir, session, shell_tid, kind="shell")
+            term = self._term_by_sid.get(self._active_layout().focused_id) \
+                if self._active_layout() is not None else None
+            if term is not None:
+                term.grab_focus()
+            return
 
-        run_git_async(argv, _add_done, self._runner)
+        name = repos[i]
+        repo_path = self._member_repo_path(name)
+        wt_dir = repo_worktree_dir(task.task_dir, name)
+
+        def _advance() -> None:
+            self._add_repo(task, repos, i + 1, branch, repo_errors)
+
+        def _has_commit_done(hstatus, _hout, _herr):
+            if hstatus != 0:
+                # Unborn HEAD: this repo cannot host a worktree — skip it.
+                repo_errors.append(
+                    f"{name}: o repositório ainda não tem commits."
+                )
+                _advance()
+                return
+            run_git_async(
+                argv_worktree_list_porcelain(repo_path), _porcelain_done, self._runner
+            )
+
+        def _porcelain_done(status, out, _err):
+            parsed = parse_worktrees(out) if status == 0 else []
+
+            def _branches_done(bstatus, bout, _berr):
+                existing = parse_local_branches(bout) if bstatus == 0 else []
+
+                def _resolve_with_base(base: str) -> None:
+                    kind, payload = resolve_repo_add(
+                        repo_path, branch, existing, parsed, base, wt_dir
+                    )
+                    if kind == "abort":
+                        repo_errors.append(f"{name}: {payload}")
+                        _advance()
+                        return
+
+                    def _add_done(astatus, _aout, aerr):
+                        if astatus != 0:
+                            repo_errors.append(f"{name}: {aerr}")
+                            _advance()
+                            return
+                        task.repos.append(
+                            RepoCheckout(
+                                repo_name=name,
+                                worktree_dir=wt_dir,
+                                branch=branch,
+                                terminals=default_repo_terminals(branch, name),
+                            )
+                        )
+                        self._spawn_repo_terminals(task, name, wt_dir)
+                        _advance()
+
+                    run_git_async(payload, _add_done, self._runner)
+
+                # Base detection (origin/HEAD → local HEAD fallback) only matters
+                # for the "new" case, but resolve_repo_add ignores it otherwise.
+                def _origin_done(ostatus, oout, _oerr):
+                    if ostatus == 0 and oout.strip():
+                        _resolve_with_base(parse_default_branch(oout))
+                        return
+
+                    def _local_done(lstatus, lout, _lerr):
+                        _resolve_with_base(lout.strip() if lstatus == 0 else "HEAD")
+
+                    run_git_async(
+                        argv_default_branch_local(repo_path), _local_done, self._runner
+                    )
+
+                run_git_async(
+                    argv_default_branch_via_origin(repo_path), _origin_done, self._runner
+                )
+
+            run_git_async(
+                argv_list_local_branches(repo_path), _branches_done, self._runner
+            )
+
+        run_git_async(argv_repo_has_commit(repo_path), _has_commit_done, self._runner)
+
+    def _spawn_repo_terminals(self, task: Task, repo_name: str, wt_dir: str) -> None:
+        """Spawn one repo's agent (fed claude) + shell (plain) eagerly (D-03)."""
+        agent_tid = f"{task.branch}:{repo_name}:t0"
+        shell_tid = f"{task.branch}:{repo_name}:t1"
+        agent = self._term_by_sid.get(agent_tid)
+        shell = self._term_by_sid.get(shell_tid)
+        if agent is not None:
+            self._spawn_into(agent, wt_dir, task, agent_tid, kind="agent")
+        if shell is not None:
+            self._spawn_into(shell, wt_dir, task, shell_tid, kind="shell")
 
     def _split_active_pane(self, focused_tid: str) -> None:
         """Split the active workspace, spawning a new agent terminal beside ``focused_tid`` (D-05).
@@ -1215,14 +1278,24 @@ class ArduisWindow(Adw.ApplicationWindow):
         if sid is None:
             return
         model = self._workspace_layout(sid)
-        new_tid = self._next_term_id(sid)
 
-        session = self._store.get(sid)
-        cwd = session.worktree_dir if session is not None else (self._repo_root or GLib.get_home_dir())
+        task = self._store.get(sid)
+        # The split lands in the focused terminal's REPO (its worktree dir). The
+        # focused id is `{task}:{repo}:tN`; the repo segment maps the split to the
+        # right RepoCheckout (its worktree dir + its terminal list). On the pinned
+        # main workspace there is no Task — spawn into the project root, untracked.
+        repo = self._repo_for_term_id(task, focused_tid) if task is not None else None
+        if task is not None and repo is not None:
+            cwd = repo.worktree_dir
+            new_tid = self._next_repo_term_id(task.branch, repo.repo_name)
+            label = task.branch
+        else:
+            cwd = self._repo_root or GLib.get_home_dir()
+            new_tid = self._next_term_id(sid)
+            label = self._repo_name or "main"
 
         terminal = self._make_terminal()
         terminal.connect("child-exited", self._on_worktree_term_exited)
-        label = session.branch if session is not None else (self._repo_name or "main")
         leaf = self._make_leaf(new_tid, label, terminal, badge_label="claude")
         self._leaf_by_sid[new_tid] = leaf
         self._term_by_sid[new_tid] = terminal
@@ -1230,17 +1303,30 @@ class ArduisWindow(Adw.ApplicationWindow):
         model.split(focused_tid, new_tid, "h")
         self._reflect_layout()
 
-        if session is not None:
-            # Track the new split terminal on the session so RAM/teardown see it.
-            session.terminals.append(TerminalRecord(new_tid, "agent"))
-            self._spawn_into(terminal, cwd, session, new_tid, kind="agent")
+        if task is not None and repo is not None:
+            # Track the split terminal on its repo so RAM/teardown see it.
+            repo.terminals.append(TerminalRecord(new_tid, "agent", repo_name=repo.repo_name))
+            self._spawn_into(terminal, cwd, task, new_tid, kind="agent")
         else:
-            # main workspace has no store session — spawn plain via the agent path
-            # but with no TerminalRecord to write (cwd is repo root / $HOME).
+            # main workspace has no store task — spawn plain, no record to write.
             self._spawn_into(terminal, cwd, None, new_tid, kind="agent")
 
+    def _repo_for_term_id(self, task: Task, tid: str) -> RepoCheckout | None:
+        """Find the RepoCheckout owning ``tid`` (matches any of its terminals)."""
+        return next(
+            (r for r in task.repos if any(t.term_id == tid for t in r.terminals)),
+            None,
+        )
+
+    def _next_repo_term_id(self, branch: str, repo_name: str) -> str:
+        """Next free ``{branch}:{repo}:tN`` terminal id within a task's repo."""
+        n = 0
+        while f"{branch}:{repo_name}:t{n}" in self._term_by_sid:
+            n += 1
+        return f"{branch}:{repo_name}:t{n}"
+
     def _next_term_id(self, sid: str) -> str:
-        """Return the next free ``{sid}:tN`` terminal id for worktree ``sid``."""
+        """Return the next free ``{sid}:tN`` terminal id for workspace ``sid``."""
         n = 0
         while f"{sid}:t{n}" in self._term_by_sid:
             n += 1
@@ -1252,20 +1338,20 @@ class ArduisWindow(Adw.ApplicationWindow):
         self,
         terminal: Vte.Terminal,
         cwd: str,
-        session: WorktreeSession | None,
+        task: Task | None,
         term_id: str,
         kind: str = "agent",
     ) -> None:
         """Spawn zsh -l -i in ``cwd``; feed AGENT_FEED only when ``kind == "agent"``.
 
-        Writes the spawned ``pid``/``pgid`` onto the matching ``TerminalRecord`` in
-        ``session.terminals`` (found by ``term_id``). A plain ``shell`` terminal
-        (D-02 right pane) is NOT fed ``claude``.
+        Writes the spawned ``pid``/``pgid`` onto the matching ``TerminalRecord``
+        found across ``task.repos[*].terminals`` by ``term_id``. A plain ``shell``
+        terminal (D-02) is NOT fed ``claude``.
         """
         argv, envv = build_worktree_spawn(self._runner)
         terminal.spawn_async(
             Vte.PtyFlags.DEFAULT,
-            cwd,                  # per-worktree working directory (WT-03)
+            cwd,                  # per-repo worktree working directory (WT-03)
             argv,                 # ["zsh", "-l", "-i"]
             envv,                 # ["TERM=xterm-256color"]
             GLib.SpawnFlags.DEFAULT,
@@ -1273,18 +1359,25 @@ class ArduisWindow(Adw.ApplicationWindow):
             None,                 # child_setup_data
             -1,                   # timeout (-1 = none)
             None,                 # cancellable
-            self._make_wt_spawn_cb(session, term_id, kind),
+            self._make_wt_spawn_cb(task, term_id, kind),
         )
         terminal.grab_focus()
 
-    def _make_wt_spawn_cb(self, session: WorktreeSession | None, term_id: str, kind: str):
+    def _make_wt_spawn_cb(self, task: Task | None, term_id: str, kind: str):
         def _on_wt_spawned(terminal, pid, error):
             if error is not None or pid == -1:
                 return  # D-09: no banner; the pane stays a usable shell
-            # Write pid/pgid onto the matching TerminalRecord (N-terminal model).
-            if session is not None:
+            # Write pid/pgid onto the matching TerminalRecord across ALL of the
+            # task's repos (the N-repo × N-terminal model — OQ1 field lookup).
+            if task is not None:
                 record = next(
-                    (t for t in session.terminals if t.term_id == term_id), None
+                    (
+                        t
+                        for r in task.repos
+                        for t in r.terminals
+                        if t.term_id == term_id
+                    ),
+                    None,
                 )
                 if record is not None:
                     record.pid = pid
