@@ -9,8 +9,8 @@ A ``Task`` owns N ``RepoCheckout``s; each ``RepoCheckout`` owns its own list of
 ``TerminalRecord``s (default 2 — one ``agent`` running ``claude`` + one plain
 ``shell``, D-01). A 1-repo project is a ``Task`` with exactly ONE ``RepoCheckout``
 through the identical shape — no special-case (success criterion 5). This
-REPLACES the old single-worktree ``WorktreeSession`` (OQ3 — no two parallel
-models).
+REPLACES the old single-worktree session model (OQ3 — no two parallel models;
+the prior ``Worktree``-``Session`` type is gone).
 
 Decisions:
 - OQ1: terminal ids are structured ``{task_id}:{repo_name}:tN`` and each
