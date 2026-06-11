@@ -723,9 +723,22 @@ class ArduisWindow(Adw.ApplicationWindow):
             term.grab_focus()
 
     def _on_row_activated(self, _listbox, row: Gtk.ListBoxRow) -> None:
-        """Row activation swaps the entire workspace to that worktree (D-04/D-07)."""
+        """Row activation swaps the entire workspace to that worktree (D-04/D-07).
+
+        A HIBERNATED task has no layout/terminals — swapping to it would show a
+        blank canvas. Activating its row therefore RESUMES it (rebuild default
+        layout + spawn, D-09), gated by the active-task cap like create (RAM-02/
+        D-14). The pinned main row and active tasks swap directly as before.
+        """
         sid = self._sid_by_row.get(row)
         if sid is None:
+            return
+        task = self._store.get(sid)
+        if task is not None and task.state == SessionState.HIBERNATED:
+            if caps.at_cap(self._store.all()):
+                self._prompt_hibernate_then(lambda: self._resume_task(task))
+                return
+            self._resume_task(task)
             return
         self._swap_workspace(sid)
 
@@ -1834,6 +1847,17 @@ class ArduisWindow(Adw.ApplicationWindow):
         """
         task = self._menu_session()
         if task is None or task.state == SessionState.ACTIVE:
+            return
+        if caps.at_cap(self._store.all()):
+            # RAM-02/D-14: resuming counts toward the active-task cap exactly like
+            # creating — gate through the same hibernate-first prompt.
+            self._prompt_hibernate_then(lambda: self._resume_task(task))
+            return
+        self._resume_task(task)
+
+    def _resume_task(self, task: Task) -> None:
+        """Resume ``task``: rebuild default layout + eager spawn (shared, D-09)."""
+        if task.state == SessionState.ACTIVE:
             return
         branch = task.branch
 
