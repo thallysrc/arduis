@@ -85,5 +85,36 @@ def resolve_repo_add(repo_path, branch, existing_branches, parsed_worktrees, bas
         return ("abort", f"A branch '{branch}' já está em uso em {where}. Escolha outra branch.")
     kind = infer_new_vs_existing(branch, existing_branches)
     if kind == "new":
+        # T-03.2-14: git refs live in a directory namespace, so a branch `B` and a
+        # branch `E` collide when one is a path-prefix of the other across a `/`
+        # boundary (D/F conflict): `feat` (a ref FILE) blocks `feat/x` and vice
+        # versa. The slash itself is FINE (Jira `feat/MLK-1234` works); only an
+        # ACTUAL prefix-collision with an existing branch is rejected. Pre-detect
+        # it here so the user sees a clear pt-BR message instead of the raw git
+        # `fatal: cannot lock ref ...` leaking through.
+        conflict = _ref_namespace_conflict(branch, existing_branches)
+        if conflict is not None:
+            return (
+                "abort",
+                f"A branch '{conflict}' já existe e bloqueia '{branch}' "
+                f"(conflito de namespace de refs do git). Escolha outro nome.",
+            )
         return ("new", argv_worktree_add_new(repo_path, branch, worktree_dir, base))
     return ("existing", argv_worktree_add_existing(repo_path, worktree_dir, branch))
+
+
+def _ref_namespace_conflict(branch, existing_branches):
+    """Return an existing branch that D/F-collides with NEW ``branch``, else None.
+
+    Git stores refs as files under ``refs/heads/``; a branch name with a ``/`` is a
+    subdirectory. So ``feat`` (a file) and ``feat/x`` (a file inside a ``feat``
+    directory) cannot coexist. Two names collide iff one equals the other plus a
+    ``/...`` suffix — a true ref-namespace prefix, NOT a mere string prefix
+    (``feat``/``feature`` do NOT collide; ``feat``/``feat/x`` do).
+    """
+    for existing in existing_branches:
+        if existing == branch:
+            continue
+        if branch.startswith(existing + "/") or existing.startswith(branch + "/"):
+            return existing
+    return None

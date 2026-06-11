@@ -50,6 +50,65 @@ def test_resolve_existing_reusable():
     assert "--force" not in argv  # D-13 / T-03.2-03
 
 
+def test_resolve_abort_on_ref_namespace_prefix_conflict_new_under_existing():
+    # GAP 1: creating NEW branch `feat/MLK-1200-teste` while existing branch `feat`
+    # exists is a git D/F ref-namespace conflict (refs/heads/feat is a file, so
+    # refs/heads/feat/... cannot be created). Detect it in the pure function and
+    # abort with a CLEAR pt-BR reason instead of leaking the raw git fatal.
+    kind, reason = resolve_repo_add(
+        "/r/backend", "feat/MLK-1200-teste", existing_branches=["master", "feat"],
+        parsed_worktrees=[{"path": "/r/backend", "branch": "master"}],
+        base="master", worktree_dir="/r-tasks/feat-MLK-1200-teste/backend",
+    )
+    assert kind == "abort"
+    assert "feat" in reason
+    assert "feat/MLK-1200-teste" in reason
+    assert "namespace" in reason.lower()
+    assert isinstance(reason, str)
+    assert "--force" not in reason
+
+
+def test_resolve_abort_on_ref_namespace_prefix_conflict_existing_under_new():
+    # The reverse D/F conflict: creating NEW branch `feat` while existing branch
+    # `feat/pao` exists (refs/heads/feat/pao is a dir, so refs/heads/feat the file
+    # cannot be created). Same clean abort.
+    kind, reason = resolve_repo_add(
+        "/r/backend", "feat", existing_branches=["master", "feat/pao"],
+        parsed_worktrees=[{"path": "/r/backend", "branch": "master"}],
+        base="master", worktree_dir="/r-tasks/feat/backend",
+    )
+    assert kind == "abort"
+    assert "feat/pao" in reason
+    assert "feat" in reason
+    assert "namespace" in reason.lower()
+
+
+def test_resolve_no_false_namespace_conflict_on_shared_prefix_string():
+    # `feature` and `feat` share a string prefix but NOT a ref-namespace prefix
+    # (no `/` boundary) — must NOT be treated as a conflict.
+    kind, argv = resolve_repo_add(
+        "/r/backend", "feature", existing_branches=["master", "feat"],
+        parsed_worktrees=[{"path": "/r/backend", "branch": "master"}],
+        base="master", worktree_dir="/r-tasks/feature/backend",
+    )
+    assert kind == "new"
+    assert "--force" not in argv
+
+
+def test_resolve_slash_branch_still_works_without_conflict():
+    # The slash itself is FINE — a Jira-style `feat/MLK-1234` branch creates cleanly
+    # when no conflicting `feat` (or `feat/...`) branch exists.
+    kind, argv = resolve_repo_add(
+        "/r/backend", "feat/MLK-1234-tarefa", existing_branches=["master"],
+        parsed_worktrees=[{"path": "/r/backend", "branch": "master"}],
+        base="master", worktree_dir="/r-tasks/feat-MLK-1234-tarefa/backend",
+    )
+    assert kind == "new"
+    assert argv[:6] == ["git", "-C", "/r/backend", "worktree", "add", "-b"]
+    assert "feat/MLK-1234-tarefa" in argv
+    assert "--force" not in argv
+
+
 def test_resolve_abort_when_checked_out_elsewhere():
     # branch checked out at some path → ("abort", reason mentioning path); no argv.
     kind, reason = resolve_repo_add(
