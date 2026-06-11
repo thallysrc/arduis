@@ -21,6 +21,7 @@ from arduis.session import (
     Task,
     TerminalRecord,
     default_repo_terminals,
+    default_task_terminals,
     hibernate_fields,
 )
 
@@ -51,6 +52,61 @@ def test_default_repo_terminals():
     assert terms[1].term_id == "feat:backend:t1"
     assert terms[1].kind == "shell"
     assert terms[1].repo_name == "backend"
+
+
+def test_default_task_terminals():
+    # UX pivot (supersedes D-01/D-02): a task's DEFAULT workspace is exactly TWO
+    # task-level terminals — agent (claude, t0) + shell (zsh, t1) — regardless of
+    # how many repos the task spans. Both open at the task folder root. The
+    # terminal ids are {task_id}:tN (NO repo segment — they are task-scoped).
+    terms = default_task_terminals("feat")
+    assert len(terms) == 2
+    assert terms[0].term_id == "feat:t0"
+    assert terms[0].kind == "agent"
+    assert terms[0].repo_name is None  # task-level, not bound to a repo
+    assert terms[1].term_id == "feat:t1"
+    assert terms[1].kind == "shell"
+    assert terms[1].repo_name is None
+
+
+def test_task_has_terminals_list():
+    # The Task carries its own task-level terminal records (the default PAIR plus
+    # any user splits) distinct from per-repo worktree metadata.
+    task = Task(
+        task_id="feat",
+        branch="feat",
+        task_dir="/home/u/livon-tasks/feat",
+        repos=[_repo("feat", "backend")],
+        terminals=default_task_terminals("feat"),
+    )
+    assert len(task.terminals) == 2
+    assert task.terminals[0].term_id == "feat:t0"
+    # serializes (asdict recurses task.terminals too).
+    d = task.to_dict()
+    assert d["terminals"][0]["term_id"] == "feat:t0"
+    json.dumps(d)
+
+
+def test_hibernate_clears_task_level_terminals():
+    # Pitfall 3 re-targeted: hibernate must clear the TASK-level terminals' pid/pgid
+    # too (no orphan), not only per-repo ones.
+    task = Task(
+        task_id="feat",
+        branch="feat",
+        task_dir="/home/u/livon-tasks/feat",
+        repos=[_repo("feat", "backend")],
+        terminals=default_task_terminals("feat"),
+    )
+    for i, t in enumerate(task.terminals):
+        t.pid = 5000 + i
+        t.pgid = 5000 + i
+        t.rss_kb = 4321
+    hibernate_fields(task)
+    assert task.state == SessionState.HIBERNATED
+    for t in task.terminals:
+        assert t.pid is None
+        assert t.pgid is None
+        assert t.rss_kb == 4321  # untouched
 
 
 def test_terminal_record_has_repo_name_field():

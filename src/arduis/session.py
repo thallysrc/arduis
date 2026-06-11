@@ -5,12 +5,18 @@ worktrees, pid/pgid, and lifecycle state. The UI (tabs in Plan 02, the sidebar
 later) is a *view* of this store. Imports NO ``gi``.
 
 The unit of work is a TASK (03.2 pivot): one branch name across N member repos.
-A ``Task`` owns N ``RepoCheckout``s; each ``RepoCheckout`` owns its own list of
-``TerminalRecord``s (default 2 — one ``agent`` running ``claude`` + one plain
-``shell``, D-01). A 1-repo project is a ``Task`` with exactly ONE ``RepoCheckout``
-through the identical shape — no special-case (success criterion 5). This
-REPLACES the old single-worktree session model (OQ3 — no two parallel models;
-the prior ``Worktree``-``Session`` type is gone).
+A ``Task`` owns N ``RepoCheckout``s (worktree metadata: repo_name, dir, branch).
+
+UX pivot (2026-06-11, supersedes D-01/D-02): a task's DEFAULT workspace is TWO
+TASK-LEVEL terminals — one ``agent`` running ``claude`` (``t0``) over one plain
+``shell`` (``t1``) — held in ``Task.terminals`` (NOT per-repo), regardless of how
+many repos the task spans. Both open at ``task.task_dir`` so one agent works
+across every repo. Testing a real 6-repo project showed the old one-column-per-repo
+default produced an unusable 2×6 grid of tiny panes; the user now grows the
+workspace via the split machinery. ``RepoCheckout.terminals`` is kept for any
+per-repo split a user attaches but is empty by default. A 1-repo project is the
+identical shape — no special-case. This REPLACES the old single-worktree session
+model (OQ3 — no two parallel models; the prior ``Worktree``-``Session`` type is gone).
 
 Decisions:
 - OQ1: terminal ids are structured ``{task_id}:{repo_name}:tN`` and each
@@ -80,6 +86,26 @@ def default_repo_terminals(task_id: str, repo_name: str) -> list[TerminalRecord]
     ]
 
 
+def default_task_terminals(task_id: str) -> list[TerminalRecord]:
+    """The default 2-terminal set for a TASK: agent + shell (UX pivot 2026-06-11).
+
+    SUPERSEDES the one-column-per-repo default (D-01/D-02): testing a real 6-repo
+    project produced an unusable 2×6 grid of tiny panes. The new default opens
+    EVERY task workspace with exactly TWO task-level terminals — agent (claude,
+    ``t0``) over shell (zsh, ``t1``) — regardless of repo count, BOTH rooted at the
+    task folder (``task.task_dir``, which mirrors the project root) so one agent
+    works across all the task's repos. The user grows the workspace via the split
+    machinery; no per-repo columns are auto-created.
+
+    Ids are ``{task_id}:tN`` (NO repo segment — task-scoped, not bound to a repo),
+    matching the pinned-main workspace shape; ``repo_name`` stays ``None``.
+    """
+    return [
+        TerminalRecord(f"{task_id}:t0", "agent"),
+        TerminalRecord(f"{task_id}:t1", "shell"),
+    ]
+
+
 @dataclass
 class RepoCheckout:
     """One member repo's worktree inside a task (D-08). GTK-free, serializable."""
@@ -103,7 +129,14 @@ class Task:
     branch: str
     task_dir: str                         # ../<root_base>-tasks/<sanitized-branch>/
     repos: list[RepoCheckout] = field(default_factory=list)
+    # UX pivot (2026-06-11): the task's DEFAULT workspace is TWO task-level
+    # terminals (agent + shell) rooted at task_dir, regardless of repo count
+    # (supersedes the per-repo columns of D-01/D-02). ``repos`` keeps worktree
+    # metadata only; these are where the agent/shell actually run + any user
+    # splits. ``terminals`` is the LAST field so positional construction keeps
+    # working.
     state: SessionState = SessionState.ACTIVE
+    terminals: list[TerminalRecord] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         """Serialize to a plain dict (asdict recurses repos → terminals — D-13/A2)."""
@@ -155,6 +188,12 @@ def hibernate_fields(task: Task) -> None:
     and each terminal's ``rss_kb`` untouched (frozen until re-spawn).
     """
     task.state = SessionState.HIBERNATED
+    # Clear the TASK-level terminals (the default agent+shell pair + any user
+    # splits live here under the UX pivot) AND any leftover per-repo terminals
+    # (none by default, but a per-repo split could attach one) — no group forgotten.
+    for t in task.terminals:
+        t.pid = None
+        t.pgid = None
     for repo in task.repos:
         for t in repo.terminals:
             t.pid = None
