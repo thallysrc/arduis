@@ -1112,13 +1112,33 @@ class ArduisWindow(Adw.ApplicationWindow):
         task = Task(task_id=branch, branch=branch, task_dir=task_dir, repos=[])
         self._store.add(task)
 
-        # Build the 2×N workspace: one COLUMN per repo (agent t0 over shell t1,
-        # vertical split within a column; columns joined horizontally — D-01/D-02).
-        # For a 1-repo task this is exactly the 03.1 default (agent over shell), via
-        # the identical code path (criterion 5 — no len==1 branch).
-        model = self._workspace_layout(branch)
+        # Build the DEFAULT one-column-per-repo 2×N workspace via the shared helper
+        # (also used by _on_resume — D-09). For a 1-repo task this is exactly the
+        # 03.1 default (agent over shell), via the identical code path (criterion 5).
+        self._build_task_workspace(task, chosen_repos)
+
+        # Per-repo errors accumulate across the chain; surfaced once at the end.
+        repo_errors: list[str] = list(symlink_errors)
+
+        # Kick the per-repo chain (one repo at a time, fully async — Pattern 2).
+        self._add_repo(task, chosen_repos, 0, branch, repo_errors)
+
+    def _build_task_workspace(self, task: Task, repos: list[str]) -> LayoutModel:
+        """Build the DEFAULT one-column-per-repo 2×N workspace for ``task`` (D-01/D-02/D-09).
+
+        Shared by ``_create_task`` (initial creation) and ``_on_resume`` (D-09
+        rebuild — NOT a reattach, earlier extra splits are intentionally NOT
+        restored): one COLUMN per repo (agent ``t0`` over shell ``t1`` — vertical
+        split within a column; columns joined horizontally). Builds a fresh
+        ``LayoutModel``, creates each repo's two VTE leaves via the palette factory,
+        registers the widget maps, makes the task the visible workspace and reflects.
+        For a 1-repo task this is exactly the 03.1 default (criterion 5 — no
+        ``len == 1`` branch). The caller spawns the terminals afterwards.
+        """
+        branch = task.branch
+        model = LayoutModel()
         prev_top: str | None = None  # the previous column's TOP (agent) leaf id
-        for repo in chosen_repos:
+        for repo in repos:
             agent_tid = f"{branch}:{repo}:t0"
             shell_tid = f"{branch}:{repo}:t1"
             if model.root is None:
@@ -1137,17 +1157,14 @@ class ArduisWindow(Adw.ApplicationWindow):
             self._make_repo_leaf(shell_tid, branch, "zsh")
 
         # Focus the first repo's agent and make the task the visible workspace.
-        first_agent = f"{branch}:{chosen_repos[0]}:t0"
-        model.focused_id = first_agent
-        model.touch(first_agent)
-        self._active_workspace_sid = branch
+        if repos:
+            first_agent = f"{branch}:{repos[0]}:t0"
+            model.focused_id = first_agent
+            model.touch(first_agent)
+        self._layouts[task.task_id] = model
+        self._active_workspace_sid = task.task_id
         self._reflect_layout()
-
-        # Per-repo errors accumulate across the chain; surfaced once at the end.
-        repo_errors: list[str] = list(symlink_errors)
-
-        # Kick the per-repo chain (one repo at a time, fully async — Pattern 2).
-        self._add_repo(task, chosen_repos, 0, branch, repo_errors)
+        return model
 
     def _make_repo_leaf(self, tid: str, branch: str, badge: str) -> None:
         """Build + register one repo terminal's VTE leaf (palette factory, T-04)."""
@@ -1414,17 +1431,18 @@ class ArduisWindow(Adw.ApplicationWindow):
         for task in self._store.all():
             if task.state != SessionState.ACTIVE:
                 continue  # skip hibernated (Pitfall 3)
-            # D-10: a task's RAM is the SUM of every repo's every terminal group.
-            # (Per-repo grouping in the subline is Plan 03; here just iterate the
-            # new repos[*].terminals shape and surface one task total.)
-            total = 0
-            for repo in task.repos:
-                for t in repo.terminals:
-                    if t.pgid is None:
-                        continue  # not-yet-spawned terminal
-                    t.rss_kb = resource_monitor.group_rss_kb(t.pgid)
-                    if t.rss_kb:
-                        total += t.rss_kb
+            # D-10/D-14: a task's RAM is the SUM of every repo's every terminal
+            # process group. Poll each live group (pgid not None — skip the
+            # not-yet-spawned), writing each terminal's rss_kb back, then sum the
+            # whole task across all its repos for the row subline.
+            for t in (t for r in task.repos for t in r.terminals if t.pgid is not None):
+                t.rss_kb = resource_monitor.group_rss_kb(t.pgid)
+            total = sum(
+                t.rss_kb
+                for r in task.repos
+                for t in r.terminals
+                if t.rss_kb
+            )
             label = self._subline_by_sid.get(task.task_id)
             if label is not None:
                 label.set_text(
@@ -1634,52 +1652,27 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         Resume rebuilds the task like create (D-09): fresh per-repo terminal
         records, a fresh 2×N LayoutModel (one column per repo: agent t0 over shell
-        t1), terminals made via the palette factory, the task made the visible
-        workspace, then every terminal spawned eagerly — only agents are fed
-        ``AGENT_FEED``. Earlier extra splits are NOT restored.
-
-        # Plan 03: re-target per-repo default — full hibernate/resume correctness
-        # (per-task RAM grouping, startup scan, layout polish) lands in Plan 03;
-        # this rebuild keeps resume valid against the Task/RepoCheckout model.
+        t1) via the shared ``_build_task_workspace`` helper, then every terminal
+        spawned eagerly — only agents are fed ``AGENT_FEED``. A resumed task
+        re-derives its repos from ``task.repos`` (hibernate kept the repo set,
+        only cleared pid/pgid), so the default layout rebuilds per repo. Earlier
+        extra splits are NOT restored (03.1 D-09 stands).
         """
         task = self._menu_session()
         if task is None or task.state == SessionState.ACTIVE:
             return
-        sid = task.task_id
         branch = task.branch
 
         # Fresh per-repo terminal records (replaces the hibernated, pgid-cleared
-        # lists) so spawn callbacks can write pid/pgid back onto them.
+        # lists) so spawn callbacks can write pid/pgid back onto them. The repo set
+        # is intact (hibernate only cleared pid/pgid), so iterate task.repos.
         repo_names = [r.repo_name for r in task.repos]
         for repo in task.repos:
             repo.terminals = default_repo_terminals(branch, repo.repo_name)
         task.state = SessionState.ACTIVE
 
-        # Build a fresh 2×N tree: one column per repo (agent over shell — D-02/D-09).
-        model = LayoutModel()
-        prev_top: str | None = None
-        for name in repo_names:
-            agent_tid = f"{branch}:{name}:t0"
-            shell_tid = f"{branch}:{name}:t1"
-            if model.root is None:
-                model.root = LeafNode(agent_tid)
-                model.focused_id = agent_tid
-                model.touch(agent_tid)
-            else:
-                model.split(prev_top, agent_tid, "h")
-            model.split(agent_tid, shell_tid, "v")
-            prev_top = agent_tid
-            self._make_repo_leaf(agent_tid, branch, "claude")
-            self._make_repo_leaf(shell_tid, branch, "zsh")
-        if repo_names:
-            first_agent = f"{branch}:{repo_names[0]}:t0"
-            model.focused_id = first_agent
-            model.touch(first_agent)
-        self._layouts[sid] = model
-
-        # Make the resumed task the visible workspace and reflect it.
-        self._active_workspace_sid = sid
-        self._reflect_layout()
+        # Rebuild the DEFAULT one-column-per-repo layout (shared with create, D-09).
+        self._build_task_workspace(task, repo_names)
         self._rebuild_sidebar()
 
         # Spawn every terminal eagerly (D-09): agents fed claude, shells plain.
