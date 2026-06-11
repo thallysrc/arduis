@@ -1,31 +1,36 @@
 """RED contract tests for the GTK-free active-agent cap policy (``arduis.caps``).
 
-Pins the cap policy Plan 03-03 must satisfy. Fails now (RED) because
-``arduis.caps`` does not exist yet.
+Pins the cap policy over the 03.2 ``Task`` model. ``caps.py`` itself is unchanged
+— it only needs ``state.value == "active"`` over a Task list, and a fat multi-repo
+Task counts as ONE active (D-14).
 
 Decisions pinned:
-- D-15: ``ACTIVE_CAP_DEFAULT == 6`` — a single, Phase-6-sourceable constant
-  (Phase 6 will let ``.arduis.toml`` override it; Phase 3 uses this default).
+- D-15: ``ACTIVE_CAP_DEFAULT == 6`` — a single, Phase-6-sourceable constant.
 - D-16: ``at_cap`` triggers the prompt with ``>=`` (active_count >= cap), counting
-  only sessions whose state is ACTIVE.
+  only Tasks whose state is ACTIVE.
+- D-14: a single multi-repo Task counts as 1 active (not 1-per-repo).
 """
 from arduis import caps
 from arduis.caps import ACTIVE_CAP_DEFAULT, active_count, at_cap
-from arduis.session import SessionState, WorktreeSession
+from arduis.session import RepoCheckout, SessionState, Task, default_repo_terminals
 
 
-def _session(sid: str, state: SessionState) -> WorktreeSession:
-    return WorktreeSession(
-        session_id=sid,
-        branch=sid,
-        worktree_dir=f"/home/u/repo-{sid}",
-        repo_root="/home/u/repo",
-        state=state,
-    )
+def _task(task_id: str, state: SessionState, repo_names=("repo",)) -> Task:
+    repos = [
+        RepoCheckout(
+            repo_name=name,
+            worktree_dir=f"/home/u/livon-tasks/{task_id}/{name}",
+            branch=task_id,
+            terminals=default_repo_terminals(task_id, name),
+        )
+        for name in repo_names
+    ]
+    return Task(task_id=task_id, branch=task_id, task_dir=f"/home/u/livon-tasks/{task_id}",
+                repos=repos, state=state)
 
 
-def _active(n: int) -> list[WorktreeSession]:
-    return [_session(f"a{i}", SessionState.ACTIVE) for i in range(n)]
+def _active(n: int) -> list[Task]:
+    return [_task(f"a{i}", SessionState.ACTIVE) for i in range(n)]
 
 
 def test_active_cap_default():
@@ -34,13 +39,21 @@ def test_active_cap_default():
 
 
 def test_active_count():
-    sessions = [
-        _session("a", SessionState.ACTIVE),
-        _session("b", SessionState.HIBERNATED),
-        _session("c", SessionState.ACTIVE),
-        _session("d", SessionState.HIBERNATED),
+    tasks = [
+        _task("a", SessionState.ACTIVE),
+        _task("b", SessionState.HIBERNATED),
+        _task("c", SessionState.ACTIVE),
+        _task("d", SessionState.HIBERNATED),
     ]
-    assert active_count(sessions) == 2
+    assert active_count(tasks) == 2
+
+
+def test_multi_repo_task_counts_as_one():
+    # D-14: a single 3-repo Task counts as 1 active, not 3.
+    fat = _task("big", SessionState.ACTIVE, repo_names=("backend", "frontend", "keycloak"))
+    assert len(fat.repos) == 3
+    assert active_count([fat]) == 1
+    assert at_cap([fat]) is False
 
 
 def test_at_cap_below():
