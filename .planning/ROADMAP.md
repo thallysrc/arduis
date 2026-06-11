@@ -88,10 +88,12 @@ Plans:
   3. The task workspace opens with terminals for every chosen repo (agent placement per discuss-phase decision); swap/keys/RAM/hibernate operate per task
   4. Concluding/hibernating a task tears down every worktree's process groups (no orphans), keeping directories on hibernate
   5. Phase 03.1 single-worktree behavior is preserved as the 1-repo task case (no special-casing)
-**Plans:** 0 plans
+**Plans:** 3 plans
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 03.2 to break down)
+- [ ] 03.2-01-PLAN.md — GTK-free domain (TDD): project.py member detection + task_layout.py dir/symlink/resolve builders + session.py Task/RepoCheckout replacing WorktreeSession
+- [ ] 03.2-02-PLAN.md — window.py structural pivot: project resolution + name-only topbar, New-task dialog (repo multi-pick), per-repo async create chain + relative-symlink materializer, Task-keyed sidebar
+- [ ] 03.2-03-PLAN.md — window.py lifecycle: per-task hibernate/resume/RAM/cap across repos, startup scan of ../<root>-tasks/, close-a-repository (never delete), no-orphan teardown + manual UAT
 
 ### Phase 03.1: worktree-as-terminal-workspace (INSERTED)
 
@@ -199,7 +201,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 2. Core Loop | 3/3 | Complete | 2026-06-09 |
 | 3. Parallel + Sidebar + RAM | 5/5 | Complete | 2026-06-09 |
 | 03.1. worktree-as-terminal-workspace | 3/3 | Complete | 2026-06-10 |
-| 03.2. Projects and Cross-Repo Tasks | 0/TBD | Not started | - |
+| 03.2. Projects and Cross-Repo Tasks | 0/3 | Planned | - |
 | 4. Attention Detection | 0/TBD | Not started | - |
 | 5. Agent Swap + Keys + Themes | 0/TBD | Not started | - |
 | 6. Setup via `.arduis.toml` | 0/TBD | Not started | - |
