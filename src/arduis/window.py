@@ -20,7 +20,7 @@ Decisions wired here:
 - D-01: nested ``GtkPaned`` canvas replaces the tab strip (no visible tab bar).
 - D-02: sidebar (all worktrees) and pane canvas (a subset) are decoupled.
 - D-03: ``+New`` splits the focused pane before the spawn.
-- D-04 (discretion): closing a pane HIDES the worktree (leaf removed from the
+- D-04 (discretion): closing a pane HIDES the worktree (leaf dropped from the
   layout, session stays ACTIVE in the store + sidebar) — no confirmation.
 - D-06 (Phase 03.1): row select swaps the WHOLE workspace (worktree), not a pane.
 - D-07: the ``$HOME`` scratch shell is a pinned ``main`` sidebar row (not a session).
@@ -280,6 +280,12 @@ class ArduisWindow(Adw.ApplicationWindow):
         # open in the project root rather than $HOME, the topbar shows the project
         # name, and the New-task dialog knows the member repos.
         self._resolve_project()
+
+        # Rediscover past tasks from `../<root>-tasks/` (D-11: disk is the source of
+        # truth, no state file). Tasks are created HIBERNATED and DO NOT spawn —
+        # resume relaunches them on demand (Pitfall 6). Runs after resolution (it
+        # needs the project root) and before the RAM-poll seed.
+        self._scan_tasks()
 
         # Seed the canvas with the main checkout scratch shell as the pinned leaf.
         self._open_shell_leaf()
@@ -664,6 +670,22 @@ class ArduisWindow(Adw.ApplicationWindow):
             menu = Gio.Menu()
             if session is not None and session.state == SessionState.ACTIVE:
                 menu.append("Hibernar", "win.hibernate")  # D-08
+                # D-10: close-a-repository — only meaningful for a multi-repo task
+                # (closing the sole repo == hibernate). One entry per repo; the
+                # action target is the repo_name. NEVER deletes from disk.
+                if len(session.repos) > 1:
+                    repo_menu = Gio.Menu()
+                    for repo in session.repos:
+                        item = Gio.MenuItem.new(
+                            f"Fechar {repo.repo_name}",
+                            None,
+                        )
+                        item.set_action_and_target_value(
+                            "win.close_repo",
+                            GLib.Variant.new_string(repo.repo_name),
+                        )
+                        repo_menu.append_item(item)
+                    menu.append_submenu("Fechar repositório", repo_menu)
             else:
                 menu.append("Retomar", "win.resume")
             popover = Gtk.PopoverMenu.new_from_model(menu)
@@ -943,6 +965,92 @@ class ArduisWindow(Adw.ApplicationWindow):
         ):
             return root
         return os.path.join(root, name)
+
+    # --- startup task scan (D-11: disk is the source of truth) ---------------
+
+    def _scan_tasks(self) -> None:
+        """Rediscover past tasks from ``../<root>-tasks/`` as HIBERNATED (D-11).
+
+        Disk is the source of truth — there is NO persisted app-state file. At
+        startup we scan the grouped sibling tasks root and, for each direct subdir
+        that is a VALID task (``_dir_is_task`` — ≥1 child whose ``.git`` is a FILE,
+        a real worktree pointer; A5), build a HIBERNATED ``Task`` whose repos are
+        inferred from its worktree subdirs. CRITICAL (Pitfall 6): this NEVER spawns
+        a terminal — every terminal's pid/pgid stays ``None`` and rows render
+        dimmed; ``_on_resume`` (Task 1) spawns the default layout on demand.
+        """
+        root = self._project_root
+        if not root:
+            return  # no project resolved → nothing to scan
+
+        # The tasks root is the parent of any task_dir: derive it from a throwaway
+        # branch so the convention (``<parent>/<base>-tasks``) lives in one place.
+        tasks_root = os.path.dirname(task_dir_for(root, "x"))
+        if not os.path.isdir(tasks_root):
+            return  # no tasks ever created → nothing to rediscover
+
+        try:
+            entries = sorted(os.scandir(tasks_root), key=lambda e: e.name)
+        except OSError:
+            return
+
+        for entry in entries:
+            if not entry.is_dir(follow_symlinks=False):
+                continue
+            if not self._dir_is_task(entry.path):
+                continue  # stray / symlink-only dir → not a task (A5/T-03.2-13)
+            task_id = entry.name
+            repos: list[RepoCheckout] = []
+            try:
+                children = sorted(os.scandir(entry.path), key=lambda e: e.name)
+            except OSError:
+                continue
+            for child in children:
+                if not child.is_dir(follow_symlinks=False):
+                    continue
+                # A child is a repo worktree iff its `.git` is a FILE (pointer).
+                if not os.path.isfile(os.path.join(child.path, ".git")):
+                    continue
+                repos.append(
+                    RepoCheckout(
+                        repo_name=child.name,
+                        worktree_dir=child.path,
+                        branch=task_id,
+                        # HIBERNATED: terminal records exist but carry NO pid/pgid
+                        # (Pitfall 6 — do NOT spawn). Resume re-spawns them.
+                        terminals=default_repo_terminals(task_id, child.name),
+                    )
+                )
+            if not repos:
+                continue  # validated but no worktree children → skip
+            self._store.add(
+                Task(
+                    task_id=task_id,
+                    branch=task_id,
+                    task_dir=entry.path,
+                    repos=repos,
+                    state=SessionState.HIBERNATED,
+                )
+            )
+
+    def _dir_is_task(self, path: str) -> bool:
+        """True iff ``path`` holds ≥1 real git worktree (a child with a ``.git`` FILE).
+
+        A git worktree stores ``.git`` as a POINTER FILE (``gitdir: ...``), not a
+        dir; a symlink-only / plain dir is NOT a worktree. Requiring a real pointer
+        file means a stray or symlink-only dir under ``<root>-tasks/`` is never
+        listed as a task (A5 / T-03.2-13 spoofing mitigation).
+        """
+        try:
+            with os.scandir(path) as it:
+                for child in it:
+                    if child.is_dir(follow_symlinks=False) and os.path.isfile(
+                        os.path.join(child.path, ".git")
+                    ):
+                        return True
+        except OSError:
+            return False
+        return False
 
     # --- + New-task dialog (D-06) -------------------------------------------
 
@@ -1605,6 +1713,12 @@ class ArduisWindow(Adw.ApplicationWindow):
         resume.connect("activate", self._on_resume)
         self.add_action(resume)
 
+        # D-10: close-a-repository — kills that repo's terminal groups only and
+        # NEVER deletes anything from disk. Parameter is the chosen repo_name.
+        close_repo = Gio.SimpleAction.new("close_repo", GLib.VariantType.new("s"))
+        close_repo.connect("activate", self._on_close_repo)
+        self.add_action(close_repo)
+
     def _menu_session(self) -> Task | None:
         """Resolve the right-clicked row back to its tracked Task (D-08)."""
         if self._menu_target_sid is None:
@@ -1678,6 +1792,53 @@ class ArduisWindow(Adw.ApplicationWindow):
         # Spawn every terminal eagerly (D-09): agents fed claude, shells plain.
         for repo in task.repos:
             self._spawn_repo_terminals(task, repo.repo_name, repo.worktree_dir)
+
+    def _on_close_repo(self, _action, param) -> None:
+        """D-10: close ONE repo of the right-clicked task — kill its groups, KEEP the dir.
+
+        Closing a repository tears down ONLY that repo's terminal process groups
+        (no orphan, SIGHUP→SIGKILL via ``_teardown_pgid``), drops its leaves from
+        the active layout + widget maps, and clears its terminals' pid/pgid. The
+        ``RepoCheckout`` STAYS in ``task.repos`` and its worktree dir STAYS on disk
+        — arduis NEVER deletes anything (no filesystem-removal nor worktree-pruning
+        calls here or anywhere; D-10). If closing leaves the task with zero live
+        terminals, fall back to the pinned main workspace so the canvas isn't blank.
+        """
+        task = self._menu_session()
+        if task is None or task.state != SessionState.ACTIVE:
+            return
+        repo_name = param.get_string()
+        repo = next((r for r in task.repos if r.repo_name == repo_name), None)
+        if repo is None:
+            return
+
+        sid = task.task_id
+        model = self._layouts.get(sid)
+        # Kill each of this repo's terminal groups and drop their leaves/widgets.
+        # The RepoCheckout itself is KEPT (dir on disk untouched — D-10).
+        for t in repo.terminals:
+            if t.pid:
+                self._teardown_pgid(t.pid)  # SIGHUP→SIGKILL, no orphan
+            if model is not None:
+                model.close_leaf(t.term_id)
+            self._leaf_by_sid.pop(t.term_id, None)
+            self._term_by_sid.pop(t.term_id, None)
+            t.pid = None
+            t.pgid = None
+
+        # If the task has no live terminals left in any repo, fall back to main so
+        # the canvas isn't pointing at an empty tree.
+        any_live = any(
+            self._term_by_sid.get(t.term_id) is not None
+            for r in task.repos
+            for t in r.terminals
+        )
+        if self._active_workspace_sid == sid and (
+            model is None or not model.visible_ids() or not any_live
+        ):
+            self._swap_workspace(_MAIN_SID)
+        elif self._active_workspace_sid == sid:
+            self._reflect_layout()
 
     # --- teardown (RAM-01, D-11/D-13) ---------------------------------------
 
