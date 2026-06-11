@@ -147,6 +147,24 @@ def test_store_crud_and_serializable():
     json.dumps(as_list)  # must not raise
 
 
+def test_store_remove_drops_task():
+    # GAP 2: a create where every repo aborts must be removable from the store
+    # (no zombie row, not counted by caps). remove() touches memory only — never disk.
+    store = SessionStore()
+    task = Task(
+        task_id="feat",
+        branch="feat",
+        task_dir="/home/u/livon-tasks/feat",
+        repos=[_repo("feat", "backend")],
+    )
+    store.add(task)
+    assert store.get("feat") is task
+    store.remove("feat")
+    assert store.get("feat") is None
+    assert store.all() == []
+    store.remove("absent")  # idempotent — removing a missing id is a no-op
+
+
 def test_session_module_is_gtk_free():
     with open(session.__file__, encoding="utf-8") as fh:
         text = fh.read()

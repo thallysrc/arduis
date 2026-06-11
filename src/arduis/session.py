@@ -126,6 +126,15 @@ class SessionStore:
     def get(self, task_id: str) -> Task | None:
         return self._tasks.get(task_id)
 
+    def remove(self, task_id: str) -> None:
+        """Drop a task from the registry (e.g. a create where every repo aborted).
+
+        Removes the in-memory record only — arduis NEVER deletes anything from
+        disk (D-10); the symlink-only task folder may remain and the startup scan
+        already rejects it (no ``.git`` worktree-pointer child).
+        """
+        self._tasks.pop(task_id, None)
+
     def by_branch(self, branch: str) -> Task | None:
         return next((t for t in self._tasks.values() if t.branch == branch), None)
 

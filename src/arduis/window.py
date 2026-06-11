@@ -1300,16 +1300,13 @@ class ArduisWindow(Adw.ApplicationWindow):
         accumulated per-repo errors are surfaced once (D-10).
         """
         if i >= len(repos):
-            # Chain done — finalize: surface any errors, refresh the sidebar.
-            if repo_errors:
-                self._show_error(
-                    "Algumas repos não foram criadas", "\n".join(repo_errors)
-                )
-            self._rebuild_sidebar()
-            term = self._term_by_sid.get(self._active_layout().focused_id) \
-                if self._active_layout() is not None else None
-            if term is not None:
-                term.grab_focus()
+            # Chain done — finalize. Succeeded repos are exactly those appended to
+            # task.repos in _add_done; everything else aborted/failed. A failed repo
+            # must NOT leave a dead empty column (zombie pane) in the workspace, and
+            # a task where EVERY repo failed must NOT linger as a sidebar row that
+            # counts toward the cap. Prune accordingly (NEVER deletes from disk —
+            # D-10; the symlink-only folder may remain, startup scan rejects it).
+            self._finalize_task_creation(task, repos, repo_errors)
             return
 
         name = repos[i]
@@ -1387,6 +1384,64 @@ class ArduisWindow(Adw.ApplicationWindow):
             )
 
         run_git_async(argv_repo_has_commit(repo_path), _has_commit_done, self._runner)
+
+    def _finalize_task_creation(
+        self, task: Task, chosen_repos: list[str], repo_errors: list[str]
+    ) -> None:
+        """Finalize the create chain: prune failed columns, drop zombie tasks, report.
+
+        ``_build_task_workspace`` built a column (two empty VTE leaves) for EVERY
+        chosen repo up front, but only repos that actually got a worktree are in
+        ``task.repos`` (appended in ``_add_done``). Any chosen repo NOT in
+        ``task.repos`` failed — its column is a dead empty pane and must be removed
+        so the workspace shows only live repos. If ZERO repos succeeded the whole
+        task is a zombie (empty layout, symlink-only folder): remove it from the
+        store + drop its layout/widgets entirely so it never appears in the sidebar
+        or counts toward the active cap. NEVER deletes from disk (D-10).
+        """
+        succeeded = {r.repo_name for r in task.repos}
+        failed = [name for name in chosen_repos if name not in succeeded]
+
+        if not succeeded:
+            # Zero repos created — tear the task down completely (no zombie row).
+            for name in chosen_repos:
+                self._drop_repo_column(task, name)
+            self._layouts.pop(task.task_id, None)
+            self._store.remove(task.task_id)
+            if self._active_workspace_sid == task.task_id:
+                self._swap_workspace(_MAIN_SID)
+            self._rebuild_sidebar()
+            if repo_errors:
+                self._show_error("Não foi possível criar a task", "\n".join(repo_errors))
+            return
+
+        # Partial success — prune only the failed repos' dead columns.
+        for name in failed:
+            self._drop_repo_column(task, name)
+
+        if repo_errors:
+            self._show_error("Algumas repos não foram criadas", "\n".join(repo_errors))
+        self._rebuild_sidebar()
+        self._reflect_layout()
+        term = self._term_by_sid.get(self._active_layout().focused_id) \
+            if self._active_layout() is not None else None
+        if term is not None:
+            term.grab_focus()
+
+    def _drop_repo_column(self, task: Task, repo_name: str) -> None:
+        """Remove a (failed) repo's two leaves from ``task``'s layout + widget maps.
+
+        The two leaves were built eagerly by ``_build_task_workspace`` but, for a
+        failed repo, nothing was spawned into them (no PTY child, no pid). So this
+        only prunes the layout tree + widget maps — there is no process group to
+        kill. NEVER deletes from disk (D-10).
+        """
+        model = self._layouts.get(task.task_id)
+        for tid in (f"{task.branch}:{repo_name}:t0", f"{task.branch}:{repo_name}:t1"):
+            if model is not None:
+                model.close_leaf(tid)
+            self._leaf_by_sid.pop(tid, None)
+            self._term_by_sid.pop(tid, None)
 
     def _spawn_repo_terminals(self, task: Task, repo_name: str, wt_dir: str) -> None:
         """Spawn one repo's agent (fed claude) + shell (plain) eagerly (D-03)."""
