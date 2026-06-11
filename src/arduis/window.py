@@ -53,29 +53,32 @@ from arduis.exit_status import decode_exit  # noqa: E402
 from arduis.git_service import run_git_async  # noqa: E402
 from arduis import caps, keymap, resource_monitor  # noqa: E402
 from arduis.layout import LayoutModel, LeafNode, SplitNode  # noqa: E402
+from arduis.project import detect_member_repos  # noqa: E402
 from arduis.session import (  # noqa: E402
     AGENT_FEED,
+    RepoCheckout,
     SessionState,
     SessionStore,
+    Task,
     TerminalRecord,
-    WorktreeSession,
-    default_terminals,
+    default_repo_terminals,
     hibernate_fields,
+)
+from arduis.task_layout import (  # noqa: E402
+    repo_worktree_dir,
+    resolve_repo_add,
+    symlink_plan,
+    task_dir_for,
 )
 from arduis.worktree import (  # noqa: E402
     argv_default_branch_local,
     argv_default_branch_via_origin,
     argv_list_local_branches,
     argv_repo_has_commit,
-    argv_worktree_add_existing,
-    argv_worktree_add_new,
     argv_worktree_list_porcelain,
-    branch_checked_out_path,
-    infer_new_vs_existing,
     parse_default_branch,
     parse_local_branches,
     parse_worktrees,
-    worktree_dir_for,
 )
 from arduis.theme import (  # noqa: E402
     DRACULA_BG,
@@ -175,6 +178,12 @@ class ArduisWindow(Adw.ApplicationWindow):
         # The $HOME scratch shell is the pinned "main" leaf (D-07), not a session.
         self._shell_pid: int | None = None
         self._last_exit: int | None = None
+        # 03.2 pivot: a PROJECT is a root with N member repos; a 1-repo project is
+        # the degenerate case. `_repo_root`/`_repo_name` are kept as aliases of the
+        # project root/name for the pinned-leaf code that still reads them.
+        self._project_root: str | None = None
+        self._project_name: str | None = None
+        self._member_repos: list[str] = []
         self._repo_root: str | None = None
         self._repo_name: str | None = None
 
@@ -209,14 +218,17 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         view = Adw.ToolbarView()
         header = Adw.HeaderBar()
-        header.set_title_widget(Adw.WindowTitle(title="arduis"))
+        # D-06 (name-only, NO switcher): the topbar shows the PROJECT name once
+        # resolution succeeds. Keep a reference so `_resolve_project` can update it.
+        self._title_widget = Adw.WindowTitle(title="arduis")
+        header.set_title_widget(self._title_widget)
 
-        # The "+New worktree" button lives in the header (D-02/D-03). Disabled
-        # until repo resolution succeeds.
+        # The "+New task" button lives in the header (D-02/D-03). Disabled
+        # until project resolution succeeds.
         self._new_btn = Gtk.Button()
         self._new_btn.set_icon_name("list-add-symbolic")
-        self._new_btn.set_tooltip_text("Nova worktree")
-        self._new_btn.set_sensitive(False)  # enabled once _repo_root resolves
+        self._new_btn.set_tooltip_text("Nova task")
+        self._new_btn.set_sensitive(False)  # enabled once the project resolves
         self._new_btn.connect("clicked", self._on_new_worktree_clicked)
         header.pack_start(self._new_btn)
 
@@ -264,9 +276,10 @@ class ArduisWindow(Adw.ApplicationWindow):
         # GTK4 window-close signal (NOT GTK3 "delete-event").
         self.connect("close-request", self._on_close_request)
 
-        # Resolve the launch repo FIRST (D-03) so the pinned main leaf can open
-        # in the repo root rather than $HOME, and the sidebar can show its name.
-        self._resolve_repo_root()
+        # Resolve the PROJECT FIRST (D-05/D-06/D-07) so the pinned main leaf can
+        # open in the project root rather than $HOME, the topbar shows the project
+        # name, and the New-task dialog knows the member repos.
+        self._resolve_project()
 
         # Seed the canvas with the main checkout scratch shell as the pinned leaf.
         self._open_shell_leaf()
@@ -858,58 +871,104 @@ class ArduisWindow(Adw.ApplicationWindow):
                 rows.append(row)
         return rows
 
-    # --- repo resolution (D-03) ---------------------------------------------
+    # --- project resolution (D-05/D-06/D-07) --------------------------------
 
-    def _resolve_repo_root(self) -> None:
-        """Resolve the launch repo's toplevel; enable + on success, else hint.
+    def _resolve_project(self) -> None:
+        """Resolve the launch PROJECT (root + member repos); topbar shows its name.
 
-        Runs once at startup BEFORE the main leaf is seeded so the pinned ``main``
-        leaf opens in the repo root (the repo's main checkout, D-07 revised) and
-        the sidebar shows the repo name. A single ``git rev-parse`` is a short
-        read-only host query — blocking briefly at startup is acceptable
-        (CLAUDE.md) — and it still routes through the HostRunner seam.
+        D-05: a project root is a folder whose DIRECT subdirs carry a ``.git``.
+        D-07: no walk-up — if the cwd has no member subdirs but is itself a git
+        repo, it is the degenerate 1-repo project (preserving 03.1 behavior). The
+        ``git rev-parse`` fallback is a short read-only host query — blocking
+        briefly at startup is acceptable (CLAUDE.md) — routed through the
+        HostRunner seam. ``_repo_root``/``_repo_name`` are kept as aliases of the
+        project root/name so the pinned-leaf code keeps working.
         """
         cwd = os.getcwd()
-        argv = self._runner.wrap_argv(["git", "-C", cwd, "rev-parse", "--show-toplevel"])
-        try:
-            proc = subprocess.run(argv, capture_output=True, text=True, timeout=5)
-            top = proc.stdout.strip() if proc.returncode == 0 else ""
-        except (OSError, subprocess.SubprocessError):
-            top = ""
-
-        if top:
-            self._repo_root = top
-            self._repo_name = os.path.basename(top)
-            self._new_btn.set_sensitive(True)
-            self._new_btn.set_tooltip_text("Nova worktree")
+        members = detect_member_repos(cwd)          # D-05 direct-subdir .git scan
+        if members:
+            self._project_root = cwd
+            self._project_name = os.path.basename(cwd.rstrip("/"))
+            self._member_repos = members
         else:
-            self._repo_root = None
-            self._repo_name = None
-            self._new_btn.set_sensitive(False)
-            self._new_btn.set_tooltip_text(_NO_REPO_HINT)
+            # D-07: cwd itself a git repo → degenerate 1-repo project (03.1 behavior)
+            argv = self._runner.wrap_argv(
+                ["git", "-C", cwd, "rev-parse", "--show-toplevel"]
+            )
+            try:
+                proc = subprocess.run(argv, capture_output=True, text=True, timeout=5)
+                top = proc.stdout.strip() if proc.returncode == 0 else ""
+            except (OSError, subprocess.SubprocessError):
+                top = ""
+            if top:
+                self._project_root = top
+                self._project_name = os.path.basename(top)
+                # The sole member IS the repo itself; `_member_repo_path` maps it
+                # back to `project_root` (not a subdir) in the degenerate case.
+                self._member_repos = [os.path.basename(top)]
+            else:
+                self._project_root = None
+                self._project_name = None
+                self._member_repos = []
 
-    # --- + New-worktree dialog (D-06) ---------------------------------------
+        # Keep the pinned-leaf aliases working (they read `_repo_root`/`_repo_name`).
+        self._repo_root = self._project_root
+        self._repo_name = self._project_name
+
+        enabled = self._project_root is not None
+        self._new_btn.set_sensitive(enabled)
+        self._new_btn.set_tooltip_text("Nova task" if enabled else _NO_REPO_HINT)
+        if getattr(self, "_title_widget", None) is not None:
+            self._title_widget.set_title(self._project_name or "arduis")
+
+    def _member_repo_path(self, name: str) -> str:
+        """Absolute path of member repo ``name`` (D-07 degenerate-case aware).
+
+        In the degenerate 1-repo project the sole member's NAME equals the project
+        name but its PATH is the project root itself (there is no
+        ``<root>/<name>`` subdir). Otherwise a member maps to ``<root>/<name>``.
+        """
+        root = self._project_root or ""
+        if (
+            name == self._project_name
+            and len(self._member_repos) == 1
+            and not os.path.isdir(os.path.join(root, name))
+        ):
+            return root
+        return os.path.join(root, name)
+
+    # --- + New-task dialog (D-06) -------------------------------------------
 
     def _on_new_worktree_clicked(self, _button) -> None:
         """Cap-gate (RAM-02/D-16), then fetch branches + present the dialog (D-06)."""
-        if not self._repo_root:
+        if not self._project_root:
             return  # button should be insensitive, but guard anyway
 
         # RAM-02/D-15/D-16: BLOCK at the active-agent cap and force a hibernate
-        # BEFORE any worktree is added/spawned — never silent-allow, never
-        # create-hibernated. Proceed only once a worktree is freed.
+        # BEFORE any task is created/spawned — never silent-allow, never
+        # create-hibernated. Proceed only once a task is freed.
         if caps.at_cap(self._store.all()):
-            self._prompt_hibernate_then(self._begin_new_worktree)
+            self._prompt_hibernate_then(self._begin_new_task)
             return
-        self._begin_new_worktree()
+        self._begin_new_task()
 
-    def _begin_new_worktree(self) -> None:
-        """Fetch local branches, then present the type-or-pick dialog (D-06)."""
+    def _begin_new_task(self) -> None:
+        """Fetch local branches from the project's PRIMARY repo, then show dialog.
+
+        The type-or-pick branch list is read from the first member repo's path
+        (via ``_member_repo_path``) — in a multi-repo project the primary repo
+        seeds the suggestions; per-repo branch resolution still happens per repo
+        during creation (D-13).
+        """
+        if not self._member_repos:
+            return
+        primary_path = self._member_repo_path(self._member_repos[0])
+
         def _branches_done(status, out, _err):
             existing = parse_local_branches(out) if status == 0 else []
-            self._present_new_worktree_dialog(existing)
+            self._present_new_task_dialog(existing)
 
-        run_git_async(argv_list_local_branches(self._repo_root), _branches_done, self._runner)
+        run_git_async(argv_list_local_branches(primary_path), _branches_done, self._runner)
 
     def _prompt_hibernate_then(self, proceed) -> None:
         """Cap-reached gate (D-16): pick an active worktree to hibernate, then run ``proceed``.
@@ -954,16 +1013,39 @@ class ArduisWindow(Adw.ApplicationWindow):
         dialog.connect("response", _on_response)
         dialog.present(self)
 
-    def _present_new_worktree_dialog(self, existing: list[str]) -> None:
-        """Type-or-pick branch dialog: typing a new name = new branch (D-06)."""
+    def _present_new_task_dialog(self, existing: list[str]) -> None:
+        """New-task dialog: branch type-or-pick + a per-member-repo multi-pick (D-06).
+
+        A task is one branch across 1+ chosen member repos. The branch
+        ``Gtk.ComboBoxText`` is type-or-pick (typing a new name = a new branch).
+        Each member repo gets a ``Gtk.CheckButton`` (checked by default). A
+        degenerate 1-repo project still renders its single check (no
+        ``len == 1`` special-case in the materialization path — criterion 5).
+        """
         dialog = Adw.AlertDialog(
-            heading="Nova worktree",
-            body="Digite o nome de uma nova branch ou escolha uma existente.",
+            heading="Nova task",
+            body="Digite o nome de uma nova branch ou escolha uma existente, "
+            "e selecione as repos.",
         )
+
+        # Extra child: a vertical box with the branch combo over the repo checks.
+        extra = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+
         combo = Gtk.ComboBoxText.new_with_entry()
         for name in existing:
             combo.append_text(name)
-        dialog.set_extra_child(combo)
+        extra.append(combo)
+
+        repo_checks: dict[str, Gtk.CheckButton] = {}
+        repos_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        for repo in self._member_repos:
+            check = Gtk.CheckButton(label=repo)
+            check.set_active(True)  # all member repos chosen by default
+            repos_box.append(check)
+            repo_checks[repo] = check
+        extra.append(repos_box)
+
+        dialog.set_extra_child(extra)
         dialog.add_response("cancel", "Cancelar")
         dialog.add_response("create", "Criar")
         dialog.set_response_appearance("create", Adw.ResponseAppearance.SUGGESTED)
@@ -976,7 +1058,10 @@ class ArduisWindow(Adw.ApplicationWindow):
             branch = (combo.get_active_text() or "").strip()
             if not branch:
                 return
-            self._create_worktree(branch, existing)
+            chosen = [name for name, c in repo_checks.items() if c.get_active()]
+            if not chosen:
+                return  # require at least one repo
+            self._create_task(branch, chosen, existing)
 
         dialog.connect("response", _on_response)
         dialog.present(self)
