@@ -1033,6 +1033,11 @@ class ArduisWindow(Adw.ApplicationWindow):
                 )
             )
 
+        # The sidebar was built (from an empty store) before this scan runs, so
+        # reflect the rediscovered tasks now — otherwise they only appear after
+        # the next unrelated _rebuild_sidebar (e.g. creating a new task).
+        self._rebuild_sidebar()
+
     def _dir_is_task(self, path: str) -> bool:
         """True iff ``path`` holds ≥1 real git worktree (a child with a ``.git`` FILE).
 
