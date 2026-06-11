@@ -726,21 +726,59 @@ class ArduisWindow(Adw.ApplicationWindow):
         """Row activation swaps the entire workspace to that worktree (D-04/D-07).
 
         A HIBERNATED task has no layout/terminals — swapping to it would show a
-        blank canvas. Activating its row therefore RESUMES it (rebuild default
-        layout + spawn, D-09), gated by the active-task cap like create (RAM-02/
-        D-14). The pinned main row and active tasks swap directly as before.
+        blank canvas. Activating its row therefore NAVIGATES to a placeholder
+        with an explicit "Retomar task" button (user decision: browsing the
+        sidebar must never spawn agents; only a deliberate resume activates).
+        The pinned main row and active tasks swap directly as before.
         """
         sid = self._sid_by_row.get(row)
         if sid is None:
             return
         task = self._store.get(sid)
         if task is not None and task.state == SessionState.HIBERNATED:
-            if caps.at_cap(self._store.all()):
-                self._prompt_hibernate_then(lambda: self._resume_task(task))
-                return
-            self._resume_task(task)
+            self._show_hibernated_placeholder(task)
             return
         self._swap_workspace(sid)
+
+    def _show_hibernated_placeholder(self, task: Task) -> None:
+        """Show a HIBERNATED task's workspace as a centered explicit-resume card.
+
+        Pure navigation: nothing is spawned and no LayoutModel is created (so
+        ``_layouts`` is not polluted with empty models). Detaches the current
+        leaves exactly like ``_reflect_layout`` (GTK4 single-parent rule,
+        Pitfall 1) before hanging the placeholder.
+        """
+        self._active_workspace_sid = task.task_id
+        if self._canvas_slot.get_child() is not None:
+            self._canvas_slot.set_child(None)
+        for leaf in self._leaf_by_sid.values():
+            if leaf.get_parent() is not None:
+                leaf.unparent()
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        box.set_valign(Gtk.Align.CENTER)
+        box.set_halign(Gtk.Align.CENTER)
+        label = Gtk.Label(label=f"{task.branch} está hibernada")
+        label.add_css_class("dim-label")
+        button = Gtk.Button(label="Retomar task")
+        button.add_css_class("suggested-action")
+        button.add_css_class("pill")
+        button.connect("clicked", lambda *_: self._resume_gated(task))
+        box.append(label)
+        box.append(button)
+        self._canvas_slot.set_child(box)
+
+        # Keep the sidebar selection in sync, same as _swap_workspace.
+        row = self._row_by_sid.get(task.task_id)
+        if row is not None and self._listbox.get_selected_row() is not row:
+            self._listbox.select_row(row)
+
+    def _resume_gated(self, task: Task) -> None:
+        """Resume ``task`` through the active-task cap gate (RAM-02/D-14)."""
+        if caps.at_cap(self._store.all()):
+            self._prompt_hibernate_then(lambda: self._resume_task(task))
+            return
+        self._resume_task(task)
 
     # --- bottom tmux-hint bar (UI-SPEC Copywriting) -------------------------
 
@@ -1848,12 +1886,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         task = self._menu_session()
         if task is None or task.state == SessionState.ACTIVE:
             return
-        if caps.at_cap(self._store.all()):
-            # RAM-02/D-14: resuming counts toward the active-task cap exactly like
-            # creating — gate through the same hibernate-first prompt.
-            self._prompt_hibernate_then(lambda: self._resume_task(task))
-            return
-        self._resume_task(task)
+        self._resume_gated(task)
 
     def _resume_task(self, task: Task) -> None:
         """Resume ``task``: rebuild default layout + eager spawn (shared, D-09)."""
