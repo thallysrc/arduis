@@ -47,3 +47,44 @@ def test_build_worktree_spawn_matches_shell():
     assert env == ["TERM=xterm-256color"]
     assert "flatpak-spawn" not in argv  # D-02/D-15
     assert "--host" not in argv
+
+
+# --------------------------------------------------------------------------- #
+# Phase 4 STATUS-01/D-01: per-terminal extra_env injection (additive, argv-safe)
+# --------------------------------------------------------------------------- #
+
+def test_extra_env_appended_in_order_after_term():
+    """envv == TERM_ENV + extra_env, order preserved (TERM first)."""
+    extra = [
+        "ARDUIS_STATE_FILE=/run/user/1000/arduis/status/feat:t0.json",
+        "ARDUIS_SESSION_META=feat:t0",  # D-01 name (research draft called it ARDUIS_TERM_ID)
+    ]
+    argv, env = build_worktree_spawn(HostRunner(), extra_env=extra)
+    assert env == [
+        "TERM=xterm-256color",
+        "ARDUIS_STATE_FILE=/run/user/1000/arduis/status/feat:t0.json",
+        "ARDUIS_SESSION_META=feat:t0",
+    ]
+    # argv UNCHANGED — env never leaks into argv.
+    assert argv == ["zsh", "-l", "-i"]
+
+
+def test_extra_env_does_not_mutate_module_term_env():
+    """Calling twice with different extras must not grow the module-level TERM_ENV."""
+    build_worktree_spawn(HostRunner(), extra_env=["ARDUIS_STATE_FILE=/a.json"])
+    build_worktree_spawn(HostRunner(), extra_env=["ARDUIS_SESSION_META=feat:t1"])
+    assert TERM_ENV == ["TERM=xterm-256color"]
+    assert len(TERM_ENV) == 1
+
+
+def test_extra_env_none_matches_no_arg_call():
+    argv_none, env_none = build_worktree_spawn(HostRunner(), extra_env=None)
+    argv_bare, env_bare = build_worktree_spawn(HostRunner())
+    assert argv_none == argv_bare == ["zsh", "-l", "-i"]
+    assert env_none == env_bare == ["TERM=xterm-256color"]
+
+
+def test_extra_env_empty_list_matches_no_arg_call():
+    argv, env = build_worktree_spawn(HostRunner(), extra_env=[])
+    assert argv == ["zsh", "-l", "-i"]
+    assert env == ["TERM=xterm-256color"]

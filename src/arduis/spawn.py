@@ -25,7 +25,9 @@ def build_spawn_command(runner: HostRunner) -> tuple[list[str], list[str]]:
     return runner.wrap_argv(SHELL_ARGV), runner.wrap_env(TERM_ENV)
 
 
-def build_worktree_spawn(runner: HostRunner) -> tuple[list[str], list[str]]:
+def build_worktree_spawn(
+    runner: HostRunner, extra_env: list[str] | None = None
+) -> tuple[list[str], list[str]]:
     """Assemble the (argv, envv) for a per-worktree shell, routed through the seam.
 
     Same shell/env as ``build_spawn_command`` — the cwd differs per worktree but
@@ -34,7 +36,15 @@ def build_worktree_spawn(runner: HostRunner) -> tuple[list[str], list[str]]:
     worktree-tab spawn path, WT-03) and gives a unit-test handle distinct from
     tab 0's Phase-1 ``build_spawn_command``.
 
-    Threat T-01-01/T-01-02: still list literals through the seam — no shell
-    string, no ``flatpak-spawn`` prefix in v1.
+    ``extra_env`` (Phase 4, STATUS-01/D-01): per-terminal additions such as
+    ``ARDUIS_STATE_FILE=...`` and ``ARDUIS_SESSION_META=<term_id>``. VTE's
+    ``spawn_async`` envv is ADDITIVE to the inherited environment (Phase-1
+    empirically proven), so these ride alongside HOME/PATH/etc. A NEW list is
+    returned — ``TERM_ENV`` is never mutated.
+
+    Threat T-01-01/T-01-02: still list literals through the seam — env entries
+    are discrete "KEY=value" strings, never joined into a shell string; argv is
+    untouched regardless of ``extra_env``. No ``flatpak-spawn`` prefix in v1.
     """
-    return runner.wrap_argv(SHELL_ARGV), runner.wrap_env(TERM_ENV)
+    envv = TERM_ENV + (extra_env or [])
+    return runner.wrap_argv(SHELL_ARGV), runner.wrap_env(envv)
