@@ -221,6 +221,32 @@ def test_store_remove_drops_task():
     store.remove("absent")  # idempotent — removing a missing id is a no-op
 
 
+def test_terminal_record_status_fields_appended_last():
+    # Phase 4 STATUS-02: status/status_ts are the LAST two fields, defaulting None,
+    # so the prior positional construction (term_id..repo_name) keeps working.
+    t = TerminalRecord("feat:t0", "agent", 1, 2, 3, "backend")
+    assert t.repo_name == "backend"
+    assert t.status is None
+    assert t.status_ts is None
+    # they are settable and are the trailing positional fields.
+    t2 = TerminalRecord("feat:t0", "agent", 1, 2, 3, "backend", "waiting", 1760000000.0)
+    assert t2.status == "waiting"
+    assert t2.status_ts == 1760000000.0
+
+
+def test_terminal_record_status_serializes():
+    # asdict round-trip must include the new fields (still JSON-serializable).
+    t = TerminalRecord("feat:t0", "agent")
+    t.status = "ready"
+    t.status_ts = 1760000001.0
+    from dataclasses import asdict
+
+    d = asdict(t)
+    assert d["status"] == "ready"
+    assert d["status_ts"] == 1760000001.0
+    json.dumps(d)
+
+
 def test_session_module_is_gtk_free():
     with open(session.__file__, encoding="utf-8") as fh:
         text = fh.read()
