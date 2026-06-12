@@ -650,8 +650,67 @@ class ArduisWindow(Adw.ApplicationWindow):
         label.add_css_class(css_class)
 
     def _maybe_notify(self, task, record, old, new, doc) -> None:
-        """libnotify on →waiting while unfocused (Task 3 — no-op placeholder)."""
-        return
+        """Fire a libnotify notification on a →waiting transition while unfocused (D-08/D-09).
+
+        Gated by the Plan-02 ``should_notify`` (transition INTO waiting, window
+        UNFOCUSED, ``ready`` only behind the default-off flag). ONE Notification per
+        terminal (D-09): subsequent waitings ``.update`` + ``.show`` the SAME object
+        so a TUI burst is replaced server-side, never stacked. The body is the
+        state-file message run through ``GLib.markup_escape_text`` (some servers
+        parse body markup — T-04-14). ``.show()`` is wrapped so a dead notification
+        daemon never crashes the app. Optional sound (D-10) is default-off.
+        """
+        if not _HAS_NOTIFY:
+            return
+        if not attention.should_notify(
+            old, new, self.props.is_active, self._att_config.notify_ready
+        ):
+            return
+
+        title = f"{task.branch} aguarda você"
+        body = GLib.markup_escape_text(
+            getattr(doc, "message", "") or "Aprovação pendente"
+        )
+        icon = "dialog-information"
+        try:
+            notif = self._notif_by_tid.get(record.term_id)
+            if notif is None:
+                notif = Notify.Notification.new(title, body, icon)
+                self._notif_by_tid[record.term_id] = notif
+            else:
+                notif.update(title, body, icon)
+            notif.show()
+        except Exception as exc:  # noqa: BLE001 - never let a dead daemon crash us
+            print(f"arduis: notification failed: {exc}", file=sys.stderr)
+
+        if self._att_config.sound:
+            self._play_attention_sound()
+
+    def _play_attention_sound(self) -> None:
+        """Optional waiting sound (D-10, default OFF): GSound → beep → silence.
+
+        Try GSound's freedesktop ``message-new-instant`` event; on ANY failure
+        (GSound absent on the dev machine) fall back to a beep. ``Gdk.Display.beep``
+        may not be exposed as an instance method at the 0.76 floor, so prefer the
+        floor-safe ``Gtk.Widget.error_bell``. Never raises.
+        """
+        try:
+            gi.require_version("GSound", "1.0")
+            from gi.repository import GSound
+
+            ctx = getattr(self, "_gsound_ctx", None)
+            if ctx is None:
+                ctx = GSound.Context()
+                ctx.init()
+                self._gsound_ctx = ctx
+            ctx.play_simple({GSound.ATTR_EVENT_ID: "message-new-instant"})
+            return
+        except Exception:  # noqa: BLE001 - GSound missing/failed → fall back to a beep
+            pass
+        try:
+            self.error_bell()
+        except Exception:  # noqa: BLE001 - never raise from the sound path
+            pass
 
     # --- terminal factory (reused verbatim from Phase 2) --------------------
 
@@ -2255,6 +2314,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         sid = task.task_id
 
         self._teardown_session_terminals(task)  # kill every group (Pitfall 3/5)
+        self._clear_task_state_files(task)  # delete state files (Pitfall 5b)
         hibernate_fields(task)  # GTK-free: state=HIBERNATED, all pid/pgid=None
 
         # D-09: discard the worktree's saved layout so resume rebuilds the default,
@@ -2267,6 +2327,12 @@ class ArduisWindow(Adw.ApplicationWindow):
             self._leaf_by_sid.pop(tid, None)
         for tid in [t for t in self._term_by_sid if t.startswith(prefix)]:
             self._term_by_sid.pop(tid, None)
+        # Drop the worktree's pane-dot + notification handles too (mirror the
+        # {sid}: prefix pop pattern) so dropped widgets leave no stale handle.
+        for tid in [t for t in self._pane_dot_by_tid if t.startswith(prefix)]:
+            self._pane_dot_by_tid.pop(tid, None)
+        for tid in [t for t in self._notif_by_tid if t.startswith(prefix)]:
+            self._notif_by_tid.pop(tid, None)
 
         # If the hibernated worktree was the visible workspace, fall back to main
         # (always present per D-07) so the canvas isn't pointing at a discarded tree.
@@ -2342,6 +2408,10 @@ class ArduisWindow(Adw.ApplicationWindow):
             t.pid = None
             t.pgid = None
 
+        # Delete ONLY this repo's terminal state files (Pitfall 5b); the task-level
+        # pair's agents keep running so their files stay live (NOT touched here).
+        self._clear_repo_state_files(repo)
+
         # If the task has NO live terminals left at all (task-level pair + any
         # per-repo split), fall back to main so the canvas isn't pointing at an
         # empty tree. UX pivot: with the agent+shell at task level, closing a repo
@@ -2380,6 +2450,45 @@ class ArduisWindow(Adw.ApplicationWindow):
             if t.pid:
                 self._teardown_pgid(t.pid)
 
+    def _clear_task_state_files(self, task: Task) -> None:
+        """Delete a task's per-terminal state files + their map entries (Pitfall 5b).
+
+        State files are arduis-owned RUNTIME data under the status dir
+        (XDG_RUNTIME_DIR) — exempt from the D-10 never-delete rule (this is the ONLY
+        deletion site in window.py; paths are composed ONLY via
+        ``attention.state_file_path`` under ``self._status_dir`` so nothing outside
+        it can ever be unlinked — T-04-16). Also drops the per-terminal notification
+        handle so a stale Notification is not reused after teardown.
+        """
+        for record in self._all_task_terminals(task):
+            path = attention.state_file_path(self._status_dir, record.term_id)
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+            self._record_by_state_file.pop(path, None)
+            self._notif_by_tid.pop(record.term_id, None)
+
+    def _clear_repo_state_files(self, repo) -> None:
+        """Delete ONLY a closed repo's terminal state files (D-10 scoped, Pitfall 5b).
+
+        Used by close-repo: the task-level pair's agents keep running (their state
+        files stay live), so only the repo's own ``terminals`` are cleared. Same
+        status-dir-only path composition as ``_clear_task_state_files`` (T-04-16).
+        """
+        for record in repo.terminals:
+            path = attention.state_file_path(self._status_dir, record.term_id)
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+            self._record_by_state_file.pop(path, None)
+            self._notif_by_tid.pop(record.term_id, None)
+
     def _on_close_request(self, *_):
         """No-orphan teardown across ALL panes (D-13): scratch shell + sessions."""
         # Stop the ~2s RAM poll first so no source outlives the window (RAM-03).
@@ -2394,9 +2503,11 @@ class ArduisWindow(Adw.ApplicationWindow):
         if self._shell_pid:
             self._teardown_pgid(self._shell_pid)
         # D-13: tear down EVERY terminal group of EVERY session (N-terminal model);
-        # iterating session.pid alone would orphan split agents (Pitfall 3/4).
+        # iterating session.pid alone would orphan split agents (Pitfall 3/4). Also
+        # delete each task's state files so none linger past the window (Pitfall 5b).
         for session in self._store.all():
             self._teardown_session_terminals(session)
+            self._clear_task_state_files(session)
         return False  # allow the window to close
 
     def _sigkill_if_alive(self, pgid):
