@@ -37,8 +37,14 @@ and the active-agent cap prompt-to-hibernate gate on +New (RAM-02/D-15/D-16).
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import subprocess
+import sys
+import tempfile
+import time
+
+import json
 
 import gi
 
@@ -47,11 +53,24 @@ gi.require_version("Adw", "1")
 gi.require_version("Vte", "3.91")  # GTK4 binding — needs gir1.2-vte-3.91 installed
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango, Vte  # noqa: E402
 
+# Phase 4 (STATUS-03): libnotify is OPTIONAL — guarded at import so a box without
+# gir1.2-notify-0.7 silently disables notifications rather than crashing the app
+# (Notify 0.7 is probed-present on the dev machine; the guard is for other boxes).
+try:
+    gi.require_version("Notify", "0.7")
+    from gi.repository import Notify  # noqa: E402
+
+    _HAS_NOTIFY = True
+except (ValueError, ImportError):  # pragma: no cover - depends on host gir set
+    Notify = None  # type: ignore[assignment]
+    _HAS_NOTIFY = False
+
 from arduis.host_runner import HostRunner  # noqa: E402
 from arduis.spawn import build_spawn_command, build_worktree_spawn  # noqa: E402
 from arduis.exit_status import decode_exit  # noqa: E402
 from arduis.git_service import run_git_async  # noqa: E402
-from arduis import caps, keymap, resource_monitor  # noqa: E402
+from arduis import attention, caps, keymap, resource_monitor  # noqa: E402
+from arduis.attention import AgentStatus  # noqa: E402
 from arduis.layout import LayoutModel, LeafNode, SplitNode  # noqa: E402
 from arduis.project import detect_member_repos  # noqa: E402
 from arduis.session import (  # noqa: E402
@@ -99,8 +118,13 @@ _MIN_PANE_W = 240      # UI-SPEC: min usable terminal width
 _MIN_PANE_H = 120      # UI-SPEC: min usable terminal height
 
 # UI-SPEC Color (Dracula, mirrored from theme.py).
-_DOT_ACTIVE = "#50fa7b"      # active agent dot (green)
-_DOT_HIBERNATED = "#6272a4"  # hibernated dot (grey)
+_DOT_ACTIVE = "#50fa7b"      # active agent dot (green) — also RUNNING (D-06)
+_DOT_HIBERNATED = "#6272a4"  # hibernated dot (grey) — also ENDED (D-06)
+# Phase 4 attention dot colors (D-06): waiting orange, ready cyan, idle muted
+# grey-green. running reuses _DOT_ACTIVE; ended + hibernated stay _DOT_HIBERNATED.
+_DOT_WAITING = "#ffb86c"     # waiting (orange) — THE attention dot
+_DOT_READY = "#8be9fd"       # ready (cyan)
+_DOT_IDLE = "#7a9e7e"        # idle (muted grey-green, D-06)
 _BRANCH_PINK = "#ff79c6"     # pane-header branch label
 _FOCUS_RING = "#bd93f9"      # focused-pane purple ring
 _BG2 = "#21222c"             # sidebar / header / pane-header surface
@@ -132,6 +156,15 @@ _CSS = f"""
 }}
 .arduis-dot-hibernated {{
     color: {_DOT_HIBERNATED};
+}}
+.arduis-dot-waiting {{
+    color: {_DOT_WAITING};
+}}
+.arduis-dot-ready {{
+    color: {_DOT_READY};
+}}
+.arduis-dot-idle {{
+    color: {_DOT_IDLE};
 }}
 .arduis-row-branch {{
     font-weight: 600;
@@ -211,6 +244,36 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._footer_label: Gtk.Label | None = None
         self._subline_by_sid: dict[str, Gtk.Label] = {}
 
+        # --- Phase 4 attention/status (STATUS-01/02/03, RAM-04) --------------
+        # The optional [attention] config (auto-suspend / idle / notify / sound).
+        # Read once at startup with stdlib tomllib; safe defaults (every powerful
+        # feature OFF) when the file is missing/garbage (D-11).
+        self._att_config = attention.load_config(
+            os.path.expanduser("~/.config/arduis/arduis.toml")
+        )
+        # The per-terminal state-file directory (XDG_RUNTIME_DIR, ~/.cache fallback)
+        # wiped at startup so stale files from a previous arduis run never lie
+        # (Pitfall 5a). clear_status_dir also makes the dir.
+        self._status_dir = attention.status_dir()
+        attention.clear_status_dir(self._status_dir)
+        # {state_file_path -> (task, TerminalRecord)} — the watcher's O(1) lookup
+        # from a touched file back to the record whose .status it flips. Registered
+        # at spawn (per agent terminal), cleaned on every teardown path (Pitfall 5b).
+        self._record_by_state_file: dict[str, tuple[Task, TerminalRecord]] = {}
+        # Sidebar task-aggregate dot (keyed by sid) + pane-header per-terminal dot
+        # (keyed by terminal id) handles, kept so state-file events flip CSS classes
+        # in place without rebuilding the canvas (D-06/D-07).
+        self._dot_by_sid: dict[str, Gtk.Label] = {}
+        self._pane_dot_by_tid: dict[str, Gtk.Label] = {}
+        # ONE Notify.Notification per terminal (replace-id per terminal, D-09) so a
+        # waiting burst updates the same notification instead of stacking.
+        self._notif_by_tid: dict[str, object] = {}
+        # The status-dir Gio.FileMonitor; cancelled in _on_close_request.
+        self._status_monitor: Gio.FileMonitor | None = None
+        # True in degraded mode (consent declined or settings unparseable) — Plan 04
+        # surfaces the hint; here it is only the flag + marker logic.
+        self._degraded = False
+
         self._install_css()
 
         self.set_title("arduis")
@@ -287,6 +350,12 @@ class ArduisWindow(Adw.ApplicationWindow):
         # needs the project root) and before the RAM-poll seed.
         self._scan_tasks()
 
+        # Phase 4 attention infra (STATUS-01): refresh the installed hook script,
+        # offer the consent dialog once, and start the status-dir watcher. Runs
+        # after the task scan (records exist) and before the shell leaf so the
+        # monitor is live before any terminal can spawn (D-02/D-05).
+        self._setup_attention()
+
         # Seed the canvas with the main checkout scratch shell as the pinned leaf.
         self._open_shell_leaf()
 
@@ -306,6 +375,180 @@ class ArduisWindow(Adw.ApplicationWindow):
             Gtk.StyleContext.add_provider_for_display(
                 display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
             )
+
+    # --- Phase 4 attention startup infra (STATUS-01, D-01/D-02/D-05) --------
+
+    def _setup_attention(self) -> None:
+        """Install/refresh the hook, gate consent (D-02), and start the watcher.
+
+        Four branches after refreshing the script copy + reading the user's
+        settings:
+        1. settings UNPARSEABLE → degraded, no write (never clobber a file we
+           cannot parse — T-04-12); start the monitor anyway.
+        2. already installed → no dialog (idempotent re-runs are silent — D-02).
+        3. declined marker present → degraded; start the monitor anyway (files may
+           appear if hooks were installed manually).
+        4. otherwise → first-run consent Adw.AlertDialog (pt-BR). The monitor
+           starts REGARDLESS, before the async dialog response (so a same-session
+           accept is watched immediately).
+        """
+        if _HAS_NOTIFY:
+            Notify.init("arduis")
+
+        home = os.path.expanduser("~")
+        target = attention.install_target_path(home)
+
+        # Refresh the installed script every launch so upgrades propagate
+        # (Pattern 2). Atomic tmp + os.replace into the install dir; best-effort —
+        # a write failure just means the previously-installed copy stays.
+        try:
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            source = attention.hook_script_source()
+            fd, tmp = tempfile.mkstemp(
+                dir=os.path.dirname(target), prefix=".arduis-hook-"
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(source)
+            os.replace(tmp, target)
+        except OSError as exc:  # pragma: no cover - filesystem-dependent
+            print(f"arduis: could not refresh hook script: {exc}", file=sys.stderr)
+
+        # Read ~/.claude/settings.json: missing → {}; UNPARSEABLE → degraded + never
+        # write (T-04-12). Start the monitor in every branch before returning.
+        settings_path = os.path.join(home, ".claude", "settings.json")
+        settings: dict = {}
+        unparseable = False
+        if os.path.exists(settings_path):
+            try:
+                with open(settings_path, encoding="utf-8") as fh:
+                    loaded = json.load(fh)
+                settings = loaded if isinstance(loaded, dict) else {}
+            except (OSError, ValueError) as exc:
+                print(
+                    f"arduis: ~/.claude/settings.json unreadable, attention "
+                    f"hooks NOT installed: {exc}",
+                    file=sys.stderr,
+                )
+                unparseable = True
+                self._degraded = True
+
+        if unparseable:
+            self._start_status_monitor()
+            return
+
+        if attention.is_installed(settings, target):
+            self._start_status_monitor()
+            return
+
+        if os.path.exists(attention.declined_marker_path(home)):
+            self._degraded = True
+            self._start_status_monitor()
+            return
+
+        # First run, parseable, not installed, not declined → offer consent.
+        self._present_hook_consent(settings, settings_path, target, home)
+        self._start_status_monitor()
+
+    def _present_hook_consent(
+        self, settings: dict, settings_path: str, target: str, home: str
+    ) -> None:
+        """First-launch consent dialog (D-02). Install on accept, mark on decline."""
+        dialog = Adw.AlertDialog(
+            heading="Detectar agentes esperando você",
+            body=(
+                "arduis instala um hook do Claude Code para detectar quando um "
+                "agente espera sua aprovação. Fora do arduis o hook não faz nada."
+            ),
+        )
+        dialog.add_response("later", "Agora não")
+        dialog.add_response("install", "Instalar")
+        dialog.set_response_appearance("install", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("install")
+        dialog.set_close_response("later")
+
+        def _on_response(_dlg, response):
+            if response == "install":
+                self._install_hooks(settings, settings_path, target)
+            else:
+                # Touch the declined marker → no dialog on future runs (D-02).
+                marker = attention.declined_marker_path(home)
+                try:
+                    os.makedirs(os.path.dirname(marker), exist_ok=True)
+                    with open(marker, "a", encoding="utf-8"):
+                        os.utime(marker, None)
+                except OSError as exc:  # pragma: no cover - filesystem-dependent
+                    print(f"arduis: could not write declined marker: {exc}",
+                          file=sys.stderr)
+                self._degraded = True
+
+        dialog.connect("response", _on_response)
+        dialog.present(self)
+
+    def _install_hooks(self, settings: dict, settings_path: str, target: str) -> None:
+        """Backup + atomic additive merge into ~/.claude/settings.json (T-04-12).
+
+        Backup copy ONLY when a settings file already exists; missing settings →
+        treated as {} and created. The merge is the Plan-02 tested additive builder
+        (deepcopy, dedupe-by-path, idempotent). Atomic write (tmp + os.replace in
+        the settings dir). Settings I/O is small and startup-only — synchronous
+        stdlib I/O is acceptable here.
+        """
+        try:
+            new_settings, changed = attention.merged_settings(settings, target)
+            if not changed:
+                return  # nothing to write (already present) — silent no-op
+            os.makedirs(os.path.dirname(settings_path), exist_ok=True)
+            if os.path.exists(settings_path):
+                shutil.copyfile(settings_path, settings_path + ".arduis-backup")
+            fd, tmp = tempfile.mkstemp(
+                dir=os.path.dirname(settings_path), prefix=".arduis-settings-"
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(new_settings, fh, indent=2)
+            os.replace(tmp, settings_path)
+        except OSError as exc:  # pragma: no cover - filesystem-dependent
+            print(f"arduis: could not install attention hooks: {exc}",
+                  file=sys.stderr)
+            self._degraded = True
+
+    def _start_status_monitor(self) -> None:
+        """Start the Gio.FileMonitor on the status dir (D-05, main loop, no threads)."""
+        try:
+            self._status_monitor = Gio.File.new_for_path(
+                self._status_dir
+            ).monitor_directory(Gio.FileMonitorFlags.NONE, None)
+            self._status_monitor.connect("changed", self._on_status_event)
+        except GLib.Error as exc:  # pragma: no cover - environment-dependent
+            print(f"arduis: could not watch status dir: {exc}", file=sys.stderr)
+            self._status_monitor = None
+
+    def _on_status_event(self, _monitor, gfile, _other, _event_type) -> None:
+        """A status file changed → flip the matching record's status (D-05).
+
+        O(1) dict lookup from the touched path back to (task, record); unknown
+        files (mkstemp leftovers, foreign files) are ignored (T-04-15).
+        """
+        entry = self._record_by_state_file.get(gfile.get_path())
+        if entry is None:
+            return
+        task, record = entry
+        self._apply_state_file(task, record, gfile.get_path())
+
+    def _apply_state_file(self, task: Task, record: TerminalRecord, path: str) -> None:
+        """Read one state file → recompute the record's effective status (Task 2).
+
+        Skeleton (Task 1): a no-op placeholder so the monitor wiring is runnable
+        before Task 2 implements the read/effective_status/refresh/notify pipeline.
+        """
+        return
+
+    def _refresh_status_ui(self, task: Task) -> None:
+        """Flip the sidebar aggregate dot + each agent's pane dot (Task 2)."""
+        return
+
+    def _maybe_notify(self, task, record, old, new, doc) -> None:
+        """libnotify on →waiting while unfocused (Task 3 — no-op placeholder)."""
+        return
 
     # --- terminal factory (reused verbatim from Phase 2) --------------------
 
@@ -1984,6 +2227,11 @@ class ArduisWindow(Adw.ApplicationWindow):
         if self._ram_source is not None:
             GLib.source_remove(self._ram_source)
             self._ram_source = None
+        # Cancel the status-dir watcher so no inotify source outlives the window
+        # (Phase 4 / D-05).
+        if self._status_monitor is not None:
+            self._status_monitor.cancel()
+            self._status_monitor = None
         if self._shell_pid:
             self._teardown_pgid(self._shell_pid)
         # D-13: tear down EVERY terminal group of EVERY session (N-terminal model);
