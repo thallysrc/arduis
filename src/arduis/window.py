@@ -75,6 +75,7 @@ from arduis.layout import LayoutModel, LeafNode, SplitNode  # noqa: E402
 from arduis.project import detect_member_repos  # noqa: E402
 from arduis.session import (  # noqa: E402
     AGENT_FEED,
+    AGENT_RESUME_FEED,
     RepoCheckout,
     SessionState,
     SessionStore,
@@ -273,6 +274,17 @@ class ArduisWindow(Adw.ApplicationWindow):
         # True in degraded mode (consent declined or settings unparseable) — Plan 04
         # surfaces the hint; here it is only the flag + marker logic.
         self._degraded = False
+        # Plan 04 / RAM-04 (D-12): per-task wall-clock when the aggregate ENTERED a
+        # calm state (ready/idle/ended); reset to None whenever the aggregate goes
+        # running/waiting/None or the task is not ACTIVE. The auto-suspend tick reads
+        # it via attention.should_autosuspend. NEVER consulted in degraded mode.
+        self._calm_since: dict[str, float] = {}
+        # Plan 04 / D-13 (degraded mode): per agent terminal, the last contents-changed
+        # activity epoch; drives the running/idle coarse signal when hooks were declined.
+        self._activity_ts: dict[str, float] = {}
+        # Throttle for the degraded contents-changed handler (last-handled epoch per
+        # terminal) — a TUI repaint storm must not flood the loop (T-04-21).
+        self._activity_last_handled: dict[str, float] = {}
 
         self._install_css()
 
@@ -1030,10 +1042,17 @@ class ArduisWindow(Adw.ApplicationWindow):
         )
 
         # One row per Task (a branch across N repos). The row sid is the task_id.
+        # D-12: an AUTO-suspended task is visually distinct — subline "claude ·
+        # suspensa" (vs the normal "claude · —" hibernated subline) so the user can
+        # tell arduis suspended it for inactivity (not a manual hibernate).
         for task in self._store.all():
             active = task.state == SessionState.ACTIVE
+            if not active and task.auto_suspended:
+                subline = "claude · suspensa"
+            else:
+                subline = "claude · —"
             self._listbox.append(
-                self._make_row(task.task_id, task.branch, "claude · —", active=active)
+                self._make_row(task.task_id, task.branch, subline, active=active)
             )
 
         # Rebuilding discards the old selection; restore it to the visible
@@ -2063,6 +2082,17 @@ class ArduisWindow(Adw.ApplicationWindow):
         terminal.grab_focus()
 
     def _make_wt_spawn_cb(self, task: Task | None, term_id: str, kind: str):
+        # D-12: the agent feed for an AUTO-suspended task is ``claude --continue`` so
+        # the conversation survives the suspension; a normal create / manual resume
+        # keeps plain ``claude`` (Phase-2 semantics). Capture the decision HERE (at
+        # callback-creation time) so ``_resume_task`` can clear ``task.auto_suspended``
+        # immediately after spawning without leaking the flag into a later cycle.
+        agent_feed = (
+            AGENT_RESUME_FEED
+            if (task is not None and task.auto_suspended)
+            else AGENT_FEED
+        )
+
         def _on_wt_spawned(terminal, pid, error):
             if error is not None or pid == -1:
                 return  # D-09: no banner; the pane stays a usable shell
@@ -2084,7 +2114,7 @@ class ArduisWindow(Adw.ApplicationWindow):
                     except ProcessLookupError:
                         record.pgid = None
             if kind == "agent":
-                terminal.feed_child(AGENT_FEED)  # b"claude\n" — bytes (Pitfall 5)
+                terminal.feed_child(agent_feed)  # claude [--continue] — bytes (Pitfall 5)
         return _on_wt_spawned
 
     def _on_worktree_term_exited(self, terminal, status):
@@ -2101,9 +2131,19 @@ class ArduisWindow(Adw.ApplicationWindow):
         the 5–12 active groups (sub-ms, Assumption A1); hibernated/pgid-None sessions
         are skipped (Pitfall 3) and per-pid errors are swallowed inside
         ``group_rss_kb``. Returns ``SOURCE_CONTINUE`` so the timeout keeps firing.
+
+        Phase 4 / RAM-04 (D-12): this tick also drives idle auto-suspend. Calm-state
+        tracking (``_calm_since``) and the ``should_autosuspend`` gate are evaluated
+        per ACTIVE task and the matching tasks are suspended AFTER the loop (suspend
+        mutates layouts/widgets — never during iteration). Degraded mode is excluded
+        entirely (no ``ready`` state → never auto-suspend; T-04-18).
         """
+        to_suspend: list[Task] = []
+        now = time.time()
         for task in self._store.all():
             if task.state != SessionState.ACTIVE:
+                # Not active → drop any stale calm tracking (Pitfall 8 chain).
+                self._calm_since.pop(task.task_id, None)
                 continue  # skip hibernated (Pitfall 3)
             # D-10/D-14 (UX pivot): a task's RAM is the SUM of every terminal's
             # process group — the task-level pair + any user splits + any per-repo
@@ -2129,6 +2169,31 @@ class ArduisWindow(Adw.ApplicationWindow):
                 path = attention.state_file_path(self._status_dir, t.term_id)
                 if path in self._record_by_state_file:
                     self._apply_state_file(task, t, path)
+
+            # Phase 4 / RAM-04 (D-12, Pitfall 6): track when this task ENTERED a calm
+            # aggregate (ready/idle/ended) and evaluate auto-suspend. The aggregate is
+            # recomputed AFTER the status re-apply above so it reflects the freshest
+            # idle/staleness transitions. Degraded mode is excluded — it has no `ready`
+            # and killing on a coarse signal risks SIGKILL'ing a working agent (T-04-18).
+            agg = attention.aggregate_task(terms)
+            if agg in (AgentStatus.READY, AgentStatus.IDLE, AgentStatus.ENDED):
+                self._calm_since.setdefault(task.task_id, now)
+            else:
+                # running/waiting/None → reset; a real activity burst un-calms the task.
+                self._calm_since.pop(task.task_id, None)
+            if not self._degraded and attention.should_autosuspend(
+                agg,
+                self._calm_since.get(task.task_id),
+                now,
+                self._att_config.auto_suspend_minutes,
+            ):
+                to_suspend.append(task)
+
+        # Suspend AFTER the iteration (each suspend drops layouts/widgets/maps and
+        # rebuilds the sidebar — never mutate while iterating the store snapshot).
+        for task in to_suspend:
+            self._auto_suspend(task)
+
         self._update_footer()
         return GLib.SOURCE_CONTINUE
 
@@ -2299,23 +2364,41 @@ class ArduisWindow(Adw.ApplicationWindow):
         return self._store.get(self._menu_target_sid)
 
     def _on_hibernate(self, _action, _param) -> None:
-        """D-08: kill EVERY terminal group of the worktree, discard its layout, free RAM.
+        """D-08 menu path: hibernate the right-clicked task (manual, auto_suspended False).
 
-        Hibernate (D-08/Pitfall 3): tear down EVERY terminal's process group (agent +
-        shell + any splits) so nothing is orphaned, flip the model to HIBERNATED
-        (clearing every pgid), then DISCARD the worktree's saved LayoutModel and its
-        terminal widgets/maps so resume rebuilds the DEFAULT 2-terminal layout (D-09)
-        rather than the stale tree. If the hibernated worktree IS the visible
-        workspace, fall back to the main workspace (Open Question 2 resolution).
+        Thin guard around the shared ``_hibernate_task`` body — the right-clicked
+        task is resolved via ``_menu_session`` and, when ACTIVE, runs the exact same
+        teardown/layout-drop/fallback/rebuild path the auto-suspend tick uses. A
+        manual hibernate leaves ``task.auto_suspended`` False (hibernate_fields never
+        touches it), so resume feeds plain ``claude`` — Phase-2 semantics unchanged.
         """
         task = self._menu_session()
         if task is None or task.state == SessionState.HIBERNATED:
             return
+        self._hibernate_task(task)
+
+    def _hibernate_task(self, task: Task) -> None:
+        """Shared hibernate body: kill every group, discard layout, free RAM (D-08).
+
+        Extracted from ``_on_hibernate`` (Plan 04) so BOTH the menu path and the
+        idle auto-suspend tick (``_auto_suspend``) go through the SAME proven
+        no-orphan machinery (03.2-verified — T-04-18). Tears down EVERY terminal's
+        process group (agent + shell + any splits) so nothing is orphaned, deletes
+        the task's state files (Pitfall 5b — placed AFTER teardown, the Plan-03
+        ordering, so EVERY caller cleans its files), flips the model to HIBERNATED
+        (clearing every pgid; ``auto_suspended`` is left as the caller set it — the
+        menu leaves it False, ``_auto_suspend`` sets it True first), then DISCARDS the
+        saved LayoutModel + terminal widgets/maps so resume rebuilds the DEFAULT
+        2-terminal layout (D-09) rather than the stale tree. If the hibernated task
+        IS the visible workspace, fall back to main (always present, D-07).
+        """
         sid = task.task_id
 
         self._teardown_session_terminals(task)  # kill every group (Pitfall 3/5)
         self._clear_task_state_files(task)  # delete state files (Pitfall 5b)
         hibernate_fields(task)  # GTK-free: state=HIBERNATED, all pid/pgid=None
+        # The task is no longer calm-tracked while hibernated (it is not ACTIVE).
+        self._calm_since.pop(sid, None)
 
         # D-09: discard the worktree's saved layout so resume rebuilds the default,
         # not the saved tree (extra splits are not restored).
@@ -2340,6 +2423,50 @@ class ArduisWindow(Adw.ApplicationWindow):
             self._swap_workspace(_MAIN_SID)
 
         self._rebuild_sidebar()    # dim/grey-dot the row (D-08, not a tab badge)
+
+    def _auto_suspend(self, task: Task) -> None:
+        """Idle auto-suspend a task through the shared hibernate path (RAM-04, D-12).
+
+        Reached ONLY via the ``should_autosuspend`` gate in ``_poll_ram`` (the single
+        call site — running/waiting are immune at any age, T-04-09/Pitfall 6, and
+        degraded mode never reaches here). Marks the task ``auto_suspended`` True so
+        resume feeds ``claude --continue`` (the conversation survives), runs the same
+        proven no-orphan ``_hibernate_task`` body, and ALWAYS notifies — even focused
+        — because arduis just killed processes on the user's behalf and that must
+        never be silent (T-04-22 repudiation).
+        """
+        task.auto_suspended = True
+        self._hibernate_task(task)  # teardown + state-file clear + layout drop + rebuild
+        self._calm_since.pop(task.task_id, None)
+        self._notify_suspended(task)
+
+    def _notify_suspended(self, task: Task) -> None:
+        """Always-on suspension notification (D-12, T-04-22) — bypasses the focus gate.
+
+        Unlike ``_maybe_notify`` (which suppresses while focused), this fires whether
+        or not the window is active: the user must always be able to tell arduis
+        suspended their agent. Reuses the Plan-03 libnotify machinery; the per-terminal
+        notification slot is keyed by the task id so it never collides with an agent
+        terminal's waiting notification. Never raises (a dead daemon is swallowed).
+        """
+        if not _HAS_NOTIFY:
+            return
+        title = f"{task.branch} suspensa"
+        body = GLib.markup_escape_text(
+            "Suspensa por inatividade — retome para continuar a conversa."
+        )
+        icon = "dialog-information"
+        slot = f"suspend:{task.task_id}"
+        try:
+            notif = self._notif_by_tid.get(slot)
+            if notif is None:
+                notif = Notify.Notification.new(title, body, icon)
+                self._notif_by_tid[slot] = notif
+            else:
+                notif.update(title, body, icon)
+            notif.show()
+        except Exception as exc:  # noqa: BLE001 - never let a dead daemon crash us
+            print(f"arduis: suspension notification failed: {exc}", file=sys.stderr)
 
     def _on_resume(self, _action, _param) -> None:
         """D-09: rebuild the DEFAULT 2-terminal layout (agent + shell), not a reattach.
@@ -2367,13 +2494,24 @@ class ArduisWindow(Adw.ApplicationWindow):
         # intact (hibernate only cleared pid/pgid) — repos are worktree metadata.
         task.terminals = default_task_terminals(branch)
         task.state = SessionState.ACTIVE
+        # Drop any stale suspension-notification slot for this task (its key is
+        # "suspend:<task_id>", not "<task_id>:", so the prefix-pop in _hibernate_task
+        # does not cover it) so a resumed task does not reuse a closed notification.
+        self._notif_by_tid.pop(f"suspend:{task.task_id}", None)
 
         # Rebuild the DEFAULT 2-terminal workspace (shared with create, UX pivot).
         self._build_task_workspace(task, [r.repo_name for r in task.repos])
         self._rebuild_sidebar()
 
         # Spawn the task's agent+shell pair eagerly: agent fed claude, shell plain.
+        # D-12: if this task was AUTO-suspended, the agent's spawn callback (built
+        # synchronously inside _spawn_task_terminals) has already captured the
+        # ``claude --continue`` feed decision from ``task.auto_suspended``. Clearing
+        # the flag immediately AFTER the spawn call returns is therefore safe — the
+        # closure holds the decision — and guarantees one ``--continue`` never leaks
+        # into a later manual hibernate→resume cycle.
         self._spawn_task_terminals(task)
+        task.auto_suspended = False
 
     def _on_close_repo(self, _action, param) -> None:
         """D-10: close ONE repo of the right-clicked task — kill its groups, KEEP the dir.
