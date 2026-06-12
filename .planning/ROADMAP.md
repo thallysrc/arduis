@@ -117,7 +117,13 @@ Plans:
   3. The waiting state survives a Claude Code TUI redraw mid-response (no false orange) and fires for a real approval prompt (no missed orange)
   4. User gets a desktop notification (libnotify) + optional sound when an agent enters waiting and the window is unfocused
   5. Idle worktrees can be auto-suspended based on the detected idle status
-**Plans**: TBD
+**Plans**: 5 plans
+Plans:
+- [ ] 04-01-PLAN.md — GTK-free hook script (env-guarded, 7-event map, atomic state files) + spawn.py extra_env injection seam (TDD)
+- [ ] 04-02-PLAN.md — GTK-free attention.py: 5-state model, state-file read/wipe, aggregation, settings merge, notify/auto-suspend policies, arduis.toml config (TDD)
+- [ ] 04-03-PLAN.md — window.py wiring: consent-gated hook install, env injection, Gio.FileMonitor watcher, sidebar+pane status dots, libnotify on waiting+unfocused, state-file cleanup
+- [ ] 04-04-PLAN.md — RAM-04 auto-suspend via existing hibernate machinery + `claude --continue` resume + degraded bell mode (consent declined)
+- [ ] 04-05-PLAN.md — Acceptance: headless broadway smoke + live human-verify checklist (5 criteria + UAT flags A1/A2)
 **UI hint**: yes
 
 ### Phase 5: Agent Swap + tmux Keybindings + Themes
@@ -202,7 +208,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 3. Parallel + Sidebar + RAM | 5/5 | Complete | 2026-06-09 |
 | 03.1. worktree-as-terminal-workspace | 3/3 | Complete | 2026-06-10 |
 | 03.2. Projects and Cross-Repo Tasks | 3/3 | Complete    | 2026-06-12 |
-| 4. Attention Detection | 0/TBD | Not started | - |
+| 4. Attention Detection | 0/5 | Planned | - |
 | 5. Agent Swap + Keys + Themes | 0/TBD | Not started | - |
 | 6. Setup via `.arduis.toml` | 0/TBD | Not started | - |
 | 7. Isolated Containers | 0/TBD | Not started | - |
