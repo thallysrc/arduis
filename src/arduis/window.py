@@ -535,16 +535,119 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._apply_state_file(task, record, gfile.get_path())
 
     def _apply_state_file(self, task: Task, record: TerminalRecord, path: str) -> None:
-        """Read one state file → recompute the record's effective status (Task 2).
+        """Read one state file → recompute the record's effective status (D-05).
 
-        Skeleton (Task 1): a no-op placeholder so the monitor wiring is runnable
-        before Task 2 implements the read/effective_status/refresh/notify pipeline.
+        Reads the (tolerant) parsed doc; computes pid liveness from the record's
+        pgid (the killpg(pgid, 0) probe already used by the RAM machinery), falling
+        back to the hook pid when no pgid is known; runs ``attention.effective_status``
+        (time + pid based) and writes ``record.status``/``record.status_ts``; then
+        refreshes the dots and evaluates the notification gate. A missing/partial
+        file (read_state → None) is ignored — readers never crash (T-04-07/T-04-15).
         """
-        return
+        doc = attention.read_state(path)
+        if doc is None:
+            return
+        old = record.status
+        pid_alive = self._pid_alive(record, doc)
+        new = attention.effective_status(
+            doc,
+            time.time(),
+            pid_alive,
+            self._att_config.idle_minutes * 60,
+        )
+        record.status = new.value
+        record.status_ts = doc.ts
+        self._refresh_status_ui(task)
+        self._maybe_notify(task, record, old, new.value, doc)
+
+    def _pid_alive(self, record: TerminalRecord, doc) -> bool:
+        """Liveness probe for the staleness sweep (Pitfall 5, T-04-17).
+
+        Prefer the terminal's process GROUP (``killpg(pgid, 0)`` — signal 0 sends
+        nothing); ProcessLookupError → dead. With no pgid yet, fall back to the
+        hook-written pid (``os.kill(pid, 0)``); with neither, assume alive (a fresh
+        record we have not torn down — never wrongly retire it).
+        """
+        if record.pgid is not None:
+            try:
+                os.killpg(record.pgid, 0)
+                return True
+            except ProcessLookupError:
+                return False
+            except OSError:
+                return True  # EPERM etc. — process exists, just not ours to signal
+        pid = getattr(doc, "pid", None)
+        if isinstance(pid, int):
+            try:
+                os.kill(pid, 0)
+                return True
+            except ProcessLookupError:
+                return False
+            except OSError:
+                return True
+        return True
 
     def _refresh_status_ui(self, task: Task) -> None:
-        """Flip the sidebar aggregate dot + each agent's pane dot (Task 2)."""
-        return
+        """Flip the sidebar aggregate dot + each agent's pane dot in place (D-06/D-07).
+
+        Sidebar row dot = the task AGGREGATE over its agent terminals (the
+        Plan-02 ``aggregate_task``); per-terminal pane dots reflect each agent
+        record's own status. Active state gates the row: a hibernated/ended task
+        keeps the grey dot regardless of any opinion.
+        """
+        active = task.state == SessionState.ACTIVE
+        aggregate = attention.aggregate_task(self._all_task_terminals(task))
+        row_dot = self._dot_by_sid.get(task.task_id)
+        if row_dot is not None:
+            self._set_dot_class(row_dot, self._dot_css_for(aggregate, active))
+
+        # Each agent terminal's own pane-header dot reflects its individual status.
+        for record in self._all_task_terminals(task):
+            if record.kind != "agent":
+                continue
+            pane_dot = self._pane_dot_by_tid.get(record.term_id)
+            if pane_dot is None:
+                continue
+            status = None
+            if record.status is not None:
+                status = next(
+                    (s for s in AgentStatus if s.value == record.status), None
+                )
+            self._set_dot_class(pane_dot, self._dot_css_for(status, active))
+
+    def _dot_css_for(self, status, active: bool) -> str:
+        """Map (status, active) → the dot CSS class (plan_decisions D-06).
+
+        Not active → hibernated grey. Else by status: WAITING orange, RUNNING green
+        (reuses active), READY cyan, IDLE muted grey-green, ENDED grey. A None
+        status (no opinion yet) keeps the current active-green behavior.
+        """
+        if not active:
+            return "arduis-dot-hibernated"
+        if status == AgentStatus.WAITING:
+            return "arduis-dot-waiting"
+        if status == AgentStatus.RUNNING:
+            return "arduis-dot-active"
+        if status == AgentStatus.READY:
+            return "arduis-dot-ready"
+        if status == AgentStatus.IDLE:
+            return "arduis-dot-idle"
+        if status == AgentStatus.ENDED:
+            return "arduis-dot-hibernated"
+        return "arduis-dot-active"  # None — opinion-less active task
+
+    def _set_dot_class(self, label: Gtk.Label, css_class: str) -> None:
+        """Apply exactly one ``arduis-dot-*`` class to ``label`` (remove the rest)."""
+        for klass in (
+            "arduis-dot-active",
+            "arduis-dot-hibernated",
+            "arduis-dot-waiting",
+            "arduis-dot-ready",
+            "arduis-dot-idle",
+        ):
+            if klass != css_class:
+                label.remove_css_class(klass)
+        label.add_css_class(css_class)
 
     def _maybe_notify(self, task, record, old, new, doc) -> None:
         """libnotify on →waiting while unfocused (Task 3 — no-op placeholder)."""
@@ -625,6 +728,16 @@ class ArduisWindow(Adw.ApplicationWindow):
         branch.set_text(branch_label)
         branch.add_css_class("arduis-branch")
         header.append(branch)
+
+        # Phase 4 (D-07): per-terminal status dot, before the badge. Hidden by
+        # default; _spawn_into makes it visible for task AGENT terminals only
+        # (shells / pinned main never write a state file).
+        pane_dot = Gtk.Label(label="●")
+        pane_dot.add_css_class("arduis-dot-active")
+        pane_dot.set_valign(Gtk.Align.CENTER)
+        pane_dot.set_visible(False)
+        header.append(pane_dot)
+        self._pane_dot_by_tid[sid] = pane_dot
 
         badge = Gtk.Label()
         badge.set_text(badge_label)
@@ -844,6 +957,9 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._sid_by_row.clear()
         self._row_by_sid.clear()
         self._subline_by_sid.clear()
+        # Dots are recreated by _make_row below; drop stale handles first so the
+        # post-rebuild status refresh re-binds to the fresh labels (D-06).
+        self._dot_by_sid.clear()
 
         # Pinned project row (D-12): ONE terminal at the project root, not a task.
         # Title = the project name; subline = "<project> · zsh".
@@ -868,6 +984,11 @@ class ArduisWindow(Adw.ApplicationWindow):
             if row is not None:
                 self._listbox.select_row(row)
 
+        # The dots were just recreated as plain active/hibernated — re-apply each
+        # task's live aggregate status so dots survive a rebuild (D-06).
+        for task in self._store.all():
+            self._refresh_status_ui(task)
+
     def _make_row(self, sid: str, branch: str, subline: str, active: bool) -> Gtk.ListBoxRow:
         """One sidebar row: dot (8px) + branch (13/600) + RAM sub-line (11/400)."""
         row = Gtk.ListBoxRow()
@@ -881,6 +1002,9 @@ class ArduisWindow(Adw.ApplicationWindow):
         dot.add_css_class("arduis-dot-active" if active else "arduis-dot-hibernated")
         dot.set_valign(Gtk.Align.CENTER)
         outer.append(dot)
+        # Keep a handle so state-file events can flip the task-aggregate dot in
+        # place (D-06) without rebuilding the row.
+        self._dot_by_sid[sid] = dot
 
         text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         # T-03-09: branch name rendered literally via set_text (no markup injection).
@@ -1839,8 +1963,32 @@ class ArduisWindow(Adw.ApplicationWindow):
         found across the task's terminals (task-level ``task.terminals`` first, then
         any per-repo ``task.repos[*].terminals``) by ``term_id``. A plain ``shell``
         terminal is NOT fed ``claude``.
+
+        Phase 4 (STATUS-01): an AGENT terminal of a real task gets the per-terminal
+        env pair ``ARDUIS_STATE_FILE`` (where the hook writes) + ``ARDUIS_SESSION_META``
+        (the term id) injected through the additive ``extra_env`` seam, and its
+        state-file path is registered in ``_record_by_state_file`` so the watcher can
+        flip the record's status. Shell terminals and the pinned main/scratch leaves
+        (no task) get NO extra env — the hook is then a guaranteed no-op (Pitfall 8).
         """
-        argv, envv = build_worktree_spawn(self._runner)
+        extra_env: list[str] | None = None
+        if task is not None and kind == "agent":
+            state_file = attention.state_file_path(self._status_dir, term_id)
+            extra_env = [
+                f"ARDUIS_STATE_FILE={state_file}",
+                f"ARDUIS_SESSION_META={term_id}",
+            ]
+            record = next(
+                (t for t in self._all_task_terminals(task) if t.term_id == term_id),
+                None,
+            )
+            if record is not None:
+                self._record_by_state_file[state_file] = (task, record)
+            # Reveal the pane-header status dot for this agent terminal (D-07).
+            pane_dot = self._pane_dot_by_tid.get(term_id)
+            if pane_dot is not None:
+                pane_dot.set_visible(True)
+        argv, envv = build_worktree_spawn(self._runner, extra_env)
         terminal.spawn_async(
             Vte.PtyFlags.DEFAULT,
             cwd,                  # per-repo worktree working directory (WT-03)
@@ -1911,6 +2059,17 @@ class ArduisWindow(Adw.ApplicationWindow):
                 label.set_text(
                     f"claude · {resource_monitor.format_ram_kb(total or None)}"
                 )
+            # Phase 4 (D-05): ride this tick for the TIME-BASED transitions the
+            # FileMonitor never sees — IDLE (ready + threshold) and staleness
+            # (running with a dead pgid → ended). Cheap: re-read only the agent
+            # records that already have a registered state file (~a few tiny JSON
+            # reads). _apply_state_file re-aggregates + refreshes the dots.
+            for t in terms:
+                if t.kind != "agent" or t.status is None:
+                    continue
+                path = attention.state_file_path(self._status_dir, t.term_id)
+                if path in self._record_by_state_file:
+                    self._apply_state_file(task, t, path)
         self._update_footer()
         return GLib.SOURCE_CONTINUE
 
