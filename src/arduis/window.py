@@ -61,7 +61,7 @@ from arduis.session import (  # noqa: E402
     SessionStore,
     Task,
     TerminalRecord,
-    default_repo_terminals,
+    default_task_terminals,
     hibernate_fields,
 )
 from arduis.task_layout import (  # noqa: E402
@@ -463,19 +463,28 @@ class ArduisWindow(Adw.ApplicationWindow):
         model = self._workspace_layout(sid)
 
         # Kill the closed terminal's process group (no orphan) and forget its
-        # TerminalRecord so RAM/teardown no longer track it. The record lives in
-        # one of the task's repos' terminal lists (the N-repo model).
+        # TerminalRecord so RAM/teardown no longer track it. Under the UX pivot the
+        # record lives in task.terminals (default pair + splits); a per-repo split
+        # could also exist — search both.
         task = self._store.get(sid)
         if task is not None:
-            for repo in task.repos:
-                record = next(
-                    (t for t in repo.terminals if t.term_id == tid), None
-                )
-                if record is not None:
-                    if record.pid:
-                        self._teardown_pgid(record.pid)
-                    repo.terminals.remove(record)
-                    break
+            record = next(
+                (t for t in task.terminals if t.term_id == tid), None
+            )
+            if record is not None:
+                if record.pid:
+                    self._teardown_pgid(record.pid)
+                task.terminals.remove(record)
+            else:
+                for repo in task.repos:
+                    record = next(
+                        (t for t in repo.terminals if t.term_id == tid), None
+                    )
+                    if record is not None:
+                        if record.pid:
+                            self._teardown_pgid(record.pid)
+                        repo.terminals.remove(record)
+                        break
 
         # Drop the terminal from the layout tree + widget maps.
         model.close_leaf(tid)
@@ -1062,14 +1071,13 @@ class ArduisWindow(Adw.ApplicationWindow):
                 # A child is a repo worktree iff its `.git` is a FILE (pointer).
                 if not os.path.isfile(os.path.join(child.path, ".git")):
                     continue
+                # UX pivot: a RepoCheckout is worktree METADATA only — terminals
+                # live at task level, NOT per repo.
                 repos.append(
                     RepoCheckout(
                         repo_name=child.name,
                         worktree_dir=child.path,
                         branch=task_id,
-                        # HIBERNATED: terminal records exist but carry NO pid/pgid
-                        # (Pitfall 6 — do NOT spawn). Resume re-spawns them.
-                        terminals=default_repo_terminals(task_id, child.name),
                     )
                 )
             if not repos:
@@ -1081,6 +1089,9 @@ class ArduisWindow(Adw.ApplicationWindow):
                     task_dir=entry.path,
                     repos=repos,
                     state=SessionState.HIBERNATED,
+                    # HIBERNATED: the default task-level pair's records exist but
+                    # carry NO pid/pgid (Pitfall 6 — do NOT spawn). Resume re-spawns.
+                    terminals=default_task_terminals(task_id),
                 )
             )
 
@@ -1242,15 +1253,20 @@ class ArduisWindow(Adw.ApplicationWindow):
     def _create_task(
         self, branch: str, chosen_repos: list[str], existing_in_primary: list[str]
     ) -> None:
-        """Materialize the task folder, build the 2×N workspace, kick the per-repo chain.
+        """Materialize the task folder, kick the per-repo chain, then open the PAIR.
 
         D-08/D-09: a task is one branch across N chosen member repos. We FIRST
         create the task folder and materialize the relative symlinks (so relative
         compose build-contexts/bind-mounts resolve before any worktree add —
-        Pitfall 4), then build a 2×N workspace (one COLUMN per repo: agent over
-        shell, D-01/D-02), then run a per-repo CHAINED ``run_git_async`` sequence
-        (RESEARCH Pattern 2 — never threads/asyncio). Best-effort: a repo that
-        aborts is skipped and surfaced; succeeded repos are kept (D-10/OQ2).
+        Pitfall 4), then run a per-repo CHAINED ``run_git_async`` sequence (RESEARCH
+        Pattern 2 — never threads/asyncio). Best-effort: a repo that aborts is
+        skipped and surfaced; succeeded repos are kept (D-10/OQ2).
+
+        UX pivot (2026-06-11, supersedes D-01/D-02): the workspace is NOT a column
+        per repo. It is the DEFAULT 2-terminal pair (agent over shell) rooted at the
+        task folder, built+spawned ONCE in ``_finalize_task_creation`` after the
+        chain finishes with ≥1 success — terminals must NOT spawn before the task
+        folder + worktrees are materialized.
         """
         root = self._project_root
         if not root:
@@ -1272,14 +1288,18 @@ class ArduisWindow(Adw.ApplicationWindow):
                 symlink_errors.append(f"{os.path.basename(dst)}: {exc}")
 
         # Register the Task NOW (so the sidebar row appears); repos get appended as
-        # each succeeds (best-effort partial creation, OQ2).
-        task = Task(task_id=branch, branch=branch, task_dir=task_dir, repos=[])
+        # each succeeds (best-effort partial creation, OQ2). Its DEFAULT workspace is
+        # the task-level 2-terminal pair (agent+shell), built+spawned once the chain
+        # finishes — NOT before the folder is materialized (UX pivot).
+        task = Task(
+            task_id=branch,
+            branch=branch,
+            task_dir=task_dir,
+            repos=[],
+            terminals=default_task_terminals(branch),
+        )
         self._store.add(task)
-
-        # Build the DEFAULT one-column-per-repo 2×N workspace via the shared helper
-        # (also used by _on_resume — D-09). For a 1-repo task this is exactly the
-        # 03.1 default (agent over shell), via the identical code path (criterion 5).
-        self._build_task_workspace(task, chosen_repos)
+        self._rebuild_sidebar()  # show the row immediately; workspace opens on finalize
 
         # Per-repo errors accumulate across the chain; surfaced once at the end.
         repo_errors: list[str] = list(symlink_errors)
@@ -1288,50 +1308,43 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._add_repo(task, chosen_repos, 0, branch, repo_errors)
 
     def _build_task_workspace(self, task: Task, repos: list[str]) -> LayoutModel:
-        """Build the DEFAULT one-column-per-repo 2×N workspace for ``task`` (D-01/D-02/D-09).
+        """Build the DEFAULT 2-terminal workspace for ``task`` (UX pivot 2026-06-11).
 
-        Shared by ``_create_task`` (initial creation) and ``_on_resume`` (D-09
-        rebuild — NOT a reattach, earlier extra splits are intentionally NOT
-        restored): one COLUMN per repo (agent ``t0`` over shell ``t1`` — vertical
-        split within a column; columns joined horizontally). Builds a fresh
-        ``LayoutModel``, creates each repo's two VTE leaves via the palette factory,
-        registers the widget maps, makes the task the visible workspace and reflects.
-        For a 1-repo task this is exactly the 03.1 default (criterion 5 — no
-        ``len == 1`` branch). The caller spawns the terminals afterwards.
+        SUPERSEDES the one-column-per-repo 2×N layout of D-01/D-02 (a real 6-repo
+        project produced an unusable 2×6 grid of tiny panes). Shared by
+        ``_create_task`` and ``_resume_task``: build a fresh ``LayoutModel`` with
+        EXACTLY TWO task-level leaves — agent ``{task}:t0`` over shell ``{task}:t1``
+        (vertical split, the 03.1 default) — regardless of how many repos the task
+        spans. Both terminals open at ``task.task_dir`` (the task folder mirrors the
+        project root) so one agent works across all the task's repos; the user grows
+        the workspace via the split machinery (no auto per-repo columns). ``repos``
+        is accepted for signature compatibility but no longer drives the layout.
+        The caller spawns the terminals afterwards.
         """
         branch = task.branch
+        agent_tid = f"{task.task_id}:t0"
+        shell_tid = f"{task.task_id}:t1"
+
         model = LayoutModel()
-        prev_top: str | None = None  # the previous column's TOP (agent) leaf id
-        for repo in repos:
-            agent_tid = f"{branch}:{repo}:t0"
-            shell_tid = f"{branch}:{repo}:t1"
-            if model.root is None:
-                model.root = LeafNode(agent_tid)
-                model.focused_id = agent_tid
-                model.touch(agent_tid)
-            else:
-                # New column: split the previous column's agent horizontally.
-                model.split(prev_top, agent_tid, "h")
-            # Within the column: shell below the agent (vertical split).
-            model.split(agent_tid, shell_tid, "v")
-            prev_top = agent_tid
+        model.root = LeafNode(agent_tid)
+        model.focused_id = agent_tid
+        model.touch(agent_tid)
+        # Shell below the agent (vertical split) — the 03.1 default pair.
+        model.split(agent_tid, shell_tid, "v")
+        model.focused_id = agent_tid
+        model.touch(agent_tid)
 
-            # Build both VTE leaves up front (badge "claude" agent / "zsh" shell).
-            self._make_repo_leaf(agent_tid, branch, "claude")
-            self._make_repo_leaf(shell_tid, branch, "zsh")
+        # Build both VTE leaves (badge "claude" agent / "zsh" shell).
+        self._make_task_leaf(agent_tid, branch, "claude")
+        self._make_task_leaf(shell_tid, branch, "zsh")
 
-        # Focus the first repo's agent and make the task the visible workspace.
-        if repos:
-            first_agent = f"{branch}:{repos[0]}:t0"
-            model.focused_id = first_agent
-            model.touch(first_agent)
         self._layouts[task.task_id] = model
         self._active_workspace_sid = task.task_id
         self._reflect_layout()
         return model
 
-    def _make_repo_leaf(self, tid: str, branch: str, badge: str) -> None:
-        """Build + register one repo terminal's VTE leaf (palette factory, T-04)."""
+    def _make_task_leaf(self, tid: str, branch: str, badge: str) -> None:
+        """Build + register one task terminal's VTE leaf (palette factory, T-04)."""
         terminal = self._make_terminal()
         terminal.connect("child-exited", self._on_worktree_term_exited)
         leaf = self._make_leaf(tid, branch, terminal, badge_label=badge)
@@ -1404,15 +1417,16 @@ class ArduisWindow(Adw.ApplicationWindow):
                             repo_errors.append(f"{name}: {aerr}")
                             _advance()
                             return
+                        # UX pivot: a RepoCheckout is now worktree METADATA only —
+                        # the task's terminals live at task level (built once in
+                        # finalize), so no per-repo terminal list / spawn here.
                         task.repos.append(
                             RepoCheckout(
                                 repo_name=name,
                                 worktree_dir=wt_dir,
                                 branch=branch,
-                                terminals=default_repo_terminals(branch, name),
                             )
                         )
-                        self._spawn_repo_terminals(task, name, wt_dir)
                         _advance()
 
                     run_git_async(payload, _add_done, self._runner)
@@ -1444,26 +1458,22 @@ class ArduisWindow(Adw.ApplicationWindow):
     def _finalize_task_creation(
         self, task: Task, chosen_repos: list[str], repo_errors: list[str]
     ) -> None:
-        """Finalize the create chain: prune failed columns, drop zombie tasks, report.
+        """Finalize the create chain: drop zombie tasks, else open the task PAIR.
 
-        ``_build_task_workspace`` built a column (two empty VTE leaves) for EVERY
-        chosen repo up front, but only repos that actually got a worktree are in
-        ``task.repos`` (appended in ``_add_done``). Any chosen repo NOT in
-        ``task.repos`` failed — its column is a dead empty pane and must be removed
-        so the workspace shows only live repos. If ZERO repos succeeded the whole
-        task is a zombie (empty layout, symlink-only folder): remove it from the
-        store + drop its layout/widgets entirely so it never appears in the sidebar
-        or counts toward the active cap. NEVER deletes from disk (D-10).
+        UX pivot (2026-06-11): there are no per-repo columns to prune anymore — the
+        workspace is the single task-level 2-terminal pair, built+spawned HERE (once
+        the task folder + worktrees are materialized). Partial failure just means
+        fewer worktrees in the task folder; the 2-terminal workspace opens
+        regardless. If ZERO repos succeeded the whole task is a zombie (symlink-only
+        folder, no worktree): remove it from the store so it never appears in the
+        sidebar or counts toward the active cap. NEVER deletes from disk (D-10).
         """
         succeeded = {r.repo_name for r in task.repos}
-        failed = [name for name in chosen_repos if name not in succeeded]
 
         if not succeeded:
             # Zero repos created — tear the task down completely (no zombie row).
-            for name in chosen_repos:
-                self._drop_repo_column(task, name)
-            self._layouts.pop(task.task_id, None)
             self._store.remove(task.task_id)
+            self._layouts.pop(task.task_id, None)
             if self._active_workspace_sid == task.task_id:
                 self._swap_workspace(_MAIN_SID)
             self._rebuild_sidebar()
@@ -1471,51 +1481,53 @@ class ArduisWindow(Adw.ApplicationWindow):
                 self._show_error("Não foi possível criar a task", "\n".join(repo_errors))
             return
 
-        # Partial success — prune only the failed repos' dead columns.
-        for name in failed:
-            self._drop_repo_column(task, name)
+        # ≥1 repo succeeded → open the DEFAULT 2-terminal workspace at the task
+        # folder root and spawn the agent+shell pair (now that the worktrees exist).
+        self._build_task_workspace(task, list(succeeded))
+        self._spawn_task_terminals(task)
 
         if repo_errors:
             self._show_error("Algumas repos não foram criadas", "\n".join(repo_errors))
         self._rebuild_sidebar()
-        self._reflect_layout()
-        term = self._term_by_sid.get(self._active_layout().focused_id) \
-            if self._active_layout() is not None else None
-        if term is not None:
-            term.grab_focus()
 
-    def _drop_repo_column(self, task: Task, repo_name: str) -> None:
-        """Remove a (failed) repo's two leaves from ``task``'s layout + widget maps.
+    def _task_root_cwd(self, task: Task) -> str:
+        """Working dir for the task's terminals (UX pivot): the task folder root.
 
-        The two leaves were built eagerly by ``_build_task_workspace`` but, for a
-        failed repo, nothing was spawned into them (no PTY child, no pid). So this
-        only prunes the layout tree + widget maps — there is no process group to
-        kill. NEVER deletes from disk (D-10).
+        Both task-level terminals open at ``task.task_dir`` (it mirrors the project
+        root — chosen repos as worktree dirs + relative symlinks for everything
+        else) so one agent sees and works across ALL the task's repos. Degenerate
+        1-repo task: open at that sole repo's worktree dir so the visible result
+        equals today's 1-repo behavior (the agent lands inside the repo).
         """
-        model = self._layouts.get(task.task_id)
-        for tid in (f"{task.branch}:{repo_name}:t0", f"{task.branch}:{repo_name}:t1"):
-            if model is not None:
-                model.close_leaf(tid)
-            self._leaf_by_sid.pop(tid, None)
-            self._term_by_sid.pop(tid, None)
+        if len(task.repos) == 1:
+            return task.repos[0].worktree_dir
+        return task.task_dir
 
-    def _spawn_repo_terminals(self, task: Task, repo_name: str, wt_dir: str) -> None:
-        """Spawn one repo's agent (fed claude) + shell (plain) eagerly (D-03)."""
-        agent_tid = f"{task.branch}:{repo_name}:t0"
-        shell_tid = f"{task.branch}:{repo_name}:t1"
+    def _spawn_task_terminals(self, task: Task) -> None:
+        """Spawn the task's agent (fed claude) + shell (plain) pair (UX pivot).
+
+        Both root at ``_task_root_cwd(task)`` (the task folder, or the sole repo's
+        worktree in the degenerate 1-repo case). pid/pgid land on ``task.terminals``.
+        """
+        cwd = self._task_root_cwd(task)
+        agent_tid = f"{task.task_id}:t0"
+        shell_tid = f"{task.task_id}:t1"
         agent = self._term_by_sid.get(agent_tid)
         shell = self._term_by_sid.get(shell_tid)
         if agent is not None:
-            self._spawn_into(agent, wt_dir, task, agent_tid, kind="agent")
+            self._spawn_into(agent, cwd, task, agent_tid, kind="agent")
         if shell is not None:
-            self._spawn_into(shell, wt_dir, task, shell_tid, kind="shell")
+            self._spawn_into(shell, cwd, task, shell_tid, kind="shell")
 
     def _split_active_pane(self, focused_tid: str) -> None:
         """Split the active workspace, spawning a new agent terminal beside ``focused_tid`` (D-05).
 
         Every split is an agent terminal by default (D-05) — Ctrl+C drops to the
-        shell. The new terminal id is ``f"{sid}:tN"`` where N is the next free index
-        for the active worktree; it spawns into the worktree dir and is fed claude.
+        shell. UX pivot (2026-06-11): a task split is a TASK-level terminal — id
+        ``{task}:tN`` rooted at the task folder (``_task_root_cwd``), tracked on
+        ``task.terminals`` so RAM/teardown see it — coherent with the default pair
+        opening at the task root. On the pinned main workspace there is no Task —
+        spawn into the project root, untracked.
         """
         sid = self._active_workspace_sid
         if sid is None:
@@ -1523,14 +1535,9 @@ class ArduisWindow(Adw.ApplicationWindow):
         model = self._workspace_layout(sid)
 
         task = self._store.get(sid)
-        # The split lands in the focused terminal's REPO (its worktree dir). The
-        # focused id is `{task}:{repo}:tN`; the repo segment maps the split to the
-        # right RepoCheckout (its worktree dir + its terminal list). On the pinned
-        # main workspace there is no Task — spawn into the project root, untracked.
-        repo = self._repo_for_term_id(task, focused_tid) if task is not None else None
-        if task is not None and repo is not None:
-            cwd = repo.worktree_dir
-            new_tid = self._next_repo_term_id(task.branch, repo.repo_name)
+        if task is not None:
+            cwd = self._task_root_cwd(task)
+            new_tid = self._next_term_id(sid)
             label = task.branch
         else:
             cwd = self._repo_root or GLib.get_home_dir()
@@ -1546,27 +1553,25 @@ class ArduisWindow(Adw.ApplicationWindow):
         model.split(focused_tid, new_tid, "h")
         self._reflect_layout()
 
-        if task is not None and repo is not None:
-            # Track the split terminal on its repo so RAM/teardown see it.
-            repo.terminals.append(TerminalRecord(new_tid, "agent", repo_name=repo.repo_name))
+        if task is not None:
+            # Track the split as a task-level terminal so RAM/teardown see it.
+            task.terminals.append(TerminalRecord(new_tid, "agent"))
             self._spawn_into(terminal, cwd, task, new_tid, kind="agent")
         else:
             # main workspace has no store task — spawn plain, no record to write.
             self._spawn_into(terminal, cwd, None, new_tid, kind="agent")
 
-    def _repo_for_term_id(self, task: Task, tid: str) -> RepoCheckout | None:
-        """Find the RepoCheckout owning ``tid`` (matches any of its terminals)."""
-        return next(
-            (r for r in task.repos if any(t.term_id == tid for t in r.terminals)),
-            None,
-        )
+    def _all_task_terminals(self, task: Task) -> list[TerminalRecord]:
+        """Every TerminalRecord owned by ``task``: task-level pair + any per-repo splits.
 
-    def _next_repo_term_id(self, branch: str, repo_name: str) -> str:
-        """Next free ``{branch}:{repo}:tN`` terminal id within a task's repo."""
-        n = 0
-        while f"{branch}:{repo_name}:t{n}" in self._term_by_sid:
-            n += 1
-        return f"{branch}:{repo_name}:t{n}"
+        Under the UX pivot the default workspace lives in ``task.terminals``; a user
+        could still attach a split to a specific repo (``task.repos[*].terminals``).
+        RAM accounting + teardown must cover BOTH so no process group is missed.
+        """
+        records: list[TerminalRecord] = list(task.terminals)
+        for repo in task.repos:
+            records.extend(repo.terminals)
+        return records
 
     def _next_term_id(self, sid: str) -> str:
         """Return the next free ``{sid}:tN`` terminal id for workspace ``sid``."""
@@ -1588,8 +1593,9 @@ class ArduisWindow(Adw.ApplicationWindow):
         """Spawn zsh -l -i in ``cwd``; feed AGENT_FEED only when ``kind == "agent"``.
 
         Writes the spawned ``pid``/``pgid`` onto the matching ``TerminalRecord``
-        found across ``task.repos[*].terminals`` by ``term_id``. A plain ``shell``
-        terminal (D-02) is NOT fed ``claude``.
+        found across the task's terminals (task-level ``task.terminals`` first, then
+        any per-repo ``task.repos[*].terminals``) by ``term_id``. A plain ``shell``
+        terminal is NOT fed ``claude``.
         """
         argv, envv = build_worktree_spawn(self._runner)
         terminal.spawn_async(
@@ -1611,13 +1617,12 @@ class ArduisWindow(Adw.ApplicationWindow):
             if error is not None or pid == -1:
                 return  # D-09: no banner; the pane stays a usable shell
             # Write pid/pgid onto the matching TerminalRecord across ALL of the
-            # task's repos (the N-repo × N-terminal model — OQ1 field lookup).
+            # task's terminals (task-level + any per-repo splits).
             if task is not None:
                 record = next(
                     (
                         t
-                        for r in task.repos
-                        for t in r.terminals
+                        for t in self._all_task_terminals(task)
                         if t.term_id == term_id
                     ),
                     None,
@@ -1650,18 +1655,14 @@ class ArduisWindow(Adw.ApplicationWindow):
         for task in self._store.all():
             if task.state != SessionState.ACTIVE:
                 continue  # skip hibernated (Pitfall 3)
-            # D-10/D-14: a task's RAM is the SUM of every repo's every terminal
-            # process group. Poll each live group (pgid not None — skip the
-            # not-yet-spawned), writing each terminal's rss_kb back, then sum the
-            # whole task across all its repos for the row subline.
-            for t in (t for r in task.repos for t in r.terminals if t.pgid is not None):
+            # D-10/D-14 (UX pivot): a task's RAM is the SUM of every terminal's
+            # process group — the task-level pair + any user splits + any per-repo
+            # split. Poll each live group (pgid not None — skip the not-yet-spawned),
+            # writing each terminal's rss_kb back, then sum for the row subline.
+            terms = self._all_task_terminals(task)
+            for t in (t for t in terms if t.pgid is not None):
                 t.rss_kb = resource_monitor.group_rss_kb(t.pgid)
-            total = sum(
-                t.rss_kb
-                for r in task.repos
-                for t in r.terminals
-                if t.rss_kb
-            )
+            total = sum(t.rss_kb for t in terms if t.rss_kb)
             label = self._subline_by_sid.get(task.task_id)
             if label is not None:
                 label.set_text(
@@ -1676,13 +1677,13 @@ class ArduisWindow(Adw.ApplicationWindow):
             return
         tasks = self._store.all()
         n = caps.active_count(tasks)
-        # D-10: aggregate sums every active task's every repo's terminal RAM.
+        # D-10 (UX pivot): aggregate sums every active task's every terminal RAM
+        # (task-level pair + splits + any per-repo split).
         total = sum(
             t.rss_kb
             for task in tasks
             if task.state == SessionState.ACTIVE
-            for r in task.repos
-            for t in r.terminals
+            for t in self._all_task_terminals(task)
             if t.rss_kb is not None
         )
         total_str = resource_monitor.format_ram_kb(total if total else None)
@@ -1873,15 +1874,14 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._rebuild_sidebar()    # dim/grey-dot the row (D-08, not a tab badge)
 
     def _on_resume(self, _action, _param) -> None:
-        """D-09: rebuild the DEFAULT 2×N layout (agent + shell per repo), not a reattach.
+        """D-09: rebuild the DEFAULT 2-terminal layout (agent + shell), not a reattach.
 
-        Resume rebuilds the task like create (D-09): fresh per-repo terminal
-        records, a fresh 2×N LayoutModel (one column per repo: agent t0 over shell
-        t1) via the shared ``_build_task_workspace`` helper, then every terminal
-        spawned eagerly — only agents are fed ``AGENT_FEED``. A resumed task
-        re-derives its repos from ``task.repos`` (hibernate kept the repo set,
-        only cleared pid/pgid), so the default layout rebuilds per repo. Earlier
-        extra splits are NOT restored (03.1 D-09 stands).
+        Resume rebuilds the task like create (UX pivot 2026-06-11): fresh task-level
+        terminal records, a fresh LayoutModel with the single agent-over-shell pair
+        rooted at the task folder via the shared ``_build_task_workspace`` helper,
+        then both terminals spawned eagerly — only the agent is fed ``AGENT_FEED``.
+        The repo set is intact (hibernate only cleared pid/pgid). Earlier extra
+        splits are NOT restored (03.1 D-09 stands).
         """
         task = self._menu_session()
         if task is None or task.state == SessionState.ACTIVE:
@@ -1889,26 +1889,23 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._resume_gated(task)
 
     def _resume_task(self, task: Task) -> None:
-        """Resume ``task``: rebuild default layout + eager spawn (shared, D-09)."""
+        """Resume ``task``: rebuild default 2-terminal layout + eager spawn (UX pivot)."""
         if task.state == SessionState.ACTIVE:
             return
         branch = task.branch
 
-        # Fresh per-repo terminal records (replaces the hibernated, pgid-cleared
-        # lists) so spawn callbacks can write pid/pgid back onto them. The repo set
-        # is intact (hibernate only cleared pid/pgid), so iterate task.repos.
-        repo_names = [r.repo_name for r in task.repos]
-        for repo in task.repos:
-            repo.terminals = default_repo_terminals(branch, repo.repo_name)
+        # Fresh task-level terminal records (replaces the hibernated, pgid-cleared
+        # pair) so spawn callbacks can write pid/pgid back onto them. The repo set is
+        # intact (hibernate only cleared pid/pgid) — repos are worktree metadata.
+        task.terminals = default_task_terminals(branch)
         task.state = SessionState.ACTIVE
 
-        # Rebuild the DEFAULT one-column-per-repo layout (shared with create, D-09).
-        self._build_task_workspace(task, repo_names)
+        # Rebuild the DEFAULT 2-terminal workspace (shared with create, UX pivot).
+        self._build_task_workspace(task, [r.repo_name for r in task.repos])
         self._rebuild_sidebar()
 
-        # Spawn every terminal eagerly (D-09): agents fed claude, shells plain.
-        for repo in task.repos:
-            self._spawn_repo_terminals(task, repo.repo_name, repo.worktree_dir)
+        # Spawn the task's agent+shell pair eagerly: agent fed claude, shell plain.
+        self._spawn_task_terminals(task)
 
     def _on_close_repo(self, _action, param) -> None:
         """D-10: close ONE repo of the right-clicked task — kill its groups, KEEP the dir.
@@ -1943,12 +1940,13 @@ class ArduisWindow(Adw.ApplicationWindow):
             t.pid = None
             t.pgid = None
 
-        # If the task has no live terminals left in any repo, fall back to main so
-        # the canvas isn't pointing at an empty tree.
+        # If the task has NO live terminals left at all (task-level pair + any
+        # per-repo split), fall back to main so the canvas isn't pointing at an
+        # empty tree. UX pivot: with the agent+shell at task level, closing a repo
+        # normally leaves the task-level pair live and the workspace stays put.
         any_live = any(
             self._term_by_sid.get(t.term_id) is not None
-            for r in task.repos
-            for t in r.terminals
+            for t in self._all_task_terminals(task)
         )
         if self._active_workspace_sid == sid and (
             model is None or not model.visible_ids() or not any_live
@@ -1969,17 +1967,16 @@ class ArduisWindow(Adw.ApplicationWindow):
             pass  # already gone
 
     def _teardown_session_terminals(self, task: Task) -> None:
-        """Tear down EVERY terminal's process group across EVERY repo (Pitfall 3/4).
+        """Tear down EVERY terminal's process group of the task (Pitfall 3/4).
 
-        A task owns N repos, each owning its own terminals (agent + shell + any
-        splits); each carries its own pid. Killing only one repo's terminals would
-        orphan the others and leak RAM (D-08). Iterating ``task.repos[*].terminals``
-        ensures no group is forgotten by the hibernate/close/exit call sites.
+        UX pivot: the default workspace is the task-level pair (``task.terminals``);
+        a user split could also attach to a repo (``task.repos[*].terminals``).
+        Iterating ``_all_task_terminals`` ensures NO group is forgotten by the
+        hibernate/close/exit call sites — "no orphans" is a hard acceptance bar.
         """
-        for repo in task.repos:
-            for t in repo.terminals:
-                if t.pid:
-                    self._teardown_pgid(t.pid)
+        for t in self._all_task_terminals(task):
+            if t.pid:
+                self._teardown_pgid(t.pid)
 
     def _on_close_request(self, *_):
         """No-orphan teardown across ALL panes (D-13): scratch shell + sessions."""
