@@ -285,6 +285,10 @@ class ArduisWindow(Adw.ApplicationWindow):
         # Throttle for the degraded contents-changed handler (last-handled epoch per
         # terminal) — a TUI repaint storm must not flood the loop (T-04-21).
         self._activity_last_handled: dict[str, float] = {}
+        # Pane-header badge label handle per terminal id — degraded mode flips it to
+        # "esperando?" on a bell and back to "claude" on activity (D-13 lower-confidence
+        # label). Populated by _make_leaf.
+        self._badge_by_tid: dict[str, Gtk.Label] = {}
 
         self._install_css()
 
@@ -367,6 +371,9 @@ class ArduisWindow(Adw.ApplicationWindow):
         # after the task scan (records exist) and before the shell leaf so the
         # monitor is live before any terminal can spawn (D-02/D-05).
         self._setup_attention()
+        # Reveal the degraded-mode re-invite hint iff consent was declined/unparseable
+        # (the hint button was built hidden before _setup_attention set _degraded).
+        self._refresh_degraded_hint()
 
         # Seed the canvas with the main checkout scratch shell as the pinned leaf.
         self._open_shell_leaf()
@@ -492,6 +499,7 @@ class ArduisWindow(Adw.ApplicationWindow):
                     print(f"arduis: could not write declined marker: {exc}",
                           file=sys.stderr)
                 self._degraded = True
+                self._refresh_degraded_hint()
 
         dialog.connect("response", _on_response)
         dialog.present(self)
@@ -518,10 +526,16 @@ class ArduisWindow(Adw.ApplicationWindow):
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 json.dump(new_settings, fh, indent=2)
             os.replace(tmp, settings_path)
+            # Install succeeded → leave degraded mode and hide the re-invite hint
+            # (a re-invite via _show_consent_dialog flips this back on; the next
+            # claude relaunch picks up the freshly-installed hooks — primary mode).
+            self._degraded = False
+            self._refresh_degraded_hint()
         except OSError as exc:  # pragma: no cover - filesystem-dependent
             print(f"arduis: could not install attention hooks: {exc}",
                   file=sys.stderr)
             self._degraded = True
+            self._refresh_degraded_hint()
 
     def _start_status_monitor(self) -> None:
         """Start the Gio.FileMonitor on the status dir (D-05, main loop, no threads)."""
@@ -814,6 +828,9 @@ class ArduisWindow(Adw.ApplicationWindow):
         badge.set_text(badge_label)
         badge.add_css_class("arduis-badge")
         header.append(badge)
+        # Keep a handle so degraded mode can flip the label to "esperando?" on a
+        # bell and back to "claude" on activity (D-13) without rebuilding the leaf.
+        self._badge_by_tid[sid] = badge
 
         spacer = Gtk.Box()
         spacer.set_hexpand(True)
@@ -1261,6 +1278,17 @@ class ArduisWindow(Adw.ApplicationWindow):
         spacer.set_hexpand(True)
         bar.append(spacer)
 
+        # Degraded-mode re-invite (D-02/D-13): a subtle flat button shown ONLY when
+        # hooks were declined/unavailable. Clicking re-presents the consent dialog
+        # (NOT the full _setup_attention — that would create a duplicate FileMonitor).
+        # Built hidden here (this runs before _setup_attention sets _degraded);
+        # revealed by _refresh_degraded_hint after setup. Sits left of the footer.
+        self._degraded_hint_btn = Gtk.Button(label="status limitado — instalar hooks?")
+        self._degraded_hint_btn.add_css_class("flat")
+        self._degraded_hint_btn.set_visible(False)
+        self._degraded_hint_btn.connect("clicked", lambda *_: self._show_consent_dialog())
+        bar.append(self._degraded_hint_btn)
+
         # Aggregate footer: "N agentes ativos · <total> RAM" (count in green).
         self._footer_label = Gtk.Label()
         self._footer_label.set_xalign(1)
@@ -1268,6 +1296,42 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._update_footer()
         bar.append(self._footer_label)
         return bar
+
+    def _refresh_degraded_hint(self) -> None:
+        """Show the 'status limitado' re-invite iff degraded (called after setup)."""
+        btn = getattr(self, "_degraded_hint_btn", None)
+        if btn is not None:
+            btn.set_visible(self._degraded)
+
+    def _show_consent_dialog(self) -> None:
+        """Re-present ONLY the hook-consent dialog (D-13 re-invite, no monitor dup).
+
+        Recomputes the same paths/settings ``_setup_attention`` uses and calls
+        ``_present_hook_consent`` directly — it does NOT re-run ``_setup_attention``
+        (which would create a SECOND Gio.FileMonitor on the status dir; the existing
+        monitor keeps running). If settings are now unparseable we keep degraded mode
+        and do nothing (never clobber a file we cannot parse — T-04-12). On a
+        successful install ``_present_hook_consent`` clears degraded indirectly via
+        ``_install_hooks``; we refresh the hint visibility after presenting.
+        """
+        home = os.path.expanduser("~")
+        target = attention.install_target_path(home)
+        settings_path = os.path.join(home, ".claude", "settings.json")
+        settings: dict = {}
+        if os.path.exists(settings_path):
+            try:
+                with open(settings_path, encoding="utf-8") as fh:
+                    loaded = json.load(fh)
+                settings = loaded if isinstance(loaded, dict) else {}
+            except (OSError, ValueError):
+                # Still unparseable — stay degraded, never write (T-04-12).
+                return
+        if attention.is_installed(settings, target):
+            # Already installed (e.g. user fixed it manually) — leave degraded mode.
+            self._degraded = False
+            self._refresh_degraded_hint()
+            return
+        self._present_hook_consent(settings, settings_path, target, home)
 
     # --- C-Space prefix state machine (PAR-03/D-09/D-10) --------------------
 
@@ -2066,6 +2130,15 @@ class ArduisWindow(Adw.ApplicationWindow):
             pane_dot = self._pane_dot_by_tid.get(term_id)
             if pane_dot is not None:
                 pane_dot.set_visible(True)
+            # Degraded mode (D-13, hooks declined): the bell + contents-changed
+            # signals are the ONLY status signal. Both are pre-0.76 (floor-safe). Do
+            # NOT connect in primary mode — hooks are authoritative there and a BEL
+            # would fight them. Reveal the dot regardless (it shows the coarse signal).
+            if self._degraded and record is not None:
+                terminal.connect("bell", self._make_bell_cb(task, record))
+                terminal.connect(
+                    "contents-changed", self._make_activity_cb(task, record)
+                )
         argv, envv = build_worktree_spawn(self._runner, extra_env)
         terminal.spawn_async(
             Vte.PtyFlags.DEFAULT,
@@ -2122,6 +2195,60 @@ class ArduisWindow(Adw.ApplicationWindow):
         # The pane's shell ended (e.g. user typed `exit`); leave the leaf/dir.
         return
 
+    # --- degraded-mode signals (D-13): bell → waiting, activity → running/idle ---
+
+    def _make_bell_cb(self, task: Task, record: TerminalRecord):
+        """Degraded mode (D-13): a VTE bell is a coarse 'waiting' hint.
+
+        Any program in the PTY can ring BEL (T-04-19 spoofing — accepted: degraded
+        mode is explicitly lower-confidence and never auto-suspends, so the worst case
+        is a false hint, never a kill). On a bell, mark the record 'waiting' (sticky
+        until the next activity burst clears it), route through ``_maybe_notify`` so
+        an unfocused waiting still notifies in degraded mode, flip this terminal's
+        pane badge to the down-labeled "esperando?" (with the question mark — D-13),
+        and refresh the dots. ``returns`` nothing — VTE 'bell' takes no return.
+        """
+        def _on_bell(_terminal) -> None:
+            old = record.status
+            record.status = AgentStatus.WAITING.value
+            record.status_ts = time.time()
+            self._refresh_status_ui(task)
+            # Down-labeled badge (D-13 lower confidence): "esperando?" not the dot-only
+            # treatment of the primary path.
+            badge = self._badge_by_tid.get(record.term_id)
+            if badge is not None:
+                badge.set_text("esperando?")
+            # Notification gate uses the PRE-flip status as `old` so a →waiting
+            # transition (unfocused) fires once, even in degraded mode.
+            self._maybe_notify(task, record, old, record.status, None)
+        return _on_bell
+
+    def _make_activity_cb(self, task: Task, record: TerminalRecord):
+        """Degraded mode (D-13): contents-changed activity → running, clears the bell.
+
+        Throttled to once per second per terminal (T-04-21: a TUI repaint storm must
+        not flood the loop — the handler is a dict-write + an occasional label flip).
+        Activity bumps ``_activity_ts``; if the record is 'waiting' (a bell hint) or
+        has no opinion yet, it becomes 'running' (activity clears the hint) and the
+        badge is restored to "claude". 'running'/'idle' staleness vs idle is handled
+        on the poll tick. NO 'ready' state in degraded mode (plan_decisions).
+        """
+        def _on_activity(_terminal) -> None:
+            now = time.time()
+            last = self._activity_last_handled.get(record.term_id, 0.0)
+            if now - last < 1.0:
+                return  # throttle: ignore bursts within 1s (T-04-21)
+            self._activity_last_handled[record.term_id] = now
+            self._activity_ts[record.term_id] = now
+            if record.status in (AgentStatus.WAITING.value, None):
+                record.status = AgentStatus.RUNNING.value
+                record.status_ts = now
+                badge = self._badge_by_tid.get(record.term_id)
+                if badge is not None:
+                    badge.set_text("claude")
+                self._refresh_status_ui(task)
+        return _on_activity
+
     # --- ~2s off-loop RAM poll (RAM-03/D-12/D-14) ---------------------------
 
     def _poll_ram(self) -> bool:
@@ -2169,6 +2296,33 @@ class ArduisWindow(Adw.ApplicationWindow):
                 path = attention.state_file_path(self._status_dir, t.term_id)
                 if path in self._record_by_state_file:
                     self._apply_state_file(task, t, path)
+
+            # Phase 4 / D-13 (degraded mode): with hooks declined there are no state
+            # files — the ONLY status signal is the bell (→waiting) and the
+            # contents-changed activity timestamp. On this tick, an agent terminal with
+            # NO activity for idle_minutes degrades to 'idle' (never 'ready' — D-13 has
+            # no ready state, and degraded mode never auto-suspends so 'idle' here is
+            # purely cosmetic). A 'waiting' bell hint is sticky and is NOT idle-aged.
+            if self._degraded:
+                idle_after = self._att_config.idle_minutes * 60
+                changed = False
+                for t in terms:
+                    if t.kind != "agent" or t.status is None:
+                        continue
+                    if t.status == AgentStatus.WAITING.value:
+                        continue  # sticky bell hint — only activity clears it
+                    last = self._activity_ts.get(t.term_id)
+                    if (
+                        last is not None
+                        and idle_after > 0
+                        and (now - last) >= idle_after
+                        and t.status != AgentStatus.IDLE.value
+                    ):
+                        t.status = AgentStatus.IDLE.value
+                        t.status_ts = now
+                        changed = True
+                if changed:
+                    self._refresh_status_ui(task)
 
             # Phase 4 / RAM-04 (D-12, Pitfall 6): track when this task ENTERED a calm
             # aggregate (ready/idle/ended) and evaluate auto-suspend. The aggregate is
@@ -2416,6 +2570,13 @@ class ArduisWindow(Adw.ApplicationWindow):
             self._pane_dot_by_tid.pop(tid, None)
         for tid in [t for t in self._notif_by_tid if t.startswith(prefix)]:
             self._notif_by_tid.pop(tid, None)
+        # Degraded-mode handles keyed by terminal id (badge label + activity ts).
+        for tid in [t for t in self._badge_by_tid if t.startswith(prefix)]:
+            self._badge_by_tid.pop(tid, None)
+        for tid in [t for t in self._activity_ts if t.startswith(prefix)]:
+            self._activity_ts.pop(tid, None)
+        for tid in [t for t in self._activity_last_handled if t.startswith(prefix)]:
+            self._activity_last_handled.pop(tid, None)
 
         # If the hibernated worktree was the visible workspace, fall back to main
         # (always present per D-07) so the canvas isn't pointing at a discarded tree.
