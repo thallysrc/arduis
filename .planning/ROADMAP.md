@@ -16,7 +16,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 2: Core Loop (new worktree → env → agent)** - "+New worktree" creates a worktree and opens a terminal with `claude` running; births the GTK-free SessionStore
 - [x] **Phase 3: Parallel Worktrees + Sidebar + RAM Groundwork** - N worktrees side by side, free pane layout, sidebar with focus/switch, per-worktree RAM visibility and active caps
 - [x] **Phase 03.1: worktree-as-terminal-workspace (INSERTED)** - Canvas shows ONE worktree's terminals (workspace); per-worktree LayoutModel; sidebar swaps the whole workspace; re-targeted C-Space/RAM/hibernate semantics
-- [ ] **Phase 03.2: Projects and Cross-Repo Tasks (INSERTED)** - Project = multi-repo root folder; task = set of worktrees (one per chosen repo) mirroring the root layout; sidebar lists tasks, workspace shows a task's terminals
+- [x] **Phase 03.2: Projects and Cross-Repo Tasks (INSERTED)** - Project = multi-repo root folder; task = set of worktrees (one per chosen repo) mirroring the root layout; sidebar lists tasks, workspace shows a task's terminals (completed 2026-06-12)
 - [ ] **Phase 4: Attention Detection (who's waiting)** - Hooks-first status (running/waiting/idle/ready), sidebar+pane dots, desktop notification, idle auto-suspend
 - [ ] **Phase 5: Agent Swap + tmux Keybindings + Themes** - Agent = configurable command (Ctrl+C swaps), tmux-style chords, Dracula default + swappable themes
 - [ ] **Phase 6: Per-Worktree Setup via `.arduis.toml`** - Repo config with sensible defaults; setup commands run on worktree creation via the login shell
@@ -88,12 +88,12 @@ Plans:
   3. The task workspace opens with terminals for every chosen repo (agent placement per discuss-phase decision); swap/keys/RAM/hibernate operate per task
   4. Concluding/hibernating a task tears down every worktree's process groups (no orphans), keeping directories on hibernate
   5. Phase 03.1 single-worktree behavior is preserved as the 1-repo task case (no special-casing)
-**Plans:** 3 plans
+**Plans:** 3/3 plans complete
 
 Plans:
-- [ ] 03.2-01-PLAN.md — GTK-free domain (TDD): project.py member detection + task_layout.py dir/symlink/resolve builders + session.py Task/RepoCheckout replacing WorktreeSession
-- [ ] 03.2-02-PLAN.md — window.py structural pivot: project resolution + name-only topbar, New-task dialog (repo multi-pick), per-repo async create chain + relative-symlink materializer, Task-keyed sidebar
-- [ ] 03.2-03-PLAN.md — window.py lifecycle: per-task hibernate/resume/RAM/cap across repos, startup scan of ../<root>-tasks/, close-a-repository (never delete), no-orphan teardown + manual UAT
+- [x] 03.2-01-PLAN.md — GTK-free domain (TDD): project.py member detection + task_layout.py dir/symlink/resolve builders + session.py Task/RepoCheckout replacing WorktreeSession
+- [x] 03.2-02-PLAN.md — window.py structural pivot: project resolution + name-only topbar, New-task dialog (repo multi-pick), per-repo async create chain + relative-symlink materializer, Task-keyed sidebar
+- [x] 03.2-03-PLAN.md — window.py lifecycle: per-task hibernate/resume/RAM/cap across repos, startup scan of ../<root>-tasks/, close-a-repository (never delete), no-orphan teardown + manual UAT
 
 ### Phase 03.1: worktree-as-terminal-workspace (INSERTED)
 
@@ -201,7 +201,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 2. Core Loop | 3/3 | Complete | 2026-06-09 |
 | 3. Parallel + Sidebar + RAM | 5/5 | Complete | 2026-06-09 |
 | 03.1. worktree-as-terminal-workspace | 3/3 | Complete | 2026-06-10 |
-| 03.2. Projects and Cross-Repo Tasks | 0/3 | Planned | - |
+| 03.2. Projects and Cross-Repo Tasks | 3/3 | Complete    | 2026-06-12 |
 | 4. Attention Detection | 0/TBD | Not started | - |
 | 5. Agent Swap + Keys + Themes | 0/TBD | Not started | - |
 | 6. Setup via `.arduis.toml` | 0/TBD | Not started | - |

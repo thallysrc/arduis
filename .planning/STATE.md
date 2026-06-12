@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: verifying
+status: executing
 stopped_at: Phase 03.2 context gathered
-last_updated: "2026-06-11T15:18:49.639Z"
-last_activity: 2026-06-10
+last_updated: "2026-06-12T14:50:52.538Z"
+last_activity: 2026-06-12
 progress:
   total_phases: 11
-  completed_phases: 4
-  total_plans: 13
-  completed_plans: 13
+  completed_phases: 5
+  total_plans: 16
+  completed_plans: 16
   percent: 100
 ---
 
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-08)
 
 **Core value:** Tirar a ideia "quero começar uma branch nova" e ter um agente de IA rodando numa worktree isolada em segundos — gerenciando N agentes em paralelo e sempre sabendo qual deles te espera.
-**Current focus:** Phase 03.1 — worktree-as-terminal-workspace
+**Current focus:** Phase 03.2 — projects-and-cross-repo-tasks
 
 ## Current Position
 
-Phase: 03.2 (Projects and Cross-Repo Tasks)
+Phase: 4
 Plan: Not started
-Status: Phase 03.1 complete + verified (UAT approved); Phase 03.2 inserted, awaiting discuss/plan
-Last activity: 2026-06-10
+Status: Executing Phase 03.2
+Last activity: 2026-06-12
 
 Progress: [██████░░░░] 60%
 
@@ -36,7 +36,7 @@ Progress: [██████░░░░] 60%
 
 **Velocity:**
 
-- Total plans completed: 13
+- Total plans completed: 16
 - Average duration: -
 - Total execution time: 0 hours
 
@@ -48,6 +48,7 @@ Progress: [██████░░░░] 60%
 | 02 | 3 | - | - |
 | 03 | 5 | - | - |
 | 03.1 | 3 | - | - |
+| 03.2 | 3 | - | - |
 
 **Recent Trend:**
 
