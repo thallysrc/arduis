@@ -30,6 +30,7 @@ import copy
 import json
 import os
 import re
+import tomllib
 from dataclasses import dataclass
 from enum import Enum
 
@@ -386,3 +387,106 @@ def merged_settings(settings: dict, script_path: str) -> tuple[dict, bool]:
         groups.append(group)
         changed = True
     return out, changed
+
+
+# --- Notify + auto-suspend policies (D-08, D-12, Pitfall 6) --------------------
+# The "calm" aggregates eligible for auto-suspend — NEVER running/waiting (a long
+# tool call must not be killed: Pitfall 6 / T-04-09).
+_CALM_FOR_SUSPEND = (AgentStatus.READY, AgentStatus.IDLE, AgentStatus.ENDED)
+
+
+def should_notify(
+    old: str | None,
+    new: str | None,
+    window_active: bool,
+    notify_ready: bool = False,
+) -> bool:
+    """Should arduis fire a desktop notification for this transition? (D-08)
+
+    Fires ONLY on a transition INTO ``waiting`` while the window is UNFOCUSED — a
+    re-write of ``waiting`` over ``waiting`` does not re-fire, and a focused window
+    never notifies (the user is already looking). ``ready`` notifications fire only
+    when ``notify_ready`` is True (the flag is default-OFF in v1 — D-08).
+    """
+    if window_active:
+        return False
+    if new == AgentStatus.WAITING.value:
+        return old != AgentStatus.WAITING.value
+    if new == AgentStatus.READY.value and notify_ready:
+        return old != AgentStatus.READY.value
+    return False
+
+
+def should_autosuspend(
+    aggregate: AgentStatus | None,
+    calm_since: float | None,
+    now: float,
+    minutes: int,
+) -> bool:
+    """Should an idle task be auto-suspended right now? (RAM-04, D-12, Pitfall 6)
+
+    True ONLY when the task aggregate is calm (READY/IDLE/ENDED) and has been calm
+    for at least ``minutes`` minutes. ``minutes <= 0`` is OFF (the default — D-11).
+    RUNNING/WAITING are NEVER suspended at any age (a 30-min tool call must survive
+    — T-04-09). A None aggregate (no opinion — a fileless task) or a None
+    ``calm_since`` never suspends (Pitfall 8 chain).
+    """
+    if minutes <= 0:
+        return False
+    if aggregate not in _CALM_FOR_SUSPEND:
+        return False
+    if calm_since is None:
+        return False
+    return (now - calm_since) >= minutes * 60
+
+
+# --- arduis.toml config (D-11) -------------------------------------------------
+@dataclass
+class AttentionConfig:
+    """Typed ``[attention]`` config (D-11). Safe defaults: every powerful feature OFF.
+
+    ``auto_suspend_minutes`` 0 = OFF (the default — a process-killing feature is
+    never on by accident); ``notify_ready`` / ``sound`` default OFF (D-08/D-10).
+    """
+
+    auto_suspend_minutes: int = 0
+    idle_minutes: int = 10
+    notify_ready: bool = False
+    sound: bool = False
+
+
+def _coerce_nonneg_int(value, default: int) -> int:
+    """A non-negative int from a TOML value, else ``default`` (negatives → 0/off)."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return default
+    return value if value >= 0 else 0
+
+
+def _coerce_bool(value, default: bool) -> bool:
+    return value if isinstance(value, bool) else default
+
+
+def load_config(path: str) -> AttentionConfig:
+    """Read ``~/.config/arduis/arduis.toml`` ``[attention]`` (D-11), stdlib tomllib.
+
+    A missing file, invalid TOML, or a wrong-typed key yields the safe default for
+    that key (T-04-10: hostile/garbage values can never enable a process-killing
+    feature). Read-only, mode "rb" per tomllib.
+    """
+    try:
+        with open(path, "rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError):
+        return AttentionConfig()
+    section = data.get("attention")
+    if not isinstance(section, dict):
+        return AttentionConfig()
+    defaults = AttentionConfig()
+    return AttentionConfig(
+        auto_suspend_minutes=_coerce_nonneg_int(
+            section.get("auto_suspend_minutes"), defaults.auto_suspend_minutes
+        ),
+        idle_minutes=_coerce_nonneg_int(section.get("idle_minutes"), defaults.idle_minutes),
+        notify_ready=_coerce_bool(section.get("notify_ready"), defaults.notify_ready),
+        sound=_coerce_bool(section.get("sound"), defaults.sound),
+    )

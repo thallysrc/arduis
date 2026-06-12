@@ -62,8 +62,14 @@ class TerminalRecord:
     and are the per-terminal teardown handle (cleared on hibernate, Pitfall 3).
     ``rss_kb`` is summed across a task's terminals by the caller (RAM-03).
     ``repo_name`` (OQ1) groups terminals by member repo for per-repo RAM/teardown
-    and "close a repository" (D-10) — a field lookup, not string parsing. It is
-    the LAST field so existing positional construction keeps working.
+    and "close a repository" (D-10) — a field lookup, not string parsing.
+
+    ``status``/``status_ts`` (Phase 4 STATUS-02) carry the latest attention state
+    (``running``/``waiting``/``ready``/``idle``/``ended``, or None = no opinion yet)
+    and its epoch timestamp, written by ``window.py`` from the state-file watcher
+    and consumed by ``attention.aggregate_task``. They are appended LAST (after
+    ``repo_name``) per the house rule so existing positional construction keeps
+    working — they default to None (a fresh terminal has no opinion).
     """
 
     term_id: str                          # stable key, e.g. "feat:backend:t0"
@@ -72,6 +78,8 @@ class TerminalRecord:
     pgid: int | None = None               # process-group id for teardown (RAM-01)
     rss_kb: int | None = None             # resident set size; None until a monitor lands
     repo_name: str | None = None          # OQ1 — which member repo this terminal belongs to
+    status: str | None = None             # Phase 4 STATUS-02 — latest attention state; None=no opinion
+    status_ts: float | None = None        # epoch of the last status write (staleness/idle sweep)
 
 
 def default_repo_terminals(task_id: str, repo_name: str) -> list[TerminalRecord]:

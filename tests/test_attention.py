@@ -19,6 +19,7 @@ from arduis.attention import (
     HOOK_EVENTS,
     MATCHER_EVENTS,
     AgentStatus,
+    AttentionConfig,
     StateDoc,
     aggregate_task,
     clear_status_dir,
@@ -28,9 +29,12 @@ from arduis.attention import (
     hook_script_source,
     install_target_path,
     is_installed,
+    load_config,
     merged_settings,
     read_state,
     sanitize_term_id,
+    should_autosuspend,
+    should_notify,
     state_file_path,
     status_dir,
 )
@@ -418,6 +422,99 @@ def test_hook_script_source_returns_packaged_content():
     src = hook_script_source()
     assert src
     assert "ARDUIS_STATE_FILE" in src
+
+
+# --- should_notify (D-08) ------------------------------------------------------
+def test_notify_fires_on_transition_into_waiting_unfocused():
+    assert should_notify("running", "waiting", window_active=False) is True
+    assert should_notify(None, "waiting", window_active=False) is True
+
+
+def test_notify_no_refire_on_waiting_to_waiting():
+    assert should_notify("waiting", "waiting", window_active=False) is False
+
+
+def test_notify_focused_window_never_fires():
+    # D-08: window has focus -> the user is already looking.
+    assert should_notify("running", "waiting", window_active=True) is False
+
+
+def test_notify_ready_behind_flag_default_off():
+    assert should_notify("running", "ready", window_active=False, notify_ready=False) is False
+    assert should_notify("running", "ready", window_active=False, notify_ready=True) is True
+    # even with the flag on, a ready->ready re-write does not re-fire.
+    assert should_notify("ready", "ready", window_active=False, notify_ready=True) is False
+
+
+# --- should_autosuspend (RAM-04, D-12, Pitfall 6) ------------------------------
+def test_autosuspend_off_when_minutes_zero():
+    assert should_autosuspend(AgentStatus.READY, 0.0, now=10 ** 9, minutes=0) is False
+
+
+def test_autosuspend_calm_past_threshold():
+    minutes = 30
+    threshold = minutes * 60
+    for calm in (AgentStatus.READY, AgentStatus.IDLE, AgentStatus.ENDED):
+        assert should_autosuspend(calm, 0.0, now=threshold, minutes=minutes) is True
+        assert should_autosuspend(calm, 0.0, now=threshold - 1, minutes=minutes) is False
+
+
+def test_autosuspend_never_running_or_waiting_at_any_age():
+    # Pitfall 6 / T-04-09: a 30-min tool call (running) or a pending approval
+    # (waiting) must NEVER be killed, no matter how old.
+    huge = 10 ** 9
+    assert should_autosuspend(AgentStatus.RUNNING, 0.0, now=huge, minutes=1) is False
+    assert should_autosuspend(AgentStatus.WAITING, 0.0, now=huge, minutes=1) is False
+
+
+def test_autosuspend_none_aggregate_or_calm_since_never_suspends():
+    # Pitfall 8 chain: a fileless task (None aggregate) never suspends.
+    assert should_autosuspend(None, 0.0, now=10 ** 9, minutes=30) is False
+    assert should_autosuspend(AgentStatus.READY, None, now=10 ** 9, minutes=30) is False
+
+
+# --- load_config (D-11, T-04-10) -----------------------------------------------
+def test_load_config_missing_file_defaults(tmp_path):
+    cfg = load_config(str(tmp_path / "absent.toml"))
+    assert cfg == AttentionConfig()
+    assert cfg.auto_suspend_minutes == 0  # OFF by default
+    assert cfg.idle_minutes == 10
+    assert cfg.notify_ready is False
+    assert cfg.sound is False
+
+
+def test_load_config_reads_values(tmp_path):
+    p = tmp_path / "arduis.toml"
+    p.write_text("[attention]\nauto_suspend_minutes = 30\nsound = true\n")
+    cfg = load_config(str(p))
+    assert cfg.auto_suspend_minutes == 30
+    assert cfg.idle_minutes == 10  # untouched default
+    assert cfg.notify_ready is False
+    assert cfg.sound is True
+
+
+def test_load_config_invalid_toml_defaults(tmp_path):
+    p = tmp_path / "bad.toml"
+    p.write_text("[attention\nthis is not = = toml")
+    assert load_config(str(p)) == AttentionConfig()
+
+
+def test_load_config_wrong_types_fall_back_per_key(tmp_path):
+    p = tmp_path / "wrong.toml"
+    # string minutes + negative minutes must not enable the killer feature.
+    p.write_text(
+        '[attention]\nauto_suspend_minutes = "lots"\nidle_minutes = -5\nsound = "yes"\n'
+    )
+    cfg = load_config(str(p))
+    assert cfg.auto_suspend_minutes == 0  # string -> default 0
+    assert cfg.idle_minutes == 0  # negative -> 0 (T-04-10)
+    assert cfg.sound is False  # non-bool -> default
+
+
+def test_load_config_no_attention_section_defaults(tmp_path):
+    p = tmp_path / "other.toml"
+    p.write_text("[other]\nkey = 1\n")
+    assert load_config(str(p)) == AttentionConfig()
 
 
 # --- GTK-free assertion --------------------------------------------------------
