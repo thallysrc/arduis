@@ -10,14 +10,25 @@ symlinks or recursing (T-04-11).
 """
 import json
 import os
+from pathlib import Path
+
+import pytest
 
 from arduis import attention
 from arduis.attention import (
+    HOOK_EVENTS,
+    MATCHER_EVENTS,
     AgentStatus,
     StateDoc,
     aggregate_task,
     clear_status_dir,
+    declined_marker_path,
     effective_status,
+    hook_command,
+    hook_script_source,
+    install_target_path,
+    is_installed,
+    merged_settings,
     read_state,
     sanitize_term_id,
     state_file_path,
@@ -252,6 +263,161 @@ def test_aggregate_all_none_or_empty_is_none():
     assert aggregate_task([]) is None
     assert aggregate_task([_agent(None), _shell(None)]) is None
     assert aggregate_task([_shell("waiting")]) is None  # only shells -> no opinion
+
+
+# --- Hook install helpers + settings merge (Pattern 3, Pitfall 9, T-04-08) -----
+SCRIPT = "/home/u/.local/share/arduis/hooks/arduis_status_hook.py"
+
+# A DEEP fixture modeled on a real hooks-dense ~/.claude/settings.json: an existing
+# notify-send Notification hook, an existing PostToolUse matcher group with a node
+# command, plus unrelated top-level keys. NEVER read the real settings.json.
+RICH_SETTINGS = {
+    "model": "claude-sonnet-4-5",
+    "permissions": {"allow": ["Bash(git status)"], "deny": []},
+    "statusLine": {"type": "command", "command": "~/.claude/statusline.sh"},
+    "hooks": {
+        "Notification": [
+            {"hooks": [{"type": "command", "command": "notify-send claude", "timeout": 5}]}
+        ],
+        "PostToolUse": [
+            {
+                "matcher": "*",
+                "hooks": [{"type": "command", "command": "node /home/u/.gsd/hook.js"}],
+            }
+        ],
+    },
+}
+
+
+def test_hook_command_absolute_expansion_free():
+    cmd = hook_command(SCRIPT)
+    assert cmd == f"/usr/bin/env python3 {SCRIPT}"
+    assert "~" not in cmd and "$" not in cmd
+
+
+def test_hook_command_rejects_relative():
+    with pytest.raises(ValueError):
+        hook_command("relative/x.py")
+
+
+def test_hook_command_expands_tilde():
+    cmd = hook_command("~/x.py")
+    assert "~" not in cmd
+    assert cmd.startswith("/usr/bin/env python3 ")
+    assert cmd.endswith("/x.py")
+
+
+def test_install_target_path():
+    assert (
+        install_target_path("/home/u")
+        == "/home/u/.local/share/arduis/hooks/arduis_status_hook.py"
+    )
+
+
+def test_declined_marker_path():
+    assert declined_marker_path("/home/u") == "/home/u/.local/share/arduis/hooks_declined"
+
+
+def test_is_installed_partial_false():
+    settings, _ = merged_settings({}, SCRIPT)
+    # drop 2 of the 7 events -> partial -> not installed.
+    del settings["hooks"]["Stop"]
+    del settings["hooks"]["SessionEnd"]
+    assert is_installed(settings, SCRIPT) is False
+
+
+def test_is_installed_full_true():
+    settings, _ = merged_settings({}, SCRIPT)
+    assert is_installed(settings, SCRIPT) is True
+
+
+def test_merge_additive_preserves_everything():
+    original = json.loads(json.dumps(RICH_SETTINGS))  # snapshot for mutation check
+    out, changed = merged_settings(RICH_SETTINGS, SCRIPT)
+    assert changed is True
+    # input not mutated (deepcopy semantics).
+    assert RICH_SETTINGS == original
+    # unrelated top-level keys preserved byte-identical.
+    assert out["model"] == RICH_SETTINGS["model"]
+    assert out["permissions"] == RICH_SETTINGS["permissions"]
+    assert out["statusLine"] == RICH_SETTINGS["statusLine"]
+    # the user's existing hook entries are preserved as the FIRST entry per event.
+    assert out["hooks"]["Notification"][0] == RICH_SETTINGS["hooks"]["Notification"][0]
+    assert out["hooks"]["PostToolUse"][0] == RICH_SETTINGS["hooks"]["PostToolUse"][0]
+    # arduis appended exactly one group per event.
+    assert len(out["hooks"]["Notification"]) == 2
+    assert len(out["hooks"]["PostToolUse"]) == 2
+    assert all(event in out["hooks"] for event in HOOK_EVENTS)
+
+
+def test_merge_idempotent():
+    once, c1 = merged_settings(RICH_SETTINGS, SCRIPT)
+    twice, c2 = merged_settings(once, SCRIPT)
+    assert c1 is True
+    assert c2 is False
+    assert twice == once
+
+
+def test_merge_matcher_placement():
+    out, _ = merged_settings({}, SCRIPT)
+    for event in MATCHER_EVENTS:
+        # the appended arduis group for a matcher event carries "matcher": "*".
+        group = out["hooks"][event][-1]
+        assert group.get("matcher") == "*"
+    for event in set(HOOK_EVENTS) - set(MATCHER_EVENTS):
+        group = out["hooks"][event][-1]
+        assert "matcher" not in group
+
+
+def test_merge_entry_shape():
+    out, _ = merged_settings({}, SCRIPT)
+    entry = out["hooks"]["Stop"][-1]["hooks"][0]
+    assert entry == {
+        "type": "command",
+        "command": hook_command(SCRIPT),
+        "timeout": 5,
+    }
+
+
+def test_merge_empty_input_all_events_and_unmutated():
+    src: dict = {}
+    out, changed = merged_settings(src, SCRIPT)
+    assert changed is True
+    assert src == {}  # input untouched
+    for event in HOOK_EVENTS:
+        assert event in out["hooks"]
+        assert _event_has_command(out["hooks"][event], SCRIPT)
+
+
+def test_merge_handles_missing_and_existing_hooks_key():
+    # missing "hooks" key entirely.
+    out1, c1 = merged_settings({"model": "x"}, SCRIPT)
+    assert c1 is True and "hooks" in out1
+    # existing "hooks" with some events present.
+    base = {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "echo hi"}]}]}}
+    out2, c2 = merged_settings(base, SCRIPT)
+    assert c2 is True
+    # the pre-existing Stop entry is preserved; arduis appended after it.
+    assert out2["hooks"]["Stop"][0]["hooks"][0]["command"] == "echo hi"
+    assert len(out2["hooks"]["Stop"]) == 2
+
+
+def _event_has_command(groups, script_path):
+    return any(
+        script_path in str(hook.get("command", ""))
+        for group in groups
+        for hook in group.get("hooks", [])
+    )
+
+
+@pytest.mark.skipif(
+    not Path("src/arduis/hooks/arduis_hook.py").exists(),
+    reason="04-01 not yet merged (parallel wave-1 plan owns src/arduis/hooks/arduis_hook.py)",
+)
+def test_hook_script_source_returns_packaged_content():
+    src = hook_script_source()
+    assert src
+    assert "ARDUIS_STATE_FILE" in src
 
 
 # --- GTK-free assertion --------------------------------------------------------

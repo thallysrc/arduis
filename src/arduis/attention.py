@@ -26,6 +26,7 @@ the clock or the process table themselves.
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -255,3 +256,133 @@ def aggregate_task(records) -> AgentStatus | None:
             return status
     # a record carried an unrecognized status string only -> no recognized opinion
     return None
+
+
+# --- Hook install: settings merge builder (Pattern 3, Pitfall 9, T-04-08) ------
+# The 7 events arduis subscribes to (Pattern 1 event->state map). Matcher events
+# carry a "matcher": "*" group; the other 5 omit the matcher key (Pitfall 9 /
+# settings shape).
+HOOK_EVENTS = (
+    "SessionStart",
+    "UserPromptSubmit",
+    "Notification",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "Stop",
+    "SessionEnd",
+)
+MATCHER_EVENTS = ("PostToolUse", "PostToolUseFailure")
+
+# Stable install location for the env-guarded hook script (Pattern 2). The packaged
+# source lives in the arduis.hooks package; arduis writes a refreshed copy here and
+# registers it by ABSOLUTE path.
+_INSTALL_REL = (".local", "share", "arduis", "hooks", "arduis_status_hook.py")
+_DECLINED_REL = (".local", "share", "arduis", "hooks_declined")
+
+HOOK_TIMEOUT_S = 5  # pinned (T-04-01): a misbehaving hook must not stall claude
+
+
+def hook_command(script_path: str) -> str:
+    """The exec-form ``command`` string for a settings hook entry (Pitfall 9).
+
+    Returns ``/usr/bin/env python3 <abs-script>`` with a fully expanded ABSOLUTE
+    path: a ``~`` is expanded, and the result must contain no ``~`` and no ``$`` —
+    settings hook commands do NOT reliably expand tilde/vars across shells, so the
+    path is resolved at merge time.
+    """
+    expanded = os.path.expanduser(os.path.expandvars(script_path))
+    if not os.path.isabs(expanded) or "~" in expanded or "$" in expanded:
+        raise ValueError(f"hook script path must be absolute and expansion-free: {script_path!r}")
+    return f"/usr/bin/env python3 {expanded}"
+
+
+def install_target_path(home: str) -> str:
+    """Absolute install path of the hook script under the user's home (Pattern 2)."""
+    return os.path.join(home, *_INSTALL_REL)
+
+
+def declined_marker_path(home: str) -> str:
+    """Path of the declined-consent marker file (D-02).
+
+    Presence suppresses the consent dialog; arduis ``touch``es it on decline.
+    tomllib is read-only so a marker file avoids growing a TOML-writer dependency.
+    """
+    return os.path.join(home, *_DECLINED_REL)
+
+
+def hook_script_source() -> str:
+    """Return the packaged hook-script content for the installer.
+
+    Reads ``src/arduis/hooks/arduis_hook.py`` (Plan 01) via ``importlib.resources``
+    so it works from an installed package too. Lazy import keeps this module
+    dependency-light and lets the rest of the surface load even before Plan 01's
+    ``arduis.hooks`` package exists in a parallel worktree.
+    """
+    from importlib.resources import files
+
+    return files("arduis.hooks").joinpath("arduis_hook.py").read_text(encoding="utf-8")
+
+
+def is_installed(settings: dict, script_path: str) -> bool:
+    """True iff EVERY ``HOOK_EVENTS`` event already has an arduis hook for the path.
+
+    A partial install (e.g. 5 of 7 events present) returns False so the next merge
+    completes it. Matches by ``script_path in hook["command"]`` across each event's
+    existing groups.
+    """
+    hooks = settings.get("hooks")
+    if not isinstance(hooks, dict):
+        return False
+    for event in HOOK_EVENTS:
+        if not _event_has_script(hooks.get(event), script_path):
+            return False
+    return True
+
+
+def _event_has_script(groups, script_path: str) -> bool:
+    """True iff any hook in any group for this event references ``script_path``."""
+    if not isinstance(groups, list):
+        return False
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        for hook in group.get("hooks", []) or []:
+            if isinstance(hook, dict) and script_path in str(hook.get("command", "")):
+                return True
+    return False
+
+
+def merged_settings(settings: dict, script_path: str) -> tuple[dict, bool]:
+    """Build an ADDITIVE, idempotent, dedupe-by-path merge of arduis hooks (T-04-08).
+
+    Returns ``(new_settings, changed)``. NEVER mutates the input (deepcopy). Every
+    existing entry and unrelated top-level key (``permissions``/``model``/
+    ``statusLine``/...) is preserved byte-identical; arduis APPENDS one group per
+    missing event. Re-running on the result yields ``changed == False``. The
+    appended ``PostToolUse``/``PostToolUseFailure`` groups carry ``"matcher": "*"``;
+    the other 5 omit the matcher key. Each appended hook is exactly
+    ``{"type": "command", "command": hook_command(path), "timeout": HOOK_TIMEOUT_S}``.
+    """
+    out = copy.deepcopy(settings)
+    hooks = out.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        # a corrupt/non-dict "hooks" key: never destroy it silently — refuse to
+        # touch and report unchanged (Plan 03's WRITE backs up first regardless).
+        return out, False
+    changed = False
+    command = hook_command(script_path)
+    for event in HOOK_EVENTS:
+        groups = hooks.get(event)
+        if not isinstance(groups, list):
+            groups = []
+            hooks[event] = groups
+        if _event_has_script(groups, script_path):
+            continue
+        entry = {"type": "command", "command": command, "timeout": HOOK_TIMEOUT_S}
+        if event in MATCHER_EVENTS:
+            group: dict = {"matcher": "*", "hooks": [entry]}
+        else:
+            group = {"hooks": [entry]}
+        groups.append(group)
+        changed = True
+    return out, changed
