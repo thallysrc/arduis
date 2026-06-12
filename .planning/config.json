@@ -35,5 +35,10 @@
   "phase_naming": "sequential",
   "agent_skills": {},
   "mode": "interactive",
-  "granularity": "fine"
+  "granularity": "fine",
+  "model_overrides": {
+    "gsd-planner": "fable",
+    "gsd-phase-researcher": "fable",
+    "gsd-project-researcher": "fable"
+  }
 }
