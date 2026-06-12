@@ -45,6 +45,14 @@ from enum import Enum
 
 AGENT_FEED: bytes = b"claude\n"  # D-08 — bytes, not str (0.76 feed_child TypeError on str)
 
+# D-12 (Plan 04, RAM-04) — the resume feed for an AUTO-SUSPENDED task: `claude
+# --continue` resumes the most recent conversation in the cwd so an idle auto-suspend
+# costs the user nothing (verified flag in claude 2.1.175). bytes for the same reason
+# as AGENT_FEED (feed_child rejects str at the 0.76 floor). MANUAL create/resume keeps
+# AGENT_FEED so Phase-2 semantics are unchanged (the window selects which to feed by
+# Task.auto_suspended).
+AGENT_RESUME_FEED: bytes = b"claude --continue\n"
+
 
 class SessionState(str, Enum):
     """str-Enum so it serializes to its plain value via ``asdict``/``json``."""
@@ -145,6 +153,13 @@ class Task:
     # working.
     state: SessionState = SessionState.ACTIVE
     terminals: list[TerminalRecord] = field(default_factory=list)
+    # Phase 4 / D-12 (RAM-04): True iff this task was auto-suspended by the idle
+    # auto-suspend tick (vs a user-driven hibernate). The WINDOW sets it True right
+    # before firing the shared hibernate path and clears it on resume after selecting
+    # the resume feed; ``hibernate_fields`` (the manual path) must never touch it so a
+    # manual hibernate stays False. Appended LAST per the house rule so positional
+    # construction keeps working; defaults False (a fresh task was never auto-suspended).
+    auto_suspended: bool = False
 
     def to_dict(self) -> dict:
         """Serialize to a plain dict (asdict recurses repos → terminals — D-13/A2)."""

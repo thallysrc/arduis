@@ -15,6 +15,7 @@ import json
 from arduis import session
 from arduis.session import (
     AGENT_FEED,
+    AGENT_RESUME_FEED,
     RepoCheckout,
     SessionState,
     SessionStore,
@@ -256,3 +257,57 @@ def test_session_module_is_gtk_free():
 def test_worktree_session_removed():
     # OQ3: WorktreeSession is fully replaced by Task — no parallel model.
     assert not hasattr(session, "WorktreeSession")
+
+
+def test_agent_resume_feed_is_bytes():
+    # D-12 (Plan 04): auto-suspend resume feeds `claude --continue` so the
+    # conversation survives. Must be bytes for the same 0.76 feed_child reason as
+    # AGENT_FEED (feed_child rejects str → TypeError).
+    assert AGENT_RESUME_FEED == b"claude --continue\n"
+    assert isinstance(AGENT_RESUME_FEED, bytes)
+
+
+def test_agent_feed_unchanged():
+    # Manual create/resume must keep plain `claude` — Phase-2 semantics unchanged.
+    assert AGENT_FEED == b"claude\n"
+
+
+def test_task_auto_suspended_trailing_field_defaults_false():
+    # Plan 04 D-12: Task gains `auto_suspended: bool = False` as the LAST field so
+    # positional construction (task_id..terminals) keeps working and leaves it False.
+    task = Task("id", "br", "/d", [], SessionState.ACTIVE, [])
+    assert task.auto_suspended is False
+
+
+def test_task_auto_suspended_serializes():
+    # to_dict()/asdict must include auto_suspended (JSON-serializable).
+    task = Task(
+        task_id="feat",
+        branch="feat",
+        task_dir="/home/u/livon-tasks/feat",
+        repos=[_repo("feat", "backend")],
+        terminals=default_task_terminals("feat"),
+    )
+    task.auto_suspended = True
+    d = task.to_dict()
+    assert d["auto_suspended"] is True
+    json.dumps(d)
+
+
+def test_hibernate_fields_does_not_touch_auto_suspended():
+    # D-12: the WINDOW sets auto_suspended (True on auto-suspend); a MANUAL hibernate
+    # must leave it False — hibernate_fields models the field transition only.
+    task = Task(
+        task_id="feat",
+        branch="feat",
+        task_dir="/home/u/livon-tasks/feat",
+        repos=[_repo("feat", "backend")],
+        terminals=default_task_terminals("feat"),
+    )
+    assert task.auto_suspended is False
+    hibernate_fields(task)
+    assert task.auto_suspended is False
+    # and it must not flip a pre-set True either (idempotent w.r.t. the flag).
+    task.auto_suspended = True
+    hibernate_fields(task)
+    assert task.auto_suspended is True
