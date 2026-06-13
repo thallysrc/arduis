@@ -135,7 +135,12 @@ Plans:
   2. tmux-style keybindings work (`C-Space`, `C-h/j/k/l`, split `-`/`=`, zoom `z`) and are configurable
   3. Keybindings work as app-scoped shortcuts under real Wayland (not just XWayland)
   4. App and terminal use a Dracula theme by default, and the user can switch to other themes (UI palette + VTE palette)
-**Plans**: TBD
+**Plans**: 4 plans (3 waves)
+Plans:
+- [ ] 05-01-PLAN.md — GTK-free themes.py registry (Dracula+Nord+Solarized+Gruvbox) + tests (UI-02)
+- [ ] 05-02-PLAN.md — agentconfig/keyconfig/appconfig loaders + keymap split/zoom/refeed + tests (AGENT-01/UI-01/UI-02)
+- [ ] 05-03-PLAN.md — window.py wiring: configurable feed + prefix/bindings + runtime theme switch + Tema menu + persistence
+- [ ] 05-04-PLAN.md — headless broadway smoke + live human-verify (criterion 3 under real Wayland)
 **UI hint**: yes
 
 ### Phase 6: Per-Worktree Setup via `.arduis.toml`
