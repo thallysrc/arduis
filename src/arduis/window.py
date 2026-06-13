@@ -70,7 +70,7 @@ from arduis.host_runner import HostRunner  # noqa: E402
 from arduis.spawn import build_spawn_command, build_worktree_spawn  # noqa: E402
 from arduis.exit_status import decode_exit  # noqa: E402
 from arduis.git_service import run_git_async  # noqa: E402
-from arduis import attention, caps, keymap, resource_monitor  # noqa: E402
+from arduis import attention, caps, resource_monitor  # noqa: E402
 from arduis.attention import AgentStatus  # noqa: E402
 from arduis.layout import LayoutModel, LeafNode, SplitNode  # noqa: E402
 from arduis.project import detect_member_repos  # noqa: E402
@@ -946,14 +946,8 @@ class ArduisWindow(Adw.ApplicationWindow):
 
     def _make_zoom_pane_cb(self, sid: str):
         def _zoom(_btn) -> None:
-            model = self._active_layout()
-            if model is None:
-                return
-            if model.is_zoomed():
-                model.unzoom()
-            else:
-                model.zoom(sid)
-            self._reflect_layout()
+            # ⊞ and C-Space z share _zoom_pane — one place for the toggle logic.
+            self._zoom_pane(sid)
         return _zoom
 
     def _make_close_pane_cb(self, tid: str):
@@ -1416,8 +1410,11 @@ class ArduisWindow(Adw.ApplicationWindow):
         """
         name = Gdk.keyval_name(keyval) or ""
         if not self._prefix_armed:
+            # UI-01 (D-05): the prefix is the CONFIGURED keyval (default "space")
+            # with CONTROL_MASK (the only supported mod, matching keyconfig). The
+            # capture-phase controller registration is untouched.
             if (
-                name == keymap.PREFIX_KEYVAL
+                name == self._prefix[0]
                 and (state & Gdk.ModifierType.CONTROL_MASK)
             ):
                 self._prefix_armed = True
@@ -1426,14 +1423,24 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         # Armed: the next key is the action key. Disarm regardless of match.
         self._prefix_armed = False
-        action = keymap.dispatch(name)
+        # UI-01 (D-05): dispatch via the RESOLVED keymap (user [keys.bindings] merged
+        # over the defaults through a closed action set). Keep the digit->jump rule,
+        # which is not part of the configurable char map.
+        action = self._keymap.get(name)
+        if action is None and len(name) == 1 and "1" <= name <= "9":
+            action = ("jump", int(name))
         if action is None:
             return False  # stray key after the prefix — don't eat it
         self._run_action(action)
         return True  # recognized action — swallow it
 
     def _run_action(self, action: tuple) -> None:
-        """Map a keymap action tuple to focus/worktree/jump behavior (A2)."""
+        """Map a keymap action tuple to focus/worktree/jump/split/zoom/refeed behavior.
+
+        Phase 5 (UI-01) adds the split/zoom/refeed verbs on top of the Phase-3
+        focus/worktree/jump set; all resolve the focused terminal via
+        ``_active_layout`` and reuse the existing pane helpers (no duplicated logic).
+        """
         kind = action[0]
         if kind == "focus_dir":
             self._focus_neighbor(action[1])
@@ -1441,6 +1448,48 @@ class ArduisWindow(Adw.ApplicationWindow):
             self._cycle_worktree(action[1])
         elif kind == "jump":
             self._jump_to_row(action[1])
+        elif kind == "split":
+            model = self._active_layout()
+            if model is not None:
+                self._split_active_pane(model.focused_id, action[1])
+        elif kind == "zoom":
+            model = self._active_layout()
+            if model is not None:
+                self._zoom_pane(model.focused_id)
+        elif kind == "refeed":
+            self._refeed_focused_agent()
+
+    def _zoom_pane(self, sid: str) -> None:
+        """Toggle zoom on terminal ``sid`` in the active workspace (UI-01).
+
+        Shared by the ⊞ pane-header button and the ``C-Space z`` action so the toggle
+        logic lives in ONE place. Zooms ``sid`` if nothing is zoomed, else unzooms.
+        """
+        model = self._active_layout()
+        if model is None:
+            return
+        if model.is_zoomed():
+            model.unzoom()
+        else:
+            model.zoom(sid)
+        self._reflect_layout()
+
+    def _refeed_focused_agent(self) -> None:
+        """``C-Space a`` (AGENT-01, D-02/Pitfall 5): type the configured agent into the focused pane.
+
+        Feeds ``agent_feed_bytes(self._agent_config.command)`` into the focused live
+        terminal's PTY — it types the command into the durable zsh exactly as if the
+        user typed it. NOTHING is killed or respawned. On the pinned main scratch
+        shell it still just types the command (harmless).
+        """
+        model = self._active_layout()
+        if model is None:
+            return
+        term = self._term_by_sid.get(model.focused_id)
+        if term is not None:
+            term.feed_child(
+                agentconfig.agent_feed_bytes(self._agent_config.command)
+            )
 
     def _focus_neighbor(self, direction: str) -> None:
         """Move focus to the neighbor TERMINAL in the active worktree (D-06, A2).
@@ -2100,7 +2149,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         if shell is not None:
             self._spawn_into(shell, cwd, task, shell_tid, kind="shell")
 
-    def _split_active_pane(self, focused_tid: str) -> None:
+    def _split_active_pane(self, focused_tid: str, orientation: str = "h") -> None:
         """Split the active workspace, spawning a new agent terminal beside ``focused_tid`` (D-05).
 
         Every split is an agent terminal by default (D-05) — Ctrl+C drops to the
@@ -2109,6 +2158,10 @@ class ArduisWindow(Adw.ApplicationWindow):
         ``task.terminals`` so RAM/teardown see it — coherent with the default pair
         opening at the task root. On the pinned main workspace there is no Task —
         spawn into the project root, untracked.
+
+        ``orientation`` ("h"/"v") threads through to ``LayoutModel.split`` (UI-01):
+        the ⊟ button keeps the default "h"; ``C-Space -``/``=`` pass "v"/"h" from the
+        keymap tuple's second element.
         """
         sid = self._active_workspace_sid
         if sid is None:
@@ -2131,7 +2184,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._leaf_by_sid[new_tid] = leaf
         self._term_by_sid[new_tid] = terminal
 
-        model.split(focused_tid, new_tid, "h")
+        model.split(focused_tid, new_tid, orientation)
         self._reflect_layout()
 
         if task is not None:
@@ -2171,7 +2224,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         term_id: str,
         kind: str = "agent",
     ) -> None:
-        """Spawn zsh -l -i in ``cwd``; feed AGENT_FEED only when ``kind == "agent"``.
+        """Spawn zsh -l -i in ``cwd``; feed the configured agent only when ``kind == "agent"``.
 
         Writes the spawned ``pid``/``pgid`` onto the matching ``TerminalRecord``
         found across the task's terminals (task-level ``task.terminals`` first, then
@@ -2227,15 +2280,18 @@ class ArduisWindow(Adw.ApplicationWindow):
         terminal.grab_focus()
 
     def _make_wt_spawn_cb(self, task: Task | None, term_id: str, kind: str):
-        # D-12: the agent feed for an AUTO-suspended task is ``claude --continue`` so
-        # the conversation survives the suspension; a normal create / manual resume
-        # keeps plain ``claude`` (Phase-2 semantics). Capture the decision HERE (at
-        # callback-creation time) so ``_resume_task`` can clear ``task.auto_suspended``
-        # immediately after spawning without leaking the flag into a later cycle.
+        # AGENT-01 (D-01/D-03): the fed agent is the CONFIGURED command (default
+        # "claude"), built from agentconfig — not a hardcoded literal. An AUTO-
+        # suspended task resumes with resume_feed_bytes (appends ``--continue`` ONLY
+        # for a claude-family command, D-03) so the conversation survives; a normal
+        # create / manual resume / split feeds the bare configured command. Capture
+        # the decision HERE (at callback-creation time) so ``_resume_task`` can clear
+        # ``task.auto_suspended`` immediately after spawning without leaking the flag.
+        cmd = self._agent_config.command
         agent_feed = (
-            AGENT_RESUME_FEED
+            agentconfig.resume_feed_bytes(cmd)
             if (task is not None and task.auto_suspended)
-            else AGENT_FEED
+            else agentconfig.agent_feed_bytes(cmd)
         )
 
         def _on_wt_spawned(terminal, pid, error):
@@ -2707,7 +2763,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         Resume rebuilds the task like create (UX pivot 2026-06-11): fresh task-level
         terminal records, a fresh LayoutModel with the single agent-over-shell pair
         rooted at the task folder via the shared ``_build_task_workspace`` helper,
-        then both terminals spawned eagerly — only the agent is fed ``AGENT_FEED``.
+        then both terminals spawned eagerly — only the agent is fed the configured command.
         The repo set is intact (hibernate only cleared pid/pgid). Earlier extra
         splits are NOT restored (03.1 D-09 stands).
         """
