@@ -19,7 +19,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 03.2: Projects and Cross-Repo Tasks (INSERTED)** - Project = multi-repo root folder; task = set of worktrees (one per chosen repo) mirroring the root layout; sidebar lists tasks, workspace shows a task's terminals (completed 2026-06-12)
 - [x] **Phase 4: Attention Detection (who's waiting)** - Hooks-first status (running/waiting/idle/ready), sidebar+pane dots, desktop notification, idle auto-suspend (completed 2026-06-13)
 - [x] **Phase 5: Agent Swap + tmux Keybindings + Themes** - Agent = configurable command (Ctrl+C swaps), tmux-style chords, Dracula default + swappable themes (completed 2026-06-13)
-- [ ] **Phase 6: Per-Worktree Setup via `.arduis.toml`** - Repo config with sensible defaults; setup commands run on worktree creation via the login shell
+- [x] **Phase 6: Per-Worktree Setup via `.arduis.toml`** - Repo config with sensible defaults; setup commands run on worktree creation via the login shell (completed 2026-06-13)
 - [ ] **Phase 7: Opt-in Isolated Containers** - Per-worktree docker-compose isolation with stable project name, auto port offset + probing, port badges, guaranteed teardown
 - [ ] **Phase 8: Review + Cleanup** - Read-only diff, branch/PR status via git/gh, "conclude worktree" with correct teardown order
 - [ ] **Phase 9: Packaging (AUR + .deb)** - Team-installable on Ubuntu + Arch under real Wayland as native packages using the system VTE; Flatpak deferred to v2
@@ -154,9 +154,9 @@ Plans:
   4. Setup from an unfamiliar repo's `.arduis.toml` is treated as trusted-repo-only (confirmation on first run)
 **Plans**: 3 plans
 Plans:
-- [ ] 06-01-PLAN.md — GTK-free domain (TDD): repoconfig.py [setup] reader + setup_feed_bytes + trust.py content-hash trust list
-- [ ] 06-02-PLAN.md — window.py wiring: CREATE-only trust-gated setup feed into the shell terminal (consolidated dialog)
-- [ ] 06-03-PLAN.md — acceptance: headless broadway smoke + live human-verify checklist for the 4 criteria
+- [x] 06-01-PLAN.md — GTK-free domain (TDD): repoconfig.py [setup] reader + setup_feed_bytes + trust.py content-hash trust list
+- [x] 06-02-PLAN.md — window.py wiring: CREATE-only trust-gated setup feed into the shell terminal (consolidated dialog)
+- [x] 06-03-PLAN.md — acceptance: headless broadway smoke + live human-verify checklist for the 4 criteria
 
 ### Phase 7: Opt-in Isolated Containers
 **Goal**: Per-TASK isolated docker-compose stacks, off by default — the thing the user misses most and the heaviest RAM line item, landing after the RAM groundwork. Docker calls run on the host directly through the `HostRunner` seam (no-op on native builds); snap-docker on Ubuntu and native docker on Arch both work. The container half of RAM management matures here. **Re-anchored by 03.2 (decided 2026-06-10):** the compose base is a SINGLE `docker-compose.yml` at the project ROOT (meta-repo) covering all member services (backend/frontend/keycloak/db share one network → service discovery by name works, and duplication is atomic); `COMPOSE_PROJECT_NAME` is unique per TASK, the override is generated into the task folder (which mirrors the root layout, so relative build contexts/bind mounts resolve verbatim), and teardown wires into task conclude/hibernate.
@@ -219,7 +219,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 03.2. Projects and Cross-Repo Tasks | 3/3 | Complete    | 2026-06-12 |
 | 4. Attention Detection | 5/5 | Complete    | 2026-06-13 |
 | 5. Agent Swap + Keys + Themes | 4/4 | Complete    | 2026-06-13 |
-| 6. Setup via `.arduis.toml` | 0/TBD | Not started | - |
+| 6. Setup via `.arduis.toml` | 3/3 | Complete    | 2026-06-13 |
 | 7. Isolated Containers | 0/TBD | Not started | - |
 | 8. Review + Cleanup | 0/TBD | Not started | - |
 | 9. Packaging | 0/TBD | Not started | - |

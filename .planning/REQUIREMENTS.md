@@ -44,8 +44,8 @@ Requirements para o lançamento inicial (paralelismo simples). Cada um mapeia pa
 
 ### Ambiente / Config (ENV)
 
-- [ ] **ENV-01**: `.arduis.toml` por repo é lido com defaults sensatos (funciona sem o arquivo)
-- [ ] **ENV-02**: Comandos de `setup` rodam na criação da worktree (via shell de login do host)
+- [x] **ENV-01**: `.arduis.toml` por repo é lido com defaults sensatos (funciona sem o arquivo)
+- [x] **ENV-02**: Comandos de `setup` rodam na criação da worktree (via shell de login do host)
 
 ### Containers (CONT)
 
@@ -147,8 +147,8 @@ Qual fase cobre qual requisito. Cada requisito v1 mapeia para exatamente uma fas
 | AGENT-01 | Phase 5 | Complete (UAT pending) |
 | UI-01 | Phase 5 | Complete (UAT pending) |
 | UI-02 | Phase 5 | Complete (UAT pending) |
-| ENV-01 | Phase 6 | Pending |
-| ENV-02 | Phase 6 | Pending |
+| ENV-01 | Phase 6 | Complete (UAT pending) |
+| ENV-02 | Phase 6 | Complete (UAT pending) |
 | CONT-01 | Phase 7 | Pending |
 | CONT-02 | Phase 7 | Pending |
 | CONT-03 | Phase 7 | Pending |
