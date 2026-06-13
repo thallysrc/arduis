@@ -152,7 +152,11 @@ Plans:
   2. Configured `setup` commands (e.g. `npm install`, `cp .env`, migrate, seed) run automatically on worktree creation, visibly in a pane
   3. Setup commands run via the host login shell so `npm`/`docker`/version-manager shims resolve identically on Ubuntu and Arch
   4. Setup from an unfamiliar repo's `.arduis.toml` is treated as trusted-repo-only (confirmation on first run)
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+- [ ] 06-01-PLAN.md — GTK-free domain (TDD): repoconfig.py [setup] reader + setup_feed_bytes + trust.py content-hash trust list
+- [ ] 06-02-PLAN.md — window.py wiring: CREATE-only trust-gated setup feed into the shell terminal (consolidated dialog)
+- [ ] 06-03-PLAN.md — acceptance: headless broadway smoke + live human-verify checklist for the 4 criteria
 
 ### Phase 7: Opt-in Isolated Containers
 **Goal**: Per-TASK isolated docker-compose stacks, off by default — the thing the user misses most and the heaviest RAM line item, landing after the RAM groundwork. Docker calls run on the host directly through the `HostRunner` seam (no-op on native builds); snap-docker on Ubuntu and native docker on Arch both work. The container half of RAM management matures here. **Re-anchored by 03.2 (decided 2026-06-10):** the compose base is a SINGLE `docker-compose.yml` at the project ROOT (meta-repo) covering all member services (backend/frontend/keycloak/db share one network → service discovery by name works, and duplication is atomic); `COMPOSE_PROJECT_NAME` is unique per TASK, the override is generated into the task folder (which mirrors the root layout, so relative build contexts/bind mounts resolve verbatim), and teardown wires into task conclude/hibernate.
