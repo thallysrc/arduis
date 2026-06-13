@@ -17,7 +17,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 3: Parallel Worktrees + Sidebar + RAM Groundwork** - N worktrees side by side, free pane layout, sidebar with focus/switch, per-worktree RAM visibility and active caps
 - [x] **Phase 03.1: worktree-as-terminal-workspace (INSERTED)** - Canvas shows ONE worktree's terminals (workspace); per-worktree LayoutModel; sidebar swaps the whole workspace; re-targeted C-Space/RAM/hibernate semantics
 - [x] **Phase 03.2: Projects and Cross-Repo Tasks (INSERTED)** - Project = multi-repo root folder; task = set of worktrees (one per chosen repo) mirroring the root layout; sidebar lists tasks, workspace shows a task's terminals (completed 2026-06-12)
-- [ ] **Phase 4: Attention Detection (who's waiting)** - Hooks-first status (running/waiting/idle/ready), sidebar+pane dots, desktop notification, idle auto-suspend
+- [x] **Phase 4: Attention Detection (who's waiting)** - Hooks-first status (running/waiting/idle/ready), sidebar+pane dots, desktop notification, idle auto-suspend (completed 2026-06-13)
 - [ ] **Phase 5: Agent Swap + tmux Keybindings + Themes** - Agent = configurable command (Ctrl+C swaps), tmux-style chords, Dracula default + swappable themes
 - [ ] **Phase 6: Per-Worktree Setup via `.arduis.toml`** - Repo config with sensible defaults; setup commands run on worktree creation via the login shell
 - [ ] **Phase 7: Opt-in Isolated Containers** - Per-worktree docker-compose isolation with stable project name, auto port offset + probing, port badges, guaranteed teardown
@@ -119,11 +119,11 @@ Plans:
   5. Idle worktrees can be auto-suspended based on the detected idle status
 **Plans**: 5 plans
 Plans:
-- [ ] 04-01-PLAN.md — GTK-free hook script (env-guarded, 7-event map, atomic state files) + spawn.py extra_env injection seam (TDD)
-- [ ] 04-02-PLAN.md — GTK-free attention.py: 5-state model, state-file read/wipe, aggregation, settings merge, notify/auto-suspend policies, arduis.toml config (TDD)
-- [ ] 04-03-PLAN.md — window.py wiring: consent-gated hook install, env injection, Gio.FileMonitor watcher, sidebar+pane status dots, libnotify on waiting+unfocused, state-file cleanup
-- [ ] 04-04-PLAN.md — RAM-04 auto-suspend via existing hibernate machinery + `claude --continue` resume + degraded bell mode (consent declined)
-- [ ] 04-05-PLAN.md — Acceptance: headless broadway smoke + live human-verify checklist (5 criteria + UAT flags A1/A2)
+- [x] 04-01-PLAN.md — GTK-free hook script (env-guarded, 7-event map, atomic state files) + spawn.py extra_env injection seam (TDD)
+- [x] 04-02-PLAN.md — GTK-free attention.py: 5-state model, state-file read/wipe, aggregation, settings merge, notify/auto-suspend policies, arduis.toml config (TDD)
+- [x] 04-03-PLAN.md — window.py wiring: consent-gated hook install, env injection, Gio.FileMonitor watcher, sidebar+pane status dots, libnotify on waiting+unfocused, state-file cleanup
+- [x] 04-04-PLAN.md — RAM-04 auto-suspend via existing hibernate machinery + `claude --continue` resume + degraded bell mode (consent declined)
+- [x] 04-05-PLAN.md — Acceptance: headless broadway smoke + live human-verify checklist (5 criteria + UAT flags A1/A2)
 **UI hint**: yes
 
 ### Phase 5: Agent Swap + tmux Keybindings + Themes
@@ -208,7 +208,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 3. Parallel + Sidebar + RAM | 5/5 | Complete | 2026-06-09 |
 | 03.1. worktree-as-terminal-workspace | 3/3 | Complete | 2026-06-10 |
 | 03.2. Projects and Cross-Repo Tasks | 3/3 | Complete    | 2026-06-12 |
-| 4. Attention Detection | 0/5 | Planned | - |
+| 4. Attention Detection | 5/5 | Complete    | 2026-06-13 |
 | 5. Agent Swap + Keys + Themes | 0/TBD | Not started | - |
 | 6. Setup via `.arduis.toml` | 0/TBD | Not started | - |
 | 7. Isolated Containers | 0/TBD | Not started | - |

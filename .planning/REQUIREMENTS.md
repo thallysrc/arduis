@@ -25,9 +25,9 @@ Requirements para o lançamento inicial (paralelismo simples). Cada um mapeia pa
 
 ### Status / Atenção (STATUS)
 
-- [ ] **STATUS-01**: O app detecta "aguardando input" via hooks do Claude Code (`Notification`/`Stop` → state file)
-- [ ] **STATUS-02**: Indicador de status por worktree (rodando / aguardando / ocioso / pronto) na sidebar e no header do pane
-- [ ] **STATUS-03**: Notificação desktop (libnotify) + som opcional quando um agente entra em espera e a janela está fora de foco
+- [x] **STATUS-01**: O app detecta "aguardando input" via hooks do Claude Code (`Notification`/`Stop` → state file)
+- [x] **STATUS-02**: Indicador de status por worktree (rodando / aguardando / ocioso / pronto) na sidebar e no header do pane
+- [x] **STATUS-03**: Notificação desktop (libnotify) + som opcional quando um agente entra em espera e a janela está fora de foco
 
 ### Agente (AGENT)
 
@@ -60,7 +60,7 @@ Requirements para o lançamento inicial (paralelismo simples). Cada um mapeia pa
 - [x] **RAM-01**: Usuário hiberna uma worktree (mata agente + para containers, mantém o diretório) e retoma depois
 - [ ] **RAM-02**: Limite configurável de agentes/containers ativos simultaneamente
 - [ ] **RAM-03**: Visibilidade de uso de RAM por worktree na UI
-- [ ] **RAM-04**: Suspender worktrees ociosas (ligado ao status idle)
+- [x] **RAM-04**: Suspender worktrees ociosas (ligado ao status idle)
 
 ### Review / Cleanup (REVIEW)
 
@@ -140,10 +140,10 @@ Qual fase cobre qual requisito. Cada requisito v1 mapeia para exatamente uma fas
 | LAYOUT-01 | Phase 3 | Pending |
 | RAM-02 | Phase 3 | Pending |
 | RAM-03 | Phase 3 | Pending |
-| STATUS-01 | Phase 4 | Pending |
-| STATUS-02 | Phase 4 | Pending |
-| STATUS-03 | Phase 4 | Pending |
-| RAM-04 | Phase 4 | Pending |
+| STATUS-01 | Phase 4 | Complete (UAT pending) |
+| STATUS-02 | Phase 4 | Complete (UAT pending) |
+| STATUS-03 | Phase 4 | Complete (UAT pending) |
+| RAM-04 | Phase 4 | Complete (UAT pending) |
 | AGENT-01 | Phase 5 | Pending |
 | UI-01 | Phase 5 | Pending |
 | UI-02 | Phase 5 | Pending |
