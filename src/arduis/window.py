@@ -372,6 +372,23 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._new_btn.connect("clicked", self._on_new_worktree_clicked)
         header.pack_start(self._new_btn)
 
+        # UI-02 (D-08): a primary menu (open-menu-symbolic) on pack_end with a "Tema"
+        # submenu of one win.set_theme(slug) item per registered theme. The action is
+        # registered in _install_row_actions (mirrors win.hibernate). Agent command +
+        # keybindings stay TOML-edited (no GUI editor this phase).
+        theme_menu = Gio.Menu()
+        for slug, theme in THEMES.items():
+            item = Gio.MenuItem.new(theme.display_name, None)
+            item.set_action_and_target_value(
+                "win.set_theme", GLib.Variant.new_string(slug)
+            )
+            theme_menu.append_item(item)
+        menu = Gio.Menu()
+        menu.append_submenu("Tema", theme_menu)
+        menu_btn = Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu)
+        menu_btn.set_tooltip_text("Menu")
+        header.pack_end(menu_btn)
+
         # NOTE: the old "⌥ Layout" preset menu (grid 2×2 / columns) was a leftover
         # of the pre-pivot GLOBAL-layout model — it arranged worktrees-as-panes. Under
         # the per-worktree workspace model (plan 02) a workspace is one worktree's
@@ -463,6 +480,50 @@ class ArduisWindow(Adw.ApplicationWindow):
                 self._css_provider,
                 Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
             )
+
+    # --- runtime theme switch (UI-02, D-07/D-08, Pitfall 1/2) ---------------
+
+    def _apply_theme(self, theme: Theme) -> None:
+        """Switch to ``theme`` at runtime: replace the provider, re-color every VTE.
+
+        Pitfall 1: REMOVE the stored provider from the display before adding a fresh
+        one (never stack — providers accumulate at the same priority otherwise).
+        Pitfall 2: re-color EVERY live terminal (``_term_by_sid``) and set
+        ``self._current_theme`` so new/resumed/split terminals are born in the active
+        theme via ``_make_terminal``.
+        """
+        if self._css_provider is not None and self._display is not None:
+            Gtk.StyleContext.remove_provider_for_display(
+                self._display, self._css_provider
+            )
+        self._css_provider = Gtk.CssProvider()
+        self._css_provider.load_from_data(_build_css(theme).encode("utf-8"))
+        if self._display is not None:
+            Gtk.StyleContext.add_provider_for_display(
+                self._display,
+                self._css_provider,
+                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+            )
+        for term in self._term_by_sid.values():
+            term.set_colors(
+                _rgba(theme.fg),
+                _rgba(theme.bg),
+                [_rgba(c) for c in theme.palette],
+            )
+            term.set_color_cursor(_rgba(theme.cursor))
+        self._current_theme = theme
+
+    def _on_set_theme(self, _action, param) -> None:
+        """win.set_theme(slug): switch the theme + persist the CANONICAL name (D-08/D-09).
+
+        ``get_theme`` re-whitelists the slug to a registered Theme (Dracula fallback),
+        so an unknown target falls back safely; persistence writes ``theme.name`` (the
+        canonical slug) — an unknown slug that fell back persists "dracula", never the
+        raw target (T-05-03). ``write_theme`` is atomic + best-effort (T-05-04).
+        """
+        theme = get_theme(param.get_string())
+        self._apply_theme(theme)
+        appconfig.write_theme(self._config_path, theme.name)
 
     # --- Phase 4 attention startup infra (STATUS-01, D-01/D-02/D-05) --------
 
@@ -2638,6 +2699,12 @@ class ArduisWindow(Adw.ApplicationWindow):
         close_repo = Gio.SimpleAction.new("close_repo", GLib.VariantType.new("s"))
         close_repo.connect("activate", self._on_close_repo)
         self.add_action(close_repo)
+
+        # UI-02 (D-08): win.set_theme(slug) backs the header "Tema" submenu. The
+        # string target is a theme slug; _on_set_theme switches + persists.
+        set_theme = Gio.SimpleAction.new("set_theme", GLib.VariantType.new("s"))
+        set_theme.connect("activate", self._on_set_theme)
+        self.add_action(set_theme)
 
     def _menu_session(self) -> Task | None:
         """Resolve the right-clicked row back to its tracked Task (D-08)."""
