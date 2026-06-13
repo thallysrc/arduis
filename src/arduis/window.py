@@ -83,7 +83,7 @@ from arduis.session import (  # noqa: E402
     default_task_terminals,
     hibernate_fields,
 )
-from arduis import agentconfig, appconfig, keyconfig  # noqa: E402
+from arduis import agentconfig, appconfig, keyconfig, repoconfig, trust  # noqa: E402
 from arduis.themes import THEMES, Theme, get_theme  # noqa: E402
 from arduis.task_layout import (  # noqa: E402
     repo_worktree_dir,
@@ -331,6 +331,9 @@ class ArduisWindow(Adw.ApplicationWindow):
         # The three new readers + write_theme all use it; load order is BEFORE
         # _install_css so the first paint already knows the active theme.
         self._config_path = os.path.expanduser("~/.config/arduis/arduis.toml")
+        self._trusted_setups_path = os.path.expanduser(
+            "~/.config/arduis/trusted_setups.toml"
+        )
         # AGENT-01 (D-01/D-03): the fed agent command (default "claude"); drives
         # create/split/resume/refeed feeds via agentconfig.*_feed_bytes.
         self._agent_config = agentconfig.load_agent_config(self._config_path)
@@ -2177,6 +2180,11 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._build_task_workspace(task, list(succeeded))
         self._spawn_task_terminals(task)
 
+        # ENV-02 / criterion 4: run each succeeded repo's trusted [setup] in its shell
+        # pane. CREATE path ONLY — _resume_task never reaches here (Pitfall 3). Failure
+        # never blocks the agent or crashes creation (D-06).
+        self._run_repo_setups(task)
+
         if repo_errors:
             self._show_error("Algumas repos não foram criadas", "\n".join(repo_errors))
         self._rebuild_sidebar()
@@ -2209,6 +2217,84 @@ class ArduisWindow(Adw.ApplicationWindow):
             self._spawn_into(agent, cwd, task, agent_tid, kind="agent")
         if shell is not None:
             self._spawn_into(shell, cwd, task, shell_tid, kind="shell")
+
+    # --- per-worktree [setup] feed (ENV-02, criterion 4) --------------------
+
+    def _run_repo_setups(self, task: Task) -> None:
+        """ENV-02: gather each repo's [setup], run trusted ones silently, gate the rest.
+
+        CREATE-only (called from _finalize_task_creation). For every succeeded repo
+        with a non-empty [setup] (read from its worktree's .arduis.toml): already-
+        trusted (repo_realpath, hash) repos feed silently; the rest are collected and
+        confirmed via ONE consolidated Adw.AlertDialog (D-08). 'Pular' leaves the
+        worktree un-setup and persists nothing (re-prompt next create). A garbage file
+        -> RepoSetup([]) -> no gate (criterion 1).
+        """
+        to_confirm: list[tuple[RepoCheckout, list[str], str, str]] = []
+        for repo in task.repos:
+            setup = repoconfig.load_repo_setup(repo.worktree_dir)
+            if not setup.commands:
+                continue  # no [setup] -> no gate, no dialog (the dominant no-op path)
+            h = trust.setup_hash(setup.commands)
+            repo_id = os.path.realpath(self._member_repo_path(repo.repo_name))
+            if trust.is_trusted(self._trusted_setups_path, repo_id, h):
+                self._feed_repo_setup(task, repo, setup.commands)  # silent (trusted)
+            else:
+                to_confirm.append((repo, setup.commands, repo_id, h))
+        if to_confirm:
+            self._present_setup_trust(task, to_confirm)
+
+    def _feed_repo_setup(
+        self, task: Task, repo: RepoCheckout, commands: list[str]
+    ) -> None:
+        """Feed ``cd <worktree> &&`` + the commands into the task's SHELL terminal (t1).
+
+        NEVER the agent terminal (t0) — feeding the claude TUI corrupts its input
+        (Pitfall 2). The cd-guard re-roots into the repo's own worktree so multi-repo
+        setups resolve relative paths (Pitfall 1). Best-effort: a missing terminal or a
+        feed error must not crash creation (D-06).
+        """
+        shell = self._term_by_sid.get(f"{task.task_id}:t1")
+        if shell is None:
+            return
+        try:
+            shell.feed_child(repoconfig.setup_feed_bytes(repo.worktree_dir, commands))
+        except Exception:  # noqa: BLE001 - a feed failure must never break creation
+            pass
+
+    def _present_setup_trust(
+        self, task: Task, to_confirm: list[tuple[RepoCheckout, list[str], str, str]]
+    ) -> None:
+        """Consolidated trust gate (D-08), mirroring _present_hook_consent.
+
+        Shows the EXACT commands grouped per repo (the security disclosure). 'Confiar e
+        rodar' record_trusts each + feeds; 'Pular' persists nothing and feeds nothing
+        (the worktree still opened; the user can run setup by hand).
+        """
+        blocks = []
+        for repo, commands, _rid, _h in to_confirm:
+            blocks.append(f"{repo.repo_name}:\n  " + "\n  ".join(commands))
+        body = (
+            "Estes repositórios pedem para rodar comandos de setup na nova worktree. "
+            "Os comandos vêm do .arduis.toml do repositório — rode-os só se confiar nele.\n\n"
+            + "\n\n".join(blocks)
+        )
+        dialog = Adw.AlertDialog(heading="Rodar setup destes repositórios?", body=body)
+        dialog.add_response("skip", "Pular")
+        dialog.add_response("trust", "Confiar e rodar")
+        dialog.set_response_appearance("trust", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("trust")
+        dialog.set_close_response("skip")
+
+        def _on_response(_dlg, response):
+            if response != "trust":
+                return  # 'Pular'/close: persist nothing, feed nothing (re-prompt)
+            for repo, commands, repo_id, h in to_confirm:
+                trust.record_trust(self._trusted_setups_path, repo_id, h)
+                self._feed_repo_setup(task, repo, commands)
+
+        dialog.connect("response", _on_response)
+        dialog.present(self)
 
     def _split_active_pane(self, focused_tid: str, orientation: str = "h") -> None:
         """Split the active workspace, spawning a new agent terminal beside ``focused_tid`` (D-05).
