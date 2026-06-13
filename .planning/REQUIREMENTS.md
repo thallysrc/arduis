@@ -31,12 +31,12 @@ Requirements para o lançamento inicial (paralelismo simples). Cada um mapeia pa
 
 ### Agente (AGENT)
 
-- [ ] **AGENT-01**: Agente = comando configurável (default `claude`); `Ctrl+C` cai no shell para rodar outro agente
+- [x] **AGENT-01**: Agente = comando configurável (default `claude`); `Ctrl+C` cai no shell para rodar outro agente
 
 ### UI — Aparência & Atalhos (UI)
 
-- [ ] **UI-01**: Keybindings configuráveis estilo tmux (`C-Space`, `C-h/j/k/l`, split `-`/`=`, zoom `z`)
-- [ ] **UI-02**: Temas de cor do app e dos terminais (paleta VTE + UI) — Dracula default, trocáveis
+- [x] **UI-01**: Keybindings configuráveis estilo tmux (`C-Space`, `C-h/j/k/l`, split `-`/`=`, zoom `z`)
+- [x] **UI-02**: Temas de cor do app e dos terminais (paleta VTE + UI) — Dracula default, trocáveis
 
 ### Layout (LAYOUT)
 
@@ -144,9 +144,9 @@ Qual fase cobre qual requisito. Cada requisito v1 mapeia para exatamente uma fas
 | STATUS-02 | Phase 4 | Complete (UAT pending) |
 | STATUS-03 | Phase 4 | Complete (UAT pending) |
 | RAM-04 | Phase 4 | Complete (UAT pending) |
-| AGENT-01 | Phase 5 | Pending |
-| UI-01 | Phase 5 | Pending |
-| UI-02 | Phase 5 | Pending |
+| AGENT-01 | Phase 5 | Complete (UAT pending) |
+| UI-01 | Phase 5 | Complete (UAT pending) |
+| UI-02 | Phase 5 | Complete (UAT pending) |
 | ENV-01 | Phase 6 | Pending |
 | ENV-02 | Phase 6 | Pending |
 | CONT-01 | Phase 7 | Pending |

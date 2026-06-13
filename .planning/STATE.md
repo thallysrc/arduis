@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 4 complete (live UAT pending)
-last_updated: "2026-06-13T14:40:15.814Z"
+stopped_at: Phase 5 complete (live UAT pending); Phase 6 not started
+last_updated: "2026-06-13T15:23:29.821Z"
 last_activity: 2026-06-13
 progress:
   total_phases: 11
-  completed_phases: 6
-  total_plans: 21
-  completed_plans: 21
+  completed_phases: 7
+  total_plans: 25
+  completed_plans: 25
   percent: 100
 ---
 
@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-08)
 
 **Core value:** Tirar a ideia "quero começar uma branch nova" e ter um agente de IA rodando numa worktree isolada em segundos — gerenciando N agentes em paralelo e sempre sabendo qual deles te espera.
-**Current focus:** Phase 5 — agent-swap-+-tmux-keybindings-+-themes (next)
+**Current focus:** Phase 6 — per-worktree setup via `.arduis.toml` (next)
 
 ## Current Position
 
-Phase: 5
+Phase: 6
 Plan: Not started
-Status: Phase 4 complete (live UAT pending); Phase 5 not started
+Status: Phase 5 complete (live UAT pending); Phase 6 not started
 Last activity: 2026-06-13
 
 Progress: [██████░░░░] 60%
@@ -36,7 +36,7 @@ Progress: [██████░░░░] 60%
 
 **Velocity:**
 
-- Total plans completed: 21
+- Total plans completed: 25
 - Average duration: -
 - Total execution time: 0 hours
 
@@ -50,6 +50,7 @@ Progress: [██████░░░░] 60%
 | 03.1 | 3 | - | - |
 | 03.2 | 3 | - | - |
 | 4 | 5 | - | - |
+| 5 | 4 | - | - |
 
 **Recent Trend:**
 

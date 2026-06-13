@@ -18,7 +18,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 03.1: worktree-as-terminal-workspace (INSERTED)** - Canvas shows ONE worktree's terminals (workspace); per-worktree LayoutModel; sidebar swaps the whole workspace; re-targeted C-Space/RAM/hibernate semantics
 - [x] **Phase 03.2: Projects and Cross-Repo Tasks (INSERTED)** - Project = multi-repo root folder; task = set of worktrees (one per chosen repo) mirroring the root layout; sidebar lists tasks, workspace shows a task's terminals (completed 2026-06-12)
 - [x] **Phase 4: Attention Detection (who's waiting)** - Hooks-first status (running/waiting/idle/ready), sidebar+pane dots, desktop notification, idle auto-suspend (completed 2026-06-13)
-- [ ] **Phase 5: Agent Swap + tmux Keybindings + Themes** - Agent = configurable command (Ctrl+C swaps), tmux-style chords, Dracula default + swappable themes
+- [x] **Phase 5: Agent Swap + tmux Keybindings + Themes** - Agent = configurable command (Ctrl+C swaps), tmux-style chords, Dracula default + swappable themes (completed 2026-06-13)
 - [ ] **Phase 6: Per-Worktree Setup via `.arduis.toml`** - Repo config with sensible defaults; setup commands run on worktree creation via the login shell
 - [ ] **Phase 7: Opt-in Isolated Containers** - Per-worktree docker-compose isolation with stable project name, auto port offset + probing, port badges, guaranteed teardown
 - [ ] **Phase 8: Review + Cleanup** - Read-only diff, branch/PR status via git/gh, "conclude worktree" with correct teardown order
@@ -137,10 +137,10 @@ Plans:
   4. App and terminal use a Dracula theme by default, and the user can switch to other themes (UI palette + VTE palette)
 **Plans**: 4 plans (3 waves)
 Plans:
-- [ ] 05-01-PLAN.md — GTK-free themes.py registry (Dracula+Nord+Solarized+Gruvbox) + tests (UI-02)
-- [ ] 05-02-PLAN.md — agentconfig/keyconfig/appconfig loaders + keymap split/zoom/refeed + tests (AGENT-01/UI-01/UI-02)
-- [ ] 05-03-PLAN.md — window.py wiring: configurable feed + prefix/bindings + runtime theme switch + Tema menu + persistence
-- [ ] 05-04-PLAN.md — headless broadway smoke + live human-verify (criterion 3 under real Wayland)
+- [x] 05-01-PLAN.md — GTK-free themes.py registry (Dracula+Nord+Solarized+Gruvbox) + tests (UI-02)
+- [x] 05-02-PLAN.md — agentconfig/keyconfig/appconfig loaders + keymap split/zoom/refeed + tests (AGENT-01/UI-01/UI-02)
+- [x] 05-03-PLAN.md — window.py wiring: configurable feed + prefix/bindings + runtime theme switch + Tema menu + persistence
+- [x] 05-04-PLAN.md — headless broadway smoke + live human-verify (criterion 3 under real Wayland)
 **UI hint**: yes
 
 ### Phase 6: Per-Worktree Setup via `.arduis.toml`
@@ -214,7 +214,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 03.1. worktree-as-terminal-workspace | 3/3 | Complete | 2026-06-10 |
 | 03.2. Projects and Cross-Repo Tasks | 3/3 | Complete    | 2026-06-12 |
 | 4. Attention Detection | 5/5 | Complete    | 2026-06-13 |
-| 5. Agent Swap + Keys + Themes | 0/TBD | Not started | - |
+| 5. Agent Swap + Keys + Themes | 4/4 | Complete    | 2026-06-13 |
 | 6. Setup via `.arduis.toml` | 0/TBD | Not started | - |
 | 7. Isolated Containers | 0/TBD | Not started | - |
 | 8. Review + Cleanup | 0/TBD | Not started | - |
