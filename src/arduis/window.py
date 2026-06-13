@@ -43,6 +43,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 
 import json
 
@@ -74,8 +75,6 @@ from arduis.attention import AgentStatus  # noqa: E402
 from arduis.layout import LayoutModel, LeafNode, SplitNode  # noqa: E402
 from arduis.project import detect_member_repos  # noqa: E402
 from arduis.session import (  # noqa: E402
-    AGENT_FEED,
-    AGENT_RESUME_FEED,
     RepoCheckout,
     SessionState,
     SessionStore,
@@ -84,6 +83,8 @@ from arduis.session import (  # noqa: E402
     default_task_terminals,
     hibernate_fields,
 )
+from arduis import agentconfig, appconfig, keyconfig  # noqa: E402
+from arduis.themes import THEMES, Theme, get_theme  # noqa: E402
 from arduis.task_layout import (  # noqa: E402
     repo_worktree_dir,
     resolve_repo_add,
@@ -100,13 +101,6 @@ from arduis.worktree import (  # noqa: E402
     parse_local_branches,
     parse_worktrees,
 )
-from arduis.theme import (  # noqa: E402
-    DRACULA_BG,
-    DRACULA_CURSOR,
-    DRACULA_FG,
-    DRACULA_PALETTE,
-)
-
 _SIGKILL_GRACE_MS = 1500  # time between SIGHUP and the SIGKILL sweep (D-13)
 _NO_REPO_HINT = "Launch arduis inside a git repo to create worktrees"
 
@@ -119,6 +113,12 @@ _MIN_PANE_W = 240      # UI-SPEC: min usable terminal width
 _MIN_PANE_H = 120      # UI-SPEC: min usable terminal height
 
 # UI-SPEC Color (Dracula, mirrored from theme.py).
+#
+# Phase 5 (UI-02): these 8 module constants are NO LONGER the color source — every
+# CSS/set_colors path now reads the active ``Theme`` (``self._current_theme``). They
+# remain only as documented DEAD Dracula fallbacks (the values match
+# ``themes.DRACULA``); ``_build_css`` and ``_make_terminal`` substitute the Theme
+# fields instead (Pitfall 2). Do not reintroduce them as the live source.
 _DOT_ACTIVE = "#50fa7b"      # active agent dot (green) — also RUNNING (D-06)
 _DOT_HIBERNATED = "#6272a4"  # hibernated dot (grey) — also ENDED (D-06)
 # Phase 4 attention dot colors (D-06): waiting orange, ready cyan, idle muted
@@ -130,42 +130,51 @@ _BRANCH_PINK = "#ff79c6"     # pane-header branch label
 _FOCUS_RING = "#bd93f9"      # focused-pane purple ring
 _BG2 = "#21222c"             # sidebar / header / pane-header surface
 
-# Loaded once into the display so the CSS classes below resolve everywhere.
-_CSS = f"""
+
+def _build_css(theme: Theme) -> str:
+    """Build the display CSS for ``theme`` (UI-02, D-07/Pitfall 1/2).
+
+    Every class/selector is identical to the pre-Phase-5 ``_CSS`` f-string — only the
+    color VALUES become per-theme: ``theme.surface`` (was ``_BG2``), ``theme.accent``
+    (was ``_FOCUS_RING`` — the focus ring + badge + hint-key), ``theme.branch`` (was
+    ``_BRANCH_PINK``), and the 5 status-dot colors. The footer-count reuses
+    ``theme.dot_active`` (it reused ``_DOT_ACTIVE`` before).
+    """
+    return f"""
 .arduis-sidebar {{
-    background-color: {_BG2};
+    background-color: {theme.surface};
 }}
 .arduis-pane-header {{
-    background-color: {_BG2};
+    background-color: {theme.surface};
     min-height: {_PANE_HEADER_H}px;
     padding: 0 16px;
 }}
 .arduis-branch {{
-    color: {_BRANCH_PINK};
+    color: {theme.branch};
     font-weight: 600;
     font-size: 13px;
 }}
 .arduis-badge {{
-    color: {_FOCUS_RING};
+    color: {theme.accent};
     font-size: 11px;
 }}
 .arduis-leaf.focus {{
-    border: 1px solid {_FOCUS_RING};
+    border: 1px solid {theme.accent};
 }}
 .arduis-dot-active {{
-    color: {_DOT_ACTIVE};
+    color: {theme.dot_active};
 }}
 .arduis-dot-hibernated {{
-    color: {_DOT_HIBERNATED};
+    color: {theme.dot_hibernated};
 }}
 .arduis-dot-waiting {{
-    color: {_DOT_WAITING};
+    color: {theme.dot_waiting};
 }}
 .arduis-dot-ready {{
-    color: {_DOT_READY};
+    color: {theme.dot_ready};
 }}
 .arduis-dot-idle {{
-    color: {_DOT_IDLE};
+    color: {theme.dot_idle};
 }}
 .arduis-row-branch {{
     font-weight: 600;
@@ -179,16 +188,16 @@ _CSS = f"""
     opacity: 0.5;
 }}
 .arduis-hintbar {{
-    background-color: {_BG2};
+    background-color: {theme.surface};
     padding: 4px 16px;
     font-size: 11px;
 }}
 .arduis-hint-key {{
-    color: {_FOCUS_RING};
+    color: {theme.accent};
     font-weight: 600;
 }}
 .arduis-footer-count {{
-    color: {_DOT_ACTIVE};
+    color: {theme.dot_active};
     font-weight: 600;
 }}
 """
@@ -199,6 +208,33 @@ def _rgba(spec: str) -> Gdk.RGBA:
     color = Gdk.RGBA()
     color.parse(spec)
     return color
+
+
+def _read_keys_section(path: str) -> dict:
+    """Tolerantly read ``[keys]`` (UI-01, D-04/D-05) -> ``{"prefix", "bindings"}``.
+
+    ``keyconfig.resolve_prefix``/``resolve_keymap`` take the RAW values (not the
+    file), so the tomllib read lives here next to the other config reads in
+    ``__init__``. Any failure (missing file, invalid TOML, no ``[keys]`` table) or a
+    wrong-typed sub-value degrades to ``{}`` — the resolvers then fall back to the
+    defaults. Mirrors ``attention.load_config``'s tolerant pattern.
+    """
+    try:
+        with open(path, "rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+    section = data.get("keys")
+    if not isinstance(section, dict):
+        return {}
+    out: dict = {}
+    prefix = section.get("prefix")
+    if isinstance(prefix, str):
+        out["prefix"] = prefix
+    bindings = section.get("bindings")
+    if isinstance(bindings, dict):
+        out["bindings"] = bindings
+    return out
 
 
 class ArduisWindow(Adw.ApplicationWindow):
@@ -289,6 +325,31 @@ class ArduisWindow(Adw.ApplicationWindow):
         # "esperando?" on a bell and back to "claude" on activity (D-13 lower-confidence
         # label). Populated by _make_leaf.
         self._badge_by_tid: dict[str, Gtk.Label] = {}
+
+        # --- Phase 5 config region (AGENT-01/UI-01/UI-02) --------------------
+        # One shared config path (the file Phase 4 introduced for [attention]).
+        # The three new readers + write_theme all use it; load order is BEFORE
+        # _install_css so the first paint already knows the active theme.
+        self._config_path = os.path.expanduser("~/.config/arduis/arduis.toml")
+        # AGENT-01 (D-01/D-03): the fed agent command (default "claude"); drives
+        # create/split/resume/refeed feeds via agentconfig.*_feed_bytes.
+        self._agent_config = agentconfig.load_agent_config(self._config_path)
+        # UI-01 (D-04/D-05): the configurable prefix tuple + the resolved keymap
+        # merged over the defaults through a closed action set. Their USE is wired
+        # in _on_key/_run_action (Task 2); loaded here so __init__ has one region.
+        _keys = _read_keys_section(self._config_path)
+        self._prefix = keyconfig.resolve_prefix(_keys.get("prefix"))
+        self._keymap = keyconfig.resolve_keymap(_keys.get("bindings"))
+        # UI-02 (D-06/D-09): the active theme loaded from [theme] name (Dracula
+        # fallback via get_theme). _build_css/_make_terminal/_apply_theme read this.
+        self._current_theme = get_theme(appconfig.load_theme_name(self._config_path))
+        # The replaceable display CssProvider handle (Pitfall 1) + the display.
+        self._css_provider: Gtk.CssProvider | None = None
+        self._display = Gdk.Display.get_default()
+
+        # libadwaita dark base (A3): force dark so Adw widgets render correctly
+        # under all 4 dark palettes. Set once here (main.py does not force it).
+        Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.FORCE_DARK)
 
         self._install_css()
 
@@ -386,13 +447,21 @@ class ArduisWindow(Adw.ApplicationWindow):
     # --- CSS provider (UI-SPEC Color) ---------------------------------------
 
     def _install_css(self) -> None:
-        """Load the sidebar/dot/pane-header/focus-ring colors once per display."""
-        provider = Gtk.CssProvider()
-        provider.load_from_data(_CSS.encode("utf-8"))
-        display = Gdk.Display.get_default()
-        if display is not None:
+        """Load the active theme's colors once per display, KEEPING the handle.
+
+        Builds the CSS from ``self._current_theme`` via ``_build_css`` and stores the
+        provider on ``self._css_provider`` so ``_apply_theme`` can remove it before
+        adding a replacement (Pitfall 1 — providers must be replaced, not stacked).
+        """
+        self._css_provider = Gtk.CssProvider()
+        self._css_provider.load_from_data(
+            _build_css(self._current_theme).encode("utf-8")
+        )
+        if self._display is not None:
             Gtk.StyleContext.add_provider_for_display(
-                display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+                self._display,
+                self._css_provider,
+                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
             )
 
     # --- Phase 4 attention startup infra (STATUS-01, D-01/D-02/D-05) --------
@@ -744,12 +813,15 @@ class ArduisWindow(Adw.ApplicationWindow):
         """Build a VTE terminal with the app-owned palette + clipboard shortcuts."""
         terminal = Vte.Terminal()
         # D-06/D-07 (Phase 1): the app owns the palette, never the shell.
+        # Phase 5 (UI-02, Pitfall 2): color from the ACTIVE theme so resumed/split/
+        # newly-spawned terminals are born in the current theme, not always Dracula.
+        theme = self._current_theme
         terminal.set_colors(
-            _rgba(DRACULA_FG),
-            _rgba(DRACULA_BG),
-            [_rgba(c) for c in DRACULA_PALETTE],
+            _rgba(theme.fg),
+            _rgba(theme.bg),
+            [_rgba(c) for c in theme.palette],
         )
-        terminal.set_color_cursor(_rgba(DRACULA_CURSOR))
+        terminal.set_color_cursor(_rgba(theme.cursor))
         terminal.set_font(Pango.FontDescription.from_string("monospace 11"))
         terminal.set_scrollback_lines(10000)
         terminal.set_mouse_autohide(True)
