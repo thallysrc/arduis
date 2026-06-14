@@ -70,6 +70,7 @@ from arduis.host_runner import HostRunner  # noqa: E402
 from arduis.spawn import build_spawn_command, build_worktree_spawn  # noqa: E402
 from arduis.exit_status import decode_exit  # noqa: E402
 from arduis.git_service import run_git_async  # noqa: E402
+from arduis import compose, containerstate, docker_service  # noqa: E402
 from arduis import attention, caps, resource_monitor  # noqa: E402
 from arduis.attention import AgentStatus  # noqa: E402
 from arduis.layout import LayoutModel, LeafNode, SplitNode  # noqa: E402
@@ -261,6 +262,24 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         self._runner = HostRunner()
         self._store = SessionStore()
+
+        # --- Phase 7 (opt-in isolated containers, CONT-01..05) ---------------
+        # Feature availability (CONT-01, D-11): the per-task isolation toggle is
+        # offered ONLY when the project has a root compose AND docker is on PATH.
+        # Computed in _resolve_project; safe defaults here so methods never
+        # AttributeError before resolution.
+        self._compose_path: str | None = None
+        self._docker_available = False
+        # Per-task durable container state (project name + on/off + resolved port
+        # map), keyed by task_id. Loaded from disk in _scan_tasks / create-finalize
+        # so badges render at startup before any `up` (CONT-04, D-07/D-13).
+        self._container_state: dict[str, containerstate.ContainerState] = {}
+        # task_ids with an in-flight compose op (toggle disabled + spinner shown).
+        self._compose_busy: set[str] = set()
+        # Pending enable data (project + port_map) stashed between the async
+        # config-step and the up-step, keyed by task_id.
+        self._compose_pending: dict[str, dict] = {}
+
         # The $HOME scratch shell is the pinned "main" leaf (D-07), not a session.
         self._shell_pid: int | None = None
         self._last_exit: int | None = None
@@ -456,7 +475,13 @@ class ArduisWindow(Adw.ApplicationWindow):
         outer.append(self._build_hint_bar())
 
         view.set_content(outer)
-        self.set_content(view)
+        # D-10: wrap the whole ToolbarView in an Adw.ToastOverlay so container
+        # progress/result feedback (enable/disable/teardown/reconcile) surfaces as
+        # transient toasts over the canvas. The overlay is the window's single
+        # content child; `view` becomes its child. `self._toast(msg)` is the entry.
+        self._toast_overlay = Adw.ToastOverlay()
+        self._toast_overlay.set_child(view)
+        self.set_content(self._toast_overlay)
 
         # C-Space prefix machine on a CAPTURE-phase controller (RESEARCH § Pattern
         # 3): it sees every key before the focused Vte.Terminal, swallowing ONLY
@@ -1282,6 +1307,33 @@ class ArduisWindow(Adw.ApplicationWindow):
         # Keep a handle so the ~2s RAM poll can refresh the sub-line in place.
         self._subline_by_sid[sid] = sub
 
+        # Phase 7 (CONT-04, D-10): when this task has isolated containers enabled,
+        # render the resolved host ports as `<service>:<host>` badges under the
+        # sub-line (read from the in-memory/persisted ContainerState — NOT a live
+        # docker query). While a compose op is in flight show a spinner instead.
+        if sid != _MAIN_SID:
+            if sid in self._compose_busy:
+                spinner = Gtk.Spinner()
+                spinner.start()
+                spinner.set_valign(Gtk.Align.CENTER)
+                text.append(spinner)
+            else:
+                state = self._container_state.get(sid)
+                if state is not None and state.enabled and state.ports:
+                    badges = Gtk.Box(
+                        orientation=Gtk.Orientation.HORIZONTAL, spacing=6
+                    )
+                    for service, entries in state.ports.items():
+                        for entry in entries:
+                            host = entry.get("host")
+                            if host is None:
+                                continue
+                            badge = Gtk.Label(label=f"{service}:{host}", xalign=0)
+                            badge.add_css_class("arduis-badge")
+                            badges.append(badge)
+                    if badges.get_first_child() is not None:
+                        text.append(badges)
+
         if not active:
             row.add_css_class("arduis-row-hibernated")
 
@@ -1326,6 +1378,11 @@ class ArduisWindow(Adw.ApplicationWindow):
                     menu.append_submenu("Fechar repositório", repo_menu)
             else:
                 menu.append("Retomar", "win.resume")
+            # Phase 7 (CONT-01, D-11): the per-task isolation toggle is appended
+            # ONLY when the feature is available (root compose + docker on PATH).
+            # Default OFF; the label flips with the persisted ContainerState. While
+            # a compose op is in flight for this task the entry is omitted (busy).
+            self._append_isolation_menu_item(menu, sid)
             popover = Gtk.PopoverMenu.new_from_model(menu)
             popover.set_parent(row)
             rect = Gdk.Rectangle()
@@ -1336,6 +1393,66 @@ class ArduisWindow(Adw.ApplicationWindow):
             popover.set_pointing_to(rect)
             popover.popup()
         return _on_secondary
+
+    # --- Phase 7: per-task container isolation (CONT-01..05) -----------------
+
+    def _isolation_available(self) -> bool:
+        """True iff the project has a root compose AND docker is on PATH (CONT-01)."""
+        return self._compose_path is not None and self._docker_available
+
+    def _append_isolation_menu_item(self, menu: Gio.Menu, sid: str) -> None:
+        """Append the "Isolar/Desligar containers" entry to a task's row menu (D-11).
+
+        Gio.Menu has no native checkbox; we mirror the existing label-flip pattern —
+        "Isolar containers" when OFF, "Desligar containers" when ON. Omitted entirely
+        when the feature is unavailable (no root compose / no docker) or while a
+        compose op is in flight for this task (busy → an insensitive informational
+        line so the user sees WHY it is unavailable rather than a silent gap).
+        """
+        if not self._isolation_available():
+            return
+        if sid in self._compose_busy:
+            # No way to make a Gio.Menu item insensitive declaratively; surface a
+            # disabled-looking informational entry bound to a no-op-ish target.
+            menu.append("Containers… (em andamento)", None)
+            return
+        state = self._container_state.get(sid)
+        enabled = bool(state and state.enabled)
+        label = "Desligar containers" if enabled else "Isolar containers"
+        item = Gio.MenuItem.new(label, None)
+        item.set_action_and_target_value(
+            "win.toggle_isolation", GLib.Variant.new_string(sid)
+        )
+        menu.append_item(item)
+
+    def _on_toggle_isolation_action(self, _action, param) -> None:
+        """win.toggle_isolation(task_id) → dispatch enable vs disable (D-11)."""
+        if param is None:
+            return
+        self._on_toggle_isolation(param.get_string())
+
+    def _on_toggle_isolation(self, task_id: str) -> None:
+        """Resolve the task and flip its isolation based on the persisted state.
+
+        OFF (or no state) → enable; ON → disable. Guards live in the enable/disable
+        bodies (feature available, not busy). Implemented fully in Task 2.
+        """
+        if not self._isolation_available():
+            return
+        task = self._store.get(task_id)
+        if task is None:
+            return
+        state = self._container_state.get(task_id)
+        if state is not None and state.enabled:
+            self._disable_isolation(task)
+        else:
+            self._enable_isolation(task)
+
+    def _enable_isolation(self, task: Task) -> None:  # pragma: no cover - Task 2
+        """Stub — full async enable chain lands in Task 2."""
+
+    def _disable_isolation(self, task: Task) -> None:  # pragma: no cover - Task 2
+        """Stub — full async disable chain lands in Task 2."""
 
     def _swap_workspace(self, sid: str) -> None:
         """Swap the visible canvas to worktree ``sid``'s terminals (D-04/D-07).
@@ -1744,6 +1861,18 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._repo_root = self._project_root
         self._repo_name = self._project_name
 
+        # Phase 7 (CONT-01, D-11): auto-detect the root compose + docker on PATH so
+        # the per-task isolation toggle is offered ONLY when both are present (the
+        # opt-in IS the consent gate). Most projects have no compose → strict no-op.
+        self._docker_available = shutil.which("docker") is not None
+        self._compose_path = None
+        if self._project_root:
+            for name in ("docker-compose.yml", "compose.yaml"):
+                cand = os.path.join(self._project_root, name)
+                if os.path.isfile(cand):
+                    self._compose_path = cand
+                    break
+
         enabled = self._project_root is not None
         self._new_btn.set_sensitive(enabled)
         self._new_btn.set_tooltip_text("Nova task" if enabled else _NO_REPO_HINT)
@@ -1996,6 +2125,12 @@ class ArduisWindow(Adw.ApplicationWindow):
                     # carry NO pid/pgid (Pitfall 6 — do NOT spawn). Resume re-spawns.
                     terminals=default_task_terminals(task_id),
                 )
+            )
+            # Phase 7 (CONT-04, D-07/D-13): load the durable container state so port
+            # badges render at startup for tasks isolated before this restart. A
+            # task with no arduis.container.toml yields the no-op default (OFF).
+            self._container_state[task_id] = containerstate.load_container_state(
+                entry.path
             )
 
         # The sidebar was built (from an empty store) before this scan runs, so
@@ -2400,6 +2535,12 @@ class ArduisWindow(Adw.ApplicationWindow):
         # folder root and spawn the agent+shell pair (now that the worktrees exist).
         self._build_task_workspace(task, list(succeeded))
         self._spawn_task_terminals(task)
+
+        # Phase 7 (CONT-04): seed the in-memory container state for the fresh task
+        # (no file yet → ContainerState() default, toggle OFF). Never auto-enable.
+        self._container_state[task.task_id] = containerstate.load_container_state(
+            task.task_dir
+        )
 
         # ENV-02 / criterion 4: run each succeeded repo's trusted [setup] in its shell
         # pane. CREATE path ONLY — _resume_task never reaches here (Pitfall 3). Failure
@@ -2989,6 +3130,18 @@ class ArduisWindow(Adw.ApplicationWindow):
         dialog.set_close_response("ok")
         dialog.present(self)
 
+    def _toast(self, msg: str) -> None:
+        """Surface a transient Adw.Toast over the canvas (D-10).
+
+        The single entry point for container progress/result feedback. Best-effort
+        — if the overlay was not built (defensive), silently no-op rather than crash
+        the GLib loop where the compose on_done callbacks run.
+        """
+        overlay = getattr(self, "_toast_overlay", None)
+        if overlay is None:
+            return
+        overlay.add_toast(Adw.Toast.new(msg))
+
     # --- row context menu: Hibernate / Resume (D-08) ------------------------
 
     def _install_row_actions(self) -> None:
@@ -3019,6 +3172,15 @@ class ArduisWindow(Adw.ApplicationWindow):
         toggle_chip = Gio.SimpleAction.new("toggle_chip", GLib.VariantType.new("s"))
         toggle_chip.connect("activate", self._on_toggle_chip)
         self.add_action(toggle_chip)
+
+        # Phase 7 (CONT-01/02, D-11): win.toggle_isolation(task_id) backs the row
+        # menu "Isolar/Desligar containers" entry. String target is the task_id;
+        # _on_toggle_isolation dispatches enable vs disable from the persisted state.
+        toggle_isolation = Gio.SimpleAction.new(
+            "toggle_isolation", GLib.VariantType.new("s")
+        )
+        toggle_isolation.connect("activate", self._on_toggle_isolation_action)
+        self.add_action(toggle_isolation)
 
     def _menu_session(self) -> Task | None:
         """Resolve the right-clicked row back to its tracked Task (D-08)."""
