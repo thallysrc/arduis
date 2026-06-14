@@ -220,6 +220,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 4. Attention Detection | 5/5 | Complete    | 2026-06-13 |
 | 5. Agent Swap + Keys + Themes | 4/4 | Complete    | 2026-06-13 |
 | 6. Setup via `.arduis.toml` | 3/3 | Complete    | 2026-06-13 |
-| 7. Isolated Containers | 0/TBD | Not started | - |
+| 7. Isolated Containers | 3/5 | In Progress|  |
 | 8. Review + Cleanup | 0/TBD | Not started | - |
 | 9. Packaging | 0/TBD | Not started | - |
