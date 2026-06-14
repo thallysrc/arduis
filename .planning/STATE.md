@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 6 complete (live UAT pending); Phase 7 not started
-last_updated: "2026-06-13T15:56:03.336Z"
-last_activity: 2026-06-13
+stopped_at: Phase 03.2 context gathered
+last_updated: "2026-06-14T13:51:34.382Z"
+last_activity: 2026-06-14
 progress:
-  total_phases: 11
-  completed_phases: 8
-  total_plans: 28
-  completed_plans: 28
-  percent: 100
+  total_phases: 12
+  completed_phases: 9
+  total_plans: 36
+  completed_plans: 34
+  percent: 94
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-08)
 
 **Core value:** Tirar a ideia "quero começar uma branch nova" e ter um agente de IA rodando numa worktree isolada em segundos — gerenciando N agentes em paralelo e sempre sabendo qual deles te espera.
-**Current focus:** Phase 7 — opt-in isolated containers (next)
+**Current focus:** Phase 03.3 — topbar-repo-chips
 
 ## Current Position
 
-Phase: 7
+Phase: 04
 Plan: Not started
-Status: Phase 6 complete (live UAT pending); Phase 7 not started
-Last activity: 2026-06-13
+Status: Executing Phase 03.3
+Last activity: 2026-06-14
 
 Progress: [██████░░░░] 60%
 
@@ -36,7 +36,7 @@ Progress: [██████░░░░] 60%
 
 **Velocity:**
 
-- Total plans completed: 28
+- Total plans completed: 31
 - Average duration: -
 - Total execution time: 0 hours
 
@@ -52,6 +52,7 @@ Progress: [██████░░░░] 60%
 | 4 | 5 | - | - |
 | 5 | 4 | - | - |
 | 6 | 3 | - | - |
+| 03.3 | 3 | - | - |
 
 **Recent Trend:**
 

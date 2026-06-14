@@ -17,7 +17,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 3: Parallel Worktrees + Sidebar + RAM Groundwork** - N worktrees side by side, free pane layout, sidebar with focus/switch, per-worktree RAM visibility and active caps
 - [x] **Phase 03.1: worktree-as-terminal-workspace (INSERTED)** - Canvas shows ONE worktree's terminals (workspace); per-worktree LayoutModel; sidebar swaps the whole workspace; re-targeted C-Space/RAM/hibernate semantics
 - [x] **Phase 03.2: Projects and Cross-Repo Tasks (INSERTED)** - Project = multi-repo root folder; task = set of worktrees (one per chosen repo) mirroring the root layout; sidebar lists tasks, workspace shows a task's terminals (completed 2026-06-12)
-- [ ] **Phase 03.3: Topbar Repo Chips (INSERTED, corrective)** - Surface member repos as toggleable chips in the topbar (mockup affordance, supersedes 03.2 D-06 name-only); toggled set seeds New-task default; active task reflected; detection filters out linked worktrees
+- [x] **Phase 03.3: Topbar Repo Chips (INSERTED, corrective)** - Surface member repos as toggleable chips in the topbar (mockup affordance, supersedes 03.2 D-06 name-only); toggled set seeds New-task default; active task reflected; detection filters out linked worktrees (completed 2026-06-14)
 - [x] **Phase 4: Attention Detection (who's waiting)** - Hooks-first status (running/waiting/idle/ready), sidebar+pane dots, desktop notification, idle auto-suspend (completed 2026-06-13)
 - [x] **Phase 5: Agent Swap + tmux Keybindings + Themes** - Agent = configurable command (Ctrl+C swaps), tmux-style chords, Dracula default + swappable themes (completed 2026-06-13)
 - [x] **Phase 6: Per-Worktree Setup via `.arduis.toml`** - Repo config with sensible defaults; setup commands run on worktree creation via the login shell (completed 2026-06-13)
@@ -107,12 +107,12 @@ Plans:
   3. Selecting/activating a task reflects its repos in the chips; pinned main clears the reflection (D-03)
   4. detect_member_repos counts only `.git`-DIRECTORY subdirs — the ~20 linked worktrees are excluded; degenerate 1-repo preserved (D-04)
   5. Chip overflow folds into a +N menu (no horizontal scroll); the degenerate 1-repo renders one chip (D-05 / criterion 5)
-**Plans:** 3 plans (3 waves)
+**Plans:** 3/3 plans complete
 
 Plans:
-- [ ] 03.3-01-PLAN.md — GTK-free (TDD): D-04 detection filter (.git-DIRECTORY only) in project.py + topbar.ChipState (toggle/default/reflect) + tests
-- [ ] 03.3-02-PLAN.md — window.py: render the chip bar (ChipState-backed, dot CSS reused, name kept), seed the New-task dialog from the toggled-ON set, reflect the active task, +N overflow; leaves room for 07-04 badges
-- [ ] 03.3-03-PLAN.md — acceptance: headless broadway smoke (chips per repo, Livon-Saude filter, toggle→default, reflect, 1-repo) + live human-verify on the real multi-repo root
+- [x] 03.3-01-PLAN.md — GTK-free (TDD): D-04 detection filter (.git-DIRECTORY only) in project.py + topbar.ChipState (toggle/default/reflect) + tests
+- [x] 03.3-02-PLAN.md — window.py: render the chip bar (ChipState-backed, dot CSS reused, name kept), seed the New-task dialog from the toggled-ON set, reflect the active task, +N overflow; leaves room for 07-04 badges
+- [x] 03.3-03-PLAN.md — acceptance: headless broadway smoke (chips per repo, Livon-Saude filter, toggle→default, reflect, 1-repo) + live human-verify on the real multi-repo root
 **UI hint**: yes
 
 ### Phase 03.1: worktree-as-terminal-workspace (INSERTED)
