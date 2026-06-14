@@ -1,0 +1,15 @@
+{
+  "services": {
+    "web": {
+      "ports": [
+        {"mode": "ingress", "target": 80, "published": "8080", "protocol": "tcp"},
+        {"mode": "ingress", "host_ip": "127.0.0.1", "target": 9000, "published": "9000", "protocol": "tcp"}
+      ]
+    },
+    "db": {
+      "ports": [
+        {"mode": "ingress", "target": 5432, "published": "5432", "protocol": "tcp"}
+      ]
+    }
+  }
+}
