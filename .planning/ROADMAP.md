@@ -17,6 +17,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 3: Parallel Worktrees + Sidebar + RAM Groundwork** - N worktrees side by side, free pane layout, sidebar with focus/switch, per-worktree RAM visibility and active caps
 - [x] **Phase 03.1: worktree-as-terminal-workspace (INSERTED)** - Canvas shows ONE worktree's terminals (workspace); per-worktree LayoutModel; sidebar swaps the whole workspace; re-targeted C-Space/RAM/hibernate semantics
 - [x] **Phase 03.2: Projects and Cross-Repo Tasks (INSERTED)** - Project = multi-repo root folder; task = set of worktrees (one per chosen repo) mirroring the root layout; sidebar lists tasks, workspace shows a task's terminals (completed 2026-06-12)
+- [ ] **Phase 03.3: Topbar Repo Chips (INSERTED, corrective)** - Surface member repos as toggleable chips in the topbar (mockup affordance, supersedes 03.2 D-06 name-only); toggled set seeds New-task default; active task reflected; detection filters out linked worktrees
 - [x] **Phase 4: Attention Detection (who's waiting)** - Hooks-first status (running/waiting/idle/ready), sidebar+pane dots, desktop notification, idle auto-suspend (completed 2026-06-13)
 - [x] **Phase 5: Agent Swap + tmux Keybindings + Themes** - Agent = configurable command (Ctrl+C swaps), tmux-style chords, Dracula default + swappable themes (completed 2026-06-13)
 - [x] **Phase 6: Per-Worktree Setup via `.arduis.toml`** - Repo config with sensible defaults; setup commands run on worktree creation via the login shell (completed 2026-06-13)
@@ -94,6 +95,25 @@ Plans:
 - [x] 03.2-01-PLAN.md — GTK-free domain (TDD): project.py member detection + task_layout.py dir/symlink/resolve builders + session.py Task/RepoCheckout replacing WorktreeSession
 - [x] 03.2-02-PLAN.md — window.py structural pivot: project resolution + name-only topbar, New-task dialog (repo multi-pick), per-repo async create chain + relative-symlink materializer, Task-keyed sidebar
 - [x] 03.2-03-PLAN.md — window.py lifecycle: per-task hibernate/resume/RAM/cap across repos, startup scan of ../<root>-tasks/, close-a-repository (never delete), no-orphan teardown + manual UAT
+
+### Phase 03.3: Topbar Repo Chips (INSERTED, corrective)
+
+**Goal:** Correct Phase 03.2 D-06 (which flattened the topbar to a bare project-name string) back to the approved design (`docs/mockup/interface-v2-bridgespace.png` + `docs/MOTIVATION.md` 3-level model): surface the project's member repos as **toggleable chips in the topbar**, each with a status bolinha. The toggled-ON set becomes the DEFAULT repo selection seeded into the New-task dialog (per-task override preserved); the active task's repos are reflected/highlighted in the chips. A mandatory sub-fix narrows member-repo detection to `.git`-DIRECTORY subdirs so the ~20 linked worktrees on the user's real `Livon-Saude` root no longer flood the bar. Designed so Phase 7's 07-04 container toggle + port badges sit ALONGSIDE these chips (07-04 runs after this phase; both touch the topbar → sequential).
+**Requirements**: PAR-02 (corrects D-06; level-1/topbar). PO-directed design correction; authoritative spec is the 6 LOCKED decisions D-01..D-06 in 03.3-CONTEXT.md.
+**Depends on:** Phase 03.2 (and runs BEFORE Phase 7's 07-04, which builds its container UI onto this new topbar)
+**Success Criteria** (what must be TRUE):
+  1. The topbar renders one toggleable chip per member repo (status bolinha reusing the sidebar dot CSS), project name still visible (D-01)
+  2. The toggled-ON chip set seeds the New-task dialog's per-repo checkboxes; per-task override preserved (D-02)
+  3. Selecting/activating a task reflects its repos in the chips; pinned main clears the reflection (D-03)
+  4. detect_member_repos counts only `.git`-DIRECTORY subdirs — the ~20 linked worktrees are excluded; degenerate 1-repo preserved (D-04)
+  5. Chip overflow folds into a +N menu (no horizontal scroll); the degenerate 1-repo renders one chip (D-05 / criterion 5)
+**Plans:** 3 plans (3 waves)
+
+Plans:
+- [ ] 03.3-01-PLAN.md — GTK-free (TDD): D-04 detection filter (.git-DIRECTORY only) in project.py + topbar.ChipState (toggle/default/reflect) + tests
+- [ ] 03.3-02-PLAN.md — window.py: render the chip bar (ChipState-backed, dot CSS reused, name kept), seed the New-task dialog from the toggled-ON set, reflect the active task, +N overflow; leaves room for 07-04 badges
+- [ ] 03.3-03-PLAN.md — acceptance: headless broadway smoke (chips per repo, Livon-Saude filter, toggle→default, reflect, 1-repo) + live human-verify on the real multi-repo root
+**UI hint**: yes
 
 ### Phase 03.1: worktree-as-terminal-workspace (INSERTED)
 
