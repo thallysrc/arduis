@@ -74,6 +74,7 @@ from arduis import attention, caps, resource_monitor  # noqa: E402
 from arduis.attention import AgentStatus  # noqa: E402
 from arduis.layout import LayoutModel, LeafNode, SplitNode  # noqa: E402
 from arduis.project import detect_member_repos  # noqa: E402
+from arduis.topbar import ChipState  # noqa: E402
 from arduis.session import (  # noqa: E402
     RepoCheckout,
     SessionState,
@@ -109,6 +110,10 @@ _MAIN_SID = "main"
 
 _SIDEBAR_WIDTH = 248   # UI-SPEC: fixed-ish sidebar width
 _PANE_HEADER_H = 32    # UI-SPEC: pane-header height
+# 03.3 D-05: topbar chip overflow threshold — show up to this many chips inline,
+# then fold the rest into a "+N" overflow Gtk.MenuButton (no horizontal scroll,
+# rejected as fiddly with VTE focus). Module constant so it is trivially tunable.
+_MAX_VISIBLE_CHIPS = 6
 _MIN_PANE_W = 240      # UI-SPEC: min usable terminal width
 _MIN_PANE_H = 120      # UI-SPEC: min usable terminal height
 
@@ -160,6 +165,17 @@ def _build_css(theme: Theme) -> str:
 }}
 .arduis-leaf.focus {{
     border: 1px solid {theme.accent};
+}}
+.arduis-chip-bar {{
+    padding: 0 4px;
+}}
+.arduis-chip {{
+    padding: 2px 8px;
+    border-radius: 12px;
+}}
+.arduis-chip-active {{
+    border: 1px solid {theme.accent};
+    background-color: {theme.surface};
 }}
 .arduis-dot-active {{
     color: {theme.dot_active};
@@ -256,6 +272,14 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._member_repos: list[str] = []
         self._repo_root: str | None = None
         self._repo_name: str | None = None
+
+        # 03.3 (D-01/D-02/D-03): topbar repo chips. ChipState is the GTK-free model
+        # (Plan 01); window.py renders ONE ToggleButton chip per member, keyed by
+        # repo name, plus a per-chip status dot Label reusing the sidebar dot CSS.
+        # Built at the end of _resolve_project once `_member_repos` is known.
+        self._chip_state: ChipState | None = None
+        self._chip_btn_by_repo: dict[str, Gtk.ToggleButton] = {}
+        self._chip_dot_by_repo: dict[str, Gtk.Label] = {}
 
         # Phase 03.1 pivot (D-04): ONE LayoutModel PER worktree (keyed by worktree
         # sid) instead of one global tree. The canvas shows exactly ONE worktree's
@@ -374,6 +398,19 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._new_btn.set_sensitive(False)  # enabled once the project resolves
         self._new_btn.connect("clicked", self._on_new_worktree_clicked)
         header.pack_start(self._new_btn)
+
+        # 03.3 (D-01/D-05): the topbar repo-chip bar, packed at pack_start AFTER the
+        # +New button (order: +New | chips | … | menu). It is a single horizontal
+        # Box at ONE header end so 07-04 (Phase 7 container toggle + port badges) can
+        # pack ALONGSIDE at pack_end / the title-adjacent region without rework — the
+        # WindowTitle (centered project name, set in _resolve_project) is kept as the
+        # natural co-existence anchor. Populated by `_build_chip_bar` once the project
+        # resolves; empty (and harmless) until then.
+        self._chip_bar = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL, spacing=6
+        )
+        self._chip_bar.add_css_class("arduis-chip-bar")
+        header.pack_start(self._chip_bar)
 
         # UI-02 (D-08): a primary menu (open-menu-symbolic) on pack_end with a "Tema"
         # submenu of one win.set_theme(slug) item per registered theme. The action is
@@ -1704,6 +1741,11 @@ class ArduisWindow(Adw.ApplicationWindow):
         if getattr(self, "_title_widget", None) is not None:
             self._title_widget.set_title(self._project_name or "arduis")
 
+        # 03.3 (D-01): the member set is now known — (re)build the topbar chip bar
+        # backed by a fresh ChipState. One arduis == one project for a whole session,
+        # so this runs once at startup; toggles/reflection restyle in place after.
+        self._build_chip_bar()
+
     def _member_repo_path(self, name: str) -> str:
         """Absolute path of member repo ``name`` (D-07 degenerate-case aware).
 
@@ -1719,6 +1761,164 @@ class ArduisWindow(Adw.ApplicationWindow):
         ):
             return root
         return os.path.join(root, name)
+
+    # --- topbar repo chips (03.3 D-01/D-02/D-03/D-05) ------------------------
+
+    def _build_chip_bar(self) -> None:
+        """Build the topbar chip bar from the resolved member repos (D-01/D-05).
+
+        One arduis == one project per session, so the member set never changes
+        mid-session: this is called once at the end of ``_resolve_project``. It
+        clears any prior children + maps, constructs a fresh ``ChipState`` (Plan 01
+        default: every member toggled ON, D-02), renders the first
+        ``_MAX_VISIBLE_CHIPS`` members as ``_make_chip`` ToggleButtons, folds any
+        remainder into a ``+N`` overflow ``Gtk.MenuButton`` (D-05, no horizontal
+        scroll), and applies the initial styling. An unresolved project (no members)
+        leaves the bar empty — the +New button is already insensitive.
+        """
+        # Clear existing chips via the GTK4 first-child / next-sibling walk.
+        child = self._chip_bar.get_first_child()
+        while child is not None:
+            nxt = child.get_next_sibling()
+            self._chip_bar.remove(child)
+            child = nxt
+        self._chip_btn_by_repo.clear()
+        self._chip_dot_by_repo.clear()
+
+        members = self._member_repos
+        self._chip_state = ChipState(members)  # Plan-01 default: all ON (D-02)
+        if not members:
+            return  # project unresolved → empty bar (the +New button is disabled)
+
+        visible = members[:_MAX_VISIBLE_CHIPS]
+        overflow = members[_MAX_VISIBLE_CHIPS:]
+        for repo in visible:
+            self._chip_bar.append(self._make_chip(repo))
+
+        if overflow:
+            # D-05: the remainder folds into a "+N" menu whose items toggle each
+            # overflow repo via the win.toggle_chip(repo_name) action (mirrors the
+            # win.set_theme per-item pattern in __init__). ChipState.toggle is a
+            # no-op for non-members (T-03.3-05), and the targets only ever name
+            # real members, so the action is safe by construction.
+            overflow_menu = Gio.Menu()
+            for repo in overflow:
+                item = Gio.MenuItem.new(repo, None)
+                item.set_action_and_target_value(
+                    "win.toggle_chip", GLib.Variant.new_string(repo)
+                )
+                overflow_menu.append_item(item)
+            more_btn = Gtk.MenuButton(
+                label=f"+{len(overflow)}", menu_model=overflow_menu
+            )
+            more_btn.add_css_class("flat")
+            more_btn.set_tooltip_text("Mais repos")
+            self._chip_bar.append(more_btn)
+
+        self._restyle_chips()
+
+    def _make_chip(self, repo: str) -> Gtk.ToggleButton:
+        """Build ONE toggleable repo chip: a dot Label + a name Label (D-01).
+
+        The chip is a flat ``Gtk.ToggleButton`` whose ``active`` state mirrors
+        ``ChipState.is_selected`` (D-02). Its child is a small horizontal box of a
+        status bolinha (``●`` Label reusing the existing ``arduis-dot-*`` CSS — D-01)
+        and the repo name rendered via ``set_text`` ONLY (T-03-09 / T-03.3-04 — a
+        scanned dir name must never reach ``set_markup``). The dot stays at the
+        neutral active-green ``arduis-dot-active`` for now; richer per-repo
+        container/agent status is Phase 7 / Phase 4 territory (not built here).
+        """
+        btn = Gtk.ToggleButton()
+        btn.add_css_class("arduis-chip")
+        btn.add_css_class("flat")
+
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        dot = Gtk.Label(label="●")
+        dot.add_css_class("arduis-dot-active")
+        dot.set_valign(Gtk.Align.CENTER)
+        box.append(dot)
+        self._chip_dot_by_repo[repo] = dot
+
+        name = Gtk.Label()
+        name.set_text(repo)  # T-03-09 / T-03.3-04: never set_markup on a dir name
+        box.append(name)
+
+        btn.set_child(box)
+        if self._chip_state is not None:
+            btn.set_active(self._chip_state.is_selected(repo))
+        btn.connect("toggled", self._make_chip_toggled_cb(repo))
+        self._chip_btn_by_repo[repo] = btn
+        return btn
+
+    def _make_chip_toggled_cb(self, repo: str):
+        """Build the ``toggled`` handler for ``repo``'s chip button.
+
+        The button drives the model: set ChipState membership for ``repo`` to MATCH
+        ``btn.get_active()`` (add/discard directly) rather than calling ``.toggle``,
+        so a programmatic ``set_active`` during ``_restyle_chips`` never double-flips
+        the model (re-entrancy guard). ``.toggle`` is reserved for the overflow-menu
+        action, where there is no button whose state to mirror.
+        """
+        def _on_toggled(btn: Gtk.ToggleButton) -> None:
+            if self._chip_state is None:
+                return
+            if btn.get_active():
+                self._chip_state.selected.add(repo)
+            else:
+                self._chip_state.selected.discard(repo)
+            self._restyle_chips()
+        return _on_toggled
+
+    def _on_toggle_chip(self, _action, param) -> None:
+        """win.toggle_chip(repo): flip an OVERFLOW chip from the +N menu (D-05).
+
+        The overflow repos have no visible ToggleButton, so the menu item flips the
+        model via ``ChipState.toggle`` (a no-op for non-members — T-03.3-05) and
+        restyles. Visible chips drive the model through their own toggled handler.
+        """
+        if self._chip_state is None:
+            return
+        self._chip_state.toggle(param.get_string())
+        self._restyle_chips()
+
+    def _restyle_chips(self) -> None:
+        """Re-apply selected/active styling to the visible chips in place (D-02/D-03).
+
+        For each rendered chip button: sync its ``active`` to ``is_selected`` (the
+        toggled-ON default, D-02) and add/remove the ``arduis-chip-active`` class by
+        ``is_active`` (the visible task's repos, D-03 reflection highlight). The dot
+        stays at ``arduis-dot-active`` (project resolved) — per-repo status plumbing
+        is out of scope for this plan. No full rebuild: the member set is fixed for
+        the session.
+        """
+        if self._chip_state is None:
+            return
+        for repo, btn in self._chip_btn_by_repo.items():
+            selected = self._chip_state.is_selected(repo)
+            if btn.get_active() != selected:
+                btn.set_active(selected)
+            if self._chip_state.is_active(repo):
+                btn.add_css_class("arduis-chip-active")
+            else:
+                btn.remove_css_class("arduis-chip-active")
+
+    def _reflect_active_chips(self, sid: str | None) -> None:
+        """Reflect the visible workspace ``sid``'s repos in the chips (D-03).
+
+        The single place every workspace-swap path funnels its chip reflection
+        through. The pinned ``main`` row (or no project / no chip state) clears the
+        reflection (``reflect_active(None)`` → plain default highlight); a task with
+        repos reflects exactly that repo-name set; a task with no repos clears it.
+        """
+        if self._chip_state is None:
+            return
+        if sid is None or sid == _MAIN_SID:
+            self._chip_state.reflect_active(None)
+        else:
+            task = self._store.get(sid)
+            repos = {r.repo_name for r in task.repos} if task is not None else set()
+            self._chip_state.reflect_active(repos or None)
+        self._restyle_chips()
 
     # --- startup task scan (D-11: disk is the source of truth) ---------------
 
@@ -2791,6 +2991,13 @@ class ArduisWindow(Adw.ApplicationWindow):
         set_theme = Gio.SimpleAction.new("set_theme", GLib.VariantType.new("s"))
         set_theme.connect("activate", self._on_set_theme)
         self.add_action(set_theme)
+
+        # 03.3 (D-05): win.toggle_chip(repo_name) backs the topbar "+N" overflow
+        # menu — toggling a repo that doesn't fit inline. String target is a member
+        # repo name; _on_toggle_chip flips ChipState + restyles (no-op for non-members).
+        toggle_chip = Gio.SimpleAction.new("toggle_chip", GLib.VariantType.new("s"))
+        toggle_chip.connect("activate", self._on_toggle_chip)
+        self.add_action(toggle_chip)
 
     def _menu_session(self) -> Task | None:
         """Resolve the right-clicked row back to its tracked Task (D-08)."""
