@@ -49,11 +49,11 @@ Requirements para o lançamento inicial (paralelismo simples). Cada um mapeia pa
 
 ### Containers (CONT)
 
-- [ ] **CONT-01**: O app auto-detecta `docker-compose.yml`; integração de container é opcional
-- [ ] **CONT-02**: Containers isolados opt-in por worktree (`COMPOSE_PROJECT_NAME` único)
-- [ ] **CONT-03**: Compose-base vem da `main`; `docker-compose.override.yml` gerado com offset de porta auto-atribuído
-- [ ] **CONT-04**: As portas dos containers são exibidas em badges na UI
-- [ ] **CONT-05**: Teardown dos containers ao remover a worktree
+- [x] **CONT-01**: O app auto-detecta `docker-compose.yml`; integração de container é opcional
+- [x] **CONT-02**: Containers isolados opt-in por worktree (`COMPOSE_PROJECT_NAME` único)
+- [x] **CONT-03**: Compose-base vem da `main`; `docker-compose.override.yml` gerado com offset de porta auto-atribuído
+- [x] **CONT-04**: As portas dos containers são exibidas em badges na UI
+- [x] **CONT-05**: Teardown dos containers ao remover a worktree
 
 ### RAM / Recursos (RAM)
 
@@ -149,11 +149,11 @@ Qual fase cobre qual requisito. Cada requisito v1 mapeia para exatamente uma fas
 | UI-02 | Phase 5 | Complete (UAT pending) |
 | ENV-01 | Phase 6 | Complete (UAT pending) |
 | ENV-02 | Phase 6 | Complete (UAT pending) |
-| CONT-01 | Phase 7 | Pending |
-| CONT-02 | Phase 7 | Pending |
-| CONT-03 | Phase 7 | Pending |
-| CONT-04 | Phase 7 | Pending |
-| CONT-05 | Phase 7 | Pending |
+| CONT-01 | Phase 7 | Complete (UAT pending) |
+| CONT-02 | Phase 7 | Complete (UAT pending) |
+| CONT-03 | Phase 7 | Complete (UAT pending) |
+| CONT-04 | Phase 7 | Complete (UAT pending) |
+| CONT-05 | Phase 7 | Complete (UAT pending) |
 | REVIEW-01 | Phase 8 | Pending |
 | REVIEW-02 | Phase 8 | Pending |
 | REVIEW-03 | Phase 8 | Pending |

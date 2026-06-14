@@ -21,7 +21,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 4: Attention Detection (who's waiting)** - Hooks-first status (running/waiting/idle/ready), sidebar+pane dots, desktop notification, idle auto-suspend (completed 2026-06-13)
 - [x] **Phase 5: Agent Swap + tmux Keybindings + Themes** - Agent = configurable command (Ctrl+C swaps), tmux-style chords, Dracula default + swappable themes (completed 2026-06-13)
 - [x] **Phase 6: Per-Worktree Setup via `.arduis.toml`** - Repo config with sensible defaults; setup commands run on worktree creation via the login shell (completed 2026-06-13)
-- [ ] **Phase 7: Opt-in Isolated Containers** - Per-worktree docker-compose isolation with stable project name, auto port offset + probing, port badges, guaranteed teardown
+- [x] **Phase 7: Opt-in Isolated Containers** - Per-worktree docker-compose isolation with stable project name, auto port offset + probing, port badges, guaranteed teardown (completed 2026-06-14)
 - [ ] **Phase 8: Review + Cleanup** - Read-only diff, branch/PR status via git/gh, "conclude worktree" with correct teardown order
 - [ ] **Phase 9: Packaging (AUR + .deb)** - Team-installable on Ubuntu + Arch under real Wayland as native packages using the system VTE; Flatpak deferred to v2
 
@@ -240,6 +240,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 4. Attention Detection | 5/5 | Complete    | 2026-06-13 |
 | 5. Agent Swap + Keys + Themes | 4/4 | Complete    | 2026-06-13 |
 | 6. Setup via `.arduis.toml` | 3/3 | Complete    | 2026-06-13 |
-| 7. Isolated Containers | 3/5 | In Progress|  |
+| 7. Isolated Containers | 5/5 | Complete    | 2026-06-14 |
 | 8. Review + Cleanup | 0/TBD | Not started | - |
 | 9. Packaging | 0/TBD | Not started | - |
