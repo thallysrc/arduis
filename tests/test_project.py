@@ -1,9 +1,15 @@
-"""Tests for GTK-free project/member-repo discovery (D-05/D-07).
+"""Tests for GTK-free project/member-repo discovery (D-05/D-07; D-04 03.3).
 
-Contract: ``detect_member_repos`` finds every direct subdir containing a ``.git``
-entry (dir OR file — Pitfall 1), excludes the root's own ``.git``, never follows
-symlinked subdirs, swallows OSError to ``[]``, and returns ``[]`` when there are
-no member subdirs (the degenerate 1-repo project the caller special-cases).
+Contract: ``detect_member_repos`` finds every direct subdir whose ``.git`` is a
+**directory** (a true repo — D-04 / 03.3), EXCLUDING ``.git``-FILE subdirs (linked
+worktrees / submodules), excludes the root's own ``.git``, never follows symlinked
+subdirs, swallows OSError to ``[]``, and returns ``[]`` when there are no member
+subdirs (the degenerate 1-repo project the caller special-cases).
+
+D-04 NOTE (03.3): this REVERSES the 03.2 "Pitfall 1" decision that counted
+``.git``-FILE subdirs as members. The PO's real ``Livon-Saude`` root has ~20
+``backend-*``/``frontend-*`` linked worktrees (``.git`` is a FILE) that flooded the
+topbar chip bar; a member repo is now a subdir whose ``.git`` is a DIRECTORY.
 """
 import os
 
@@ -24,21 +30,38 @@ def _mk_repo(parent, name, git_as_file=False):
     return d
 
 
-def test_detects_dir_and_file_git_excludes_plain(tmp_path):
-    # backend/.git is a DIR, frontend/.git is a FILE, docs/ has no .git.
+def test_detects_dir_git_excludes_file_git_and_plain(tmp_path):
+    # backend/.git is a DIR (member), frontend/.git is a FILE (EXCLUDED — linked
+    # worktree), docs/ has no .git (excluded).
+    # D-04 (03.3): .git-FILE subdirs are linked worktrees, not members — the
+    # change from 03.2 (which INCLUDED frontend) is intentional.
     root = str(tmp_path)
     _mk_repo(root, "backend", git_as_file=False)
     _mk_repo(root, "frontend", git_as_file=True)
     os.makedirs(os.path.join(root, "docs"), exist_ok=True)  # no .git
-    assert detect_member_repos(root) == ["backend", "frontend"]  # sorted; docs excluded
+    assert detect_member_repos(root) == ["backend"]  # frontend(.git FILE) + docs excluded
 
 
-def test_git_as_file_detected(tmp_path):
-    # Pitfall 1: a .git FILE (linked worktree/submodule) is a member via
-    # os.path.exists, not only isdir.
+def test_git_as_file_is_not_a_member(tmp_path):
+    # D-04 (03.3): a sole subdir whose .git is a FILE is a linked worktree, NOT a
+    # member -> []. REPLACES the 03.2 test_git_as_file_detected (which asserted it
+    # WAS a member via os.path.exists); the reversal is intentional per D-04.
     root = str(tmp_path)
     _mk_repo(root, "svc", git_as_file=True)
-    assert detect_member_repos(root) == ["svc"]
+    assert detect_member_repos(root) == []
+
+
+def test_livon_saude_shape_excludes_worktrees(tmp_path):
+    # D-04 acceptance: the PO's real Livon-Saude root — 2 true repos (.git DIR)
+    # plus 20 backend-*/frontend-* linked worktrees (.git FILE) — returns exactly
+    # the 2 true repos (sorted), NOT 22. This is what makes the chip bar usable.
+    root = str(tmp_path)
+    _mk_repo(root, "backend", git_as_file=False)
+    _mk_repo(root, "frontend", git_as_file=False)
+    for i in range(1, 11):
+        _mk_repo(root, f"backend-feat-{i}", git_as_file=True)
+        _mk_repo(root, f"frontend-feat-{i}", git_as_file=True)
+    assert detect_member_repos(root) == ["backend", "frontend"]
 
 
 def test_root_own_git_not_a_member(tmp_path):
