@@ -1627,6 +1627,69 @@ class ArduisWindow(Adw.ApplicationWindow):
                     parts.append(f"{service}:{host}")
         return " ".join(parts) if parts else "sem portas publicadas"
 
+    def _container_down(self, task: Task) -> None:
+        """Async container teardown — a SEPARATE channel from killpg (Pitfall 7, D-12).
+
+        Containers are docker-DAEMON-owned, NOT members of arduis's process group, so
+        ``_teardown_session_terminals`` (the killpg path) does nothing for them. This
+        runs ``docker compose down --remove-orphans --volumes`` for a task whose
+        ContainerState is enabled, fire-and-forget on the GLib loop. NEVER call this
+        from inside ``_teardown_session_terminals`` — the two channels stay separate
+        (T-07-13). Used by the hibernate path (async, non-blocking).
+        """
+        if not self._isolation_available():
+            return
+        state = self._container_state.get(task.task_id)
+        if state is None or not state.enabled:
+            return
+        project = state.project_name or compose.sanitize_project_name(task.branch)
+        docker_service.run_compose_async(
+            compose.down_argv(project, task.task_dir),
+            lambda _rc, _o, _e: None,  # fire-and-forget; orphan-free is the bar
+            runner=self._runner,
+        )
+
+    def _reconcile_orphans(self) -> None:
+        """Startup reconcile: surface orphaned ``arduis-*`` stacks (D-13, criterion 4).
+
+        Conservative — runs ``docker compose ls --all --filter name=arduis`` and
+        TOASTS any ``arduis-*`` project with no matching live task. Does NOT auto
+        ``down -v`` (volume deletion is destructive; a running stack the user wants
+        might match). Malformed JSON is swallowed (T-07-11). Only runs when docker
+        is on PATH.
+        """
+        if not self._docker_available:
+            return
+
+        def _on_ls(rc: int, out: str, err: str) -> None:
+            if rc != 0:
+                return
+            try:
+                projects = json.loads(out)
+            except (ValueError, TypeError):
+                return  # never crash the loop on garbage ls output
+            if not isinstance(projects, list):
+                return
+            live = {
+                compose.sanitize_project_name(t.branch) for t in self._store.all()
+            }
+            orphans = [
+                p.get("Name", "")
+                for p in projects
+                if isinstance(p, dict)
+                and p.get("Name", "").startswith("arduis-")
+                and p.get("Name", "") not in live
+            ]
+            if orphans:
+                self._toast(
+                    f"{len(orphans)} stack(s) órfão(s) encontrado(s): "
+                    + ", ".join(orphans)
+                )
+
+        docker_service.run_compose_async(
+            compose.ls_argv(), _on_ls, runner=self._runner
+        )
+
     def _swap_workspace(self, sid: str) -> None:
         """Swap the visible canvas to worktree ``sid``'s terminals (D-04/D-07).
 
@@ -2310,6 +2373,11 @@ class ArduisWindow(Adw.ApplicationWindow):
         # reflect the rediscovered tasks now — otherwise they only appear after
         # the next unrelated _rebuild_sidebar (e.g. creating a new task).
         self._rebuild_sidebar()
+
+        # Phase 7 (D-13, criterion 4): conservative startup reconcile — surface any
+        # orphaned `arduis-*` compose projects with no live task (e.g. after a
+        # crash). Async + surface-only (never auto down -v). No-op without docker.
+        self._reconcile_orphans()
 
     def _dir_is_task(self, path: str) -> bool:
         """True iff ``path`` holds ≥1 real git worktree (a child with a ``.git`` FILE).
@@ -3393,6 +3461,17 @@ class ArduisWindow(Adw.ApplicationWindow):
         sid = task.task_id
 
         self._teardown_session_terminals(task)  # kill every group (Pitfall 3/5)
+        # Phase 7 (D-12, CONT-05, Pitfall 7): container teardown is a SEPARATE
+        # channel from the killpg agent teardown above — containers are daemon-owned
+        # and NOT in arduis's process group. Tear the stack down ALONGSIDE (never
+        # inside) _teardown_session_terminals, then flip the durable state OFF while
+        # KEEPING the port map so a resumed task re-enables on stable ports.
+        self._container_down(task)
+        c_state = self._container_state.get(sid)
+        if c_state is not None and c_state.enabled:
+            c_state.enabled = False  # KEEP c_state.ports (stable re-enable)
+            containerstate.write_container_state(task.task_dir, c_state)
+            self._container_state[sid] = c_state
         self._clear_task_state_files(task)  # delete state files (Pitfall 5b)
         hibernate_fields(task)  # GTK-free: state=HIBERNATED, all pid/pgid=None
         # The task is no longer calm-tracked while hibernated (it is not ACTIVE).
@@ -3651,6 +3730,30 @@ class ArduisWindow(Adw.ApplicationWindow):
         for session in self._store.all():
             self._teardown_session_terminals(session)
             self._clear_task_state_files(session)
+        # Phase 7 (D-12, CONT-05, Pitfall 7): tear down every enabled task's
+        # container stack at app-exit as a SEPARATE loop from the killpg teardown
+        # above — never conflated. Async on_done may never fire because the window
+        # closes immediately, so here ONLY (app-exit, guaranteed-no-orphan) a brief
+        # SYNCHRONOUS subprocess.run is acceptable per CLAUDE.md ("blocking briefly
+        # is acceptable"). `down` can be slow → cap with a short timeout and swallow
+        # errors; the window still closes. The hibernate path stays async.
+        if self._isolation_available():
+            for session in self._store.all():
+                state = self._container_state.get(session.task_id)
+                if state is None or not state.enabled:
+                    continue
+                project = state.project_name or compose.sanitize_project_name(
+                    session.branch
+                )
+                argv = self._runner.wrap_argv(
+                    compose.down_argv(project, session.task_dir)
+                )
+                try:
+                    subprocess.run(
+                        argv, capture_output=True, timeout=10, check=False
+                    )
+                except (OSError, subprocess.SubprocessError):
+                    pass  # best-effort; the daemon outlives the app regardless
         return False  # allow the window to close
 
     def _sigkill_if_alive(self, pgid):
