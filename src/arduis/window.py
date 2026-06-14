@@ -1448,11 +1448,184 @@ class ArduisWindow(Adw.ApplicationWindow):
         else:
             self._enable_isolation(task)
 
-    def _enable_isolation(self, task: Task) -> None:  # pragma: no cover - Task 2
-        """Stub — full async enable chain lands in Task 2."""
+    def _enable_isolation(self, task: Task) -> None:
+        """Async opt-in chain: config → assign → write override → up → persist.
 
-    def _disable_isolation(self, task: Task) -> None:  # pragma: no cover - Task 2
-        """Stub — full async disable chain lands in Task 2."""
+        CONT-02/03, criterion 2/3 (Pitfall 3/5). Every docker call routes through
+        ``docker_service.run_compose_async`` so the GTK loop never blocks on slow
+        image pulls. The override is ALWAYS written (even with no published ports →
+        an empty-services override) because ``up_argv`` always passes ``-f override``
+        (D-05). On a non-zero ``up`` exit we fire ``down`` to clean the partial stack
+        (Pitfall 5), leave the toggle OFF, and persist enabled=False. The on_done
+        callbacks fire on the GLib main loop → safe to mutate widgets + the store.
+        """
+        task_id = task.task_id
+        if not self._isolation_available():
+            return
+        if task_id in self._compose_busy:
+            return
+        state = self._container_state.get(task_id)
+        if state is not None and state.enabled:
+            return  # already isolated
+
+        self._compose_busy.add(task_id)
+        self._rebuild_sidebar()  # spinner shows; toggle entry omitted while busy
+
+        project = compose.sanitize_project_name(task.branch)
+        offset = containerstate.read_port_offset(self._config_path)
+        task_dir = task.task_dir
+
+        def _on_config(rc: int, out: str, err: str) -> None:
+            if rc != 0:
+                self._finish_isolation_error(task, "config falhou", err)
+                return
+            try:
+                model = json.loads(out)
+            except (ValueError, TypeError) as exc:  # T-07-11: never crash the loop
+                self._finish_isolation_error(task, "config inválido", str(exc))
+                return
+            published = compose.parse_published_ports(model)
+            try:
+                port_map = compose.assign_ports(published, offset)
+            except compose.PortAssignmentError as exc:
+                self._finish_isolation_error(task, "sem portas livres", str(exc))
+                return
+            # ALWAYS write an override (D-05): override_bytes({}) emits a minimal
+            # empty-services override so the `-f override` path always resolves.
+            override_path = os.path.join(task_dir, "docker-compose.override.yml")
+            try:
+                self._write_override(override_path, compose.override_bytes(port_map))
+            except OSError as exc:
+                self._finish_isolation_error(task, "override falhou", str(exc))
+                return
+            self._compose_pending[task_id] = {
+                "project": project,
+                "port_map": port_map,
+            }
+            docker_service.run_compose_async(
+                compose.up_argv(project, task_dir), _on_up, runner=self._runner
+            )
+
+        def _on_up(rc: int, out: str, err: str) -> None:
+            pending = self._compose_pending.pop(task_id, None)
+            port_map = pending["port_map"] if pending else {}
+            if rc != 0:
+                # Clean the partial stack best-effort (Pitfall 5), then surface.
+                docker_service.run_compose_async(
+                    compose.down_argv(project, task_dir),
+                    lambda _rc, _o, _e: None,
+                    runner=self._runner,
+                )
+                self._finish_isolation_error(task, "up falhou", err)
+                return
+            new_state = containerstate.ContainerState(
+                project_name=project, enabled=True, ports=port_map
+            )
+            containerstate.write_container_state(task_dir, new_state)
+            self._container_state[task_id] = new_state
+            self._compose_busy.discard(task_id)
+            self._toast(f"Containers no ar: {self._ports_summary(port_map)}")
+            self._rebuild_sidebar()  # badges show
+
+        docker_service.run_compose_async(
+            compose.config_argv(task_dir), _on_config, runner=self._runner
+        )
+
+    def _disable_isolation(self, task: Task) -> None:
+        """Async opt-out: ``down --remove-orphans --volumes``, KEEP the port map.
+
+        CONT-04, criterion 3. Flips enabled=False but PRESERVES ``state.ports`` so a
+        later re-enable reuses the same stable host ports (badges/URLs unchanged).
+        Down failures are surfaced but the state still flips OFF (the user asked to
+        stop; a stuck stack should not pin the toggle ON).
+        """
+        task_id = task.task_id
+        if not self._isolation_available():
+            return
+        if task_id in self._compose_busy:
+            return
+
+        state = self._container_state.get(task_id)
+        project = (
+            state.project_name
+            if state and state.project_name
+            else compose.sanitize_project_name(task.branch)
+        )
+        task_dir = task.task_dir
+
+        self._compose_busy.add(task_id)
+        self._rebuild_sidebar()  # spinner shows
+
+        def _on_down(rc: int, out: str, err: str) -> None:
+            cur = self._container_state.get(task_id) or containerstate.ContainerState(
+                project_name=project
+            )
+            cur.enabled = False  # KEEP cur.ports (stable re-enable, criterion 3)
+            containerstate.write_container_state(task_dir, cur)
+            self._container_state[task_id] = cur
+            self._compose_busy.discard(task_id)
+            if rc == 0:
+                self._toast("Containers desligados")
+            else:
+                self._toast(f"down retornou erro: {err.strip() or rc}")
+            self._rebuild_sidebar()  # badges clear (enabled=False)
+
+        docker_service.run_compose_async(
+            compose.down_argv(project, task_dir), _on_down, runner=self._runner
+        )
+
+    def _finish_isolation_error(self, task: Task, summary: str, detail: str) -> None:
+        """Common failure tail: clear busy, persist enabled=False, surface, rebuild.
+
+        Never raises (called from on_done on the GLib loop). The detailed stderr
+        goes to a toast; the port map (if any was persisted) is kept for stability.
+        """
+        task_id = task.task_id
+        self._compose_pending.pop(task_id, None)
+        self._compose_busy.discard(task_id)
+        cur = self._container_state.get(task_id)
+        if cur is None:
+            cur = containerstate.ContainerState(
+                project_name=compose.sanitize_project_name(task.branch)
+            )
+        cur.enabled = False
+        try:
+            containerstate.write_container_state(task.task_dir, cur)
+        except OSError:
+            pass  # best-effort; the in-memory flip below still holds
+        self._container_state[task_id] = cur
+        self._rebuild_sidebar()
+        body = (detail or "").strip()
+        self._toast(f"Isolamento: {summary}" + (f" — {body}" if body else ""))
+
+    def _write_override(self, path: str, data: bytes) -> None:
+        """Atomic-ish write of the generated override (tmp + os.replace).
+
+        The override is regenerated on every enable; a tmp+replace keeps a half-
+        written file from ever being read by ``up``.
+        """
+        directory = os.path.dirname(path) or "."
+        fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+            os.replace(tmp, path)
+        except OSError:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+    def _ports_summary(self, port_map: dict) -> str:
+        """`<service>:<host>` summary for the success toast (matches the badges)."""
+        parts: list[str] = []
+        for service, entries in port_map.items():
+            for entry in entries:
+                host = entry.get("host")
+                if host is not None:
+                    parts.append(f"{service}:{host}")
+        return " ".join(parts) if parts else "sem portas publicadas"
 
     def _swap_workspace(self, sid: str) -> None:
         """Swap the visible canvas to worktree ``sid``'s terminals (D-04/D-07).
