@@ -1348,6 +1348,11 @@ class ArduisWindow(Adw.ApplicationWindow):
         """
         self._active_workspace_sid = sid
         self._reflect_layout()
+        # 03.3 (D-03): reflect the swapped-in workspace's repos in the topbar chips
+        # (pinned main → cleared). _swap_workspace is the chokepoint every row
+        # activation + close-fallback funnels through; the create path swaps via
+        # _build_task_workspace and reflects there too.
+        self._reflect_active_chips(sid)
         # Keep the sidebar selection in sync with the visible workspace so the
         # C-Space n/p/number cycle always steps relative to what is on screen
         # (Failure 3: a stale selection made the prefix jumps unpredictable).
@@ -1387,6 +1392,10 @@ class ArduisWindow(Adw.ApplicationWindow):
         Pitfall 1) before hanging the placeholder.
         """
         self._active_workspace_sid = task.task_id
+        # 03.3 (D-03): navigating to a hibernated task still reflects its repos in
+        # the chips (this path sets _active_workspace_sid directly, bypassing
+        # _swap_workspace).
+        self._reflect_active_chips(task.task_id)
         if self._canvas_slot.get_child() is not None:
             self._canvas_slot.set_child(None)
         for leaf in self._leaf_by_sid.values():
@@ -2112,11 +2121,20 @@ class ArduisWindow(Adw.ApplicationWindow):
             combo.append_text(name)
         extra.append(combo)
 
+        # 03.3 (D-02): seed each per-repo check from the topbar's toggled-ON set
+        # (ChipState.default_selection) instead of unconditionally all-on. The
+        # checks STILL exist and stay user-overridable per task (D-02: "per-task
+        # override preserved"). Fall back to all-on if the chip state is missing,
+        # preserving the pre-03.3 behavior.
+        if self._chip_state is not None:
+            default = set(self._chip_state.default_selection())
+        else:
+            default = set(self._member_repos)
         repo_checks: dict[str, Gtk.CheckButton] = {}
         repos_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         for repo in self._member_repos:
             check = Gtk.CheckButton(label=repo)
-            check.set_active(True)  # all member repos chosen by default
+            check.set_active(repo in default)  # seeded from the toggled-ON chips
             repos_box.append(check)
             repo_checks[repo] = check
         extra.append(repos_box)
@@ -2235,6 +2253,9 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._layouts[task.task_id] = model
         self._active_workspace_sid = task.task_id
         self._reflect_layout()
+        # 03.3 (D-03): the create/resume path swaps the workspace directly (not via
+        # _swap_workspace) — reflect the new task's repos in the chips here too.
+        self._reflect_active_chips(task.task_id)
         return model
 
     def _make_task_leaf(self, tid: str, branch: str, badge: str) -> None:
