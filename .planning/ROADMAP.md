@@ -200,7 +200,14 @@ Plans:
   2. User opens a PR via `gh` (shell-out) and arduis reads and displays the PR status (read-only)
   3. arduis reads and displays the branch + PR status via git/`gh` (read-only, throttled)
   4. "Conclude worktree" follows the safe teardown order (kill agent → compose down → verify clean → `git worktree remove` → `prune`), never force-deleting a dirty tree
-**Plans**: TBD
+**Plans**: 6 plans
+Plans:
+- [ ] 08-01-PLAN.md — review.py (git diff/porcelain/never-force remove/ahead-behind argv + parsers) + review_cache.py TTL (Wave 1, TDD)
+- [ ] 08-02-PLAN.md — gh.py (pr view/create-web argv + JSON parse + absent/exit-4 degrade) + run_git_async cwd= (Wave 1, TDD)
+- [ ] 08-03-PLAN.md — window.py read surfaces: read-only diff leaf, branch/PR subline + TTL throttle, Abrir PR (web) (Wave 2)
+- [ ] 08-04-PLAN.md — window.py "Concluir task": D-04 ordered teardown + dirty clean-gate (no --force) + conclude unit test (Wave 3)
+- [ ] 08-05-PLAN.md — headless acceptance smoke: menu, real-git clean/dirty conclude, on-disk D-10, gh-absent degrade (Wave 4)
+- [ ] 08-06-PLAN.md — live human-verify checklist (diff color+read-only, real PR, clean vs dirty conclude) (Wave 4, checkpoint)
 **UI hint**: yes
 
 ### Phase 9: Packaging (AUR + .deb)
