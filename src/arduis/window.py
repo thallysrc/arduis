@@ -3221,8 +3221,35 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._refresh_task_status(task, force=True)
 
     def _on_open_pr(self, _action, _param) -> None:
-        """Placeholder — replaced in Task 3 (runs `gh pr create --web`)."""
-        return
+        """Row-menu ``win.open_pr``: run ``gh pr create --web`` — the ONE allowed write.
+
+        D-05/REVIEW-02: the only write arduis performs. Runs for the task's PRIMARY
+        repo via ``run_git_async(cwd=worktree)``; ``--web`` keeps it browser-driven
+        (AFK-safe). Toasts the result and, on success, force-refreshes the status so
+        the new PR shows. The menu item is offered ONLY when gh is available.
+        """
+        task = self._menu_session()
+        if task is None or not task.repos:
+            return
+        repo = task.repos[0]
+
+        def _on_create(rc: int, _out: str, err: str) -> None:
+            if rc == 0:
+                self._toast("PR aberto no navegador")
+                self._refresh_task_status(task, force=True)
+            elif rc == gh.GH_EXIT_NEEDS_AUTH:
+                self._toast(gh.GH_UNAUTH_MSG)
+            else:
+                first = (err or "").strip().splitlines()
+                detail = first[0] if first else f"código {rc}"
+                self._toast(f"Falha ao abrir PR: {detail}")
+
+        run_git_async(
+            gh.argv_pr_create_web(),
+            _on_create,
+            runner=self._runner,
+            cwd=repo.worktree_dir,
+        )
 
     def _next_term_id(self, sid: str) -> str:
         """Return the next free ``{sid}:tN`` terminal id for workspace ``sid``."""
