@@ -76,7 +76,14 @@ from arduis.review_cache import ReviewCache, GH_TTL_S  # noqa: E402
 from arduis import attention, caps, resource_monitor  # noqa: E402
 from arduis.attention import AgentStatus  # noqa: E402
 from arduis.layout import LayoutModel, LeafNode, SplitNode  # noqa: E402
-from arduis.project import detect_member_repos  # noqa: E402
+from arduis.project import (  # noqa: E402
+    Project,
+    ProjectRegistry,
+    detect_member_repos,
+    ensure_project,
+    project_term_id,
+)
+from arduis import projects_store  # noqa: E402
 from arduis.session import (  # noqa: E402
     RepoCheckout,
     SessionState,
@@ -262,19 +269,21 @@ class ArduisWindow(Adw.ApplicationWindow):
         super().__init__(**kwargs)
 
         self._runner = HostRunner()
-        self._store = SessionStore()
 
-        # --- Phase 7 (opt-in isolated containers, CONT-01..05) ---------------
-        # Feature availability (CONT-01, D-11): the per-task isolation toggle is
-        # offered ONLY when the project has a root compose AND docker is on PATH.
-        # Computed in _resolve_project; safe defaults here so methods never
-        # AttributeError before resolution.
-        self._compose_path: str | None = None
+        # --- 03.4 multi-project registry (D-01/D-02) -------------------------
+        # The window no longer bakes "one arduis = one project" as singletons.
+        # A GTK-free ProjectRegistry holds the open projects + the active pointer;
+        # the singleton-named accessors below (`_store`, `_project_root`,
+        # `_member_repos`, `_compose_path`, `_container_state`, the GTK widget
+        # maps) are now @property delegations to `registry.active()`. A per-window
+        # BOOTSTRAP Project keeps the app launchable while no project is selected
+        # yet (and backs the bare-__new__ conclude test that assigns `_store`
+        # directly): the property setters write to the active Project if one is
+        # selected, else onto this bootstrap fallback.
+        self._registry = ProjectRegistry()
+        self._bootstrap = Project(root="")  # fallback target before a project is active
+        # Docker-on-PATH is a MACHINE fact, not per-project — kept a plain field.
         self._docker_available = False
-        # Per-task durable container state (project name + on/off + resolved port
-        # map), keyed by task_id. Loaded from disk in _scan_tasks / create-finalize
-        # so badges render at startup before any `up` (CONT-04, D-07/D-13).
-        self._container_state: dict[str, containerstate.ContainerState] = {}
         # task_ids with an in-flight compose op (toggle disabled + spinner shown).
         self._compose_busy: set[str] = set()
 
@@ -292,13 +301,10 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._shell_pid: int | None = None
         self._last_exit: int | None = None
         # 03.2 pivot: a PROJECT is a root with N member repos; a 1-repo project is
-        # the degenerate case. `_repo_root`/`_repo_name` are kept as aliases of the
-        # project root/name for the pinned-leaf code that still reads them.
-        self._project_root: str | None = None
-        self._project_name: str | None = None
-        self._member_repos: list[str] = []
-        self._repo_root: str | None = None
-        self._repo_name: str | None = None
+        # the degenerate case. `_project_root`/`_project_name`/`_member_repos`/
+        # `_compose_path`/`_container_state` and the alias `_repo_root`/`_repo_name`
+        # are now @property delegations onto the active Project (see below);
+        # nothing to initialize here — the bootstrap Project holds the defaults.
 
         # Phase 03.1 pivot (D-04): ONE LayoutModel PER worktree (keyed by worktree
         # sid) instead of one global tree. The canvas shows exactly ONE worktree's
@@ -522,6 +528,98 @@ class ArduisWindow(Adw.ApplicationWindow):
         # each active session and refreshes the row sub-lines + aggregate footer.
         # Removed in _on_close_request so no poll outlives the window.
         self._ram_source = GLib.timeout_add_seconds(2, self._poll_ram)
+
+    # --- active-project accessors (03.4 D-01: singletons → registry.active()) ---
+    # Every site that used to read a project singleton now reads the ACTIVE
+    # Project through these properties. When no project is selected yet (startup
+    # before _init_projects, or the bare-__new__ conclude test) they fall back to
+    # the per-window BOOTSTRAP Project, so behavior with exactly one project is
+    # unchanged and `main` stays launchable. The setters write onto the active
+    # Project if one exists, else the bootstrap — preserving direct assignment
+    # (e.g. the conclude test's `win._store = <stub>` and _resolve_project's
+    # transitional writes before the registry is seeded in Task 2).
+
+    def _active_or_bootstrap(self) -> Project:
+        """The active Project, or the bootstrap fallback when none is selected."""
+        registry = getattr(self, "_registry", None)
+        active = registry.active() if registry is not None else None
+        if active is not None:
+            return active
+        # The bare-__new__ test path may have no _bootstrap; build one lazily.
+        boot = getattr(self, "_bootstrap", None)
+        if boot is None:
+            boot = Project(root="")
+            self._bootstrap = boot
+        return boot
+
+    @property
+    def _store(self) -> SessionStore:
+        return self._active_or_bootstrap().store
+
+    @_store.setter
+    def _store(self, value: SessionStore) -> None:
+        self._active_or_bootstrap().store = value
+
+    @property
+    def _project_root(self) -> str | None:
+        root = self._active_or_bootstrap().root
+        return root or None  # empty bootstrap root → None (no project)
+
+    @_project_root.setter
+    def _project_root(self, value: str | None) -> None:
+        self._active_or_bootstrap().root = value or ""
+
+    @property
+    def _project_name(self) -> str | None:
+        return self._project_root and self._active_or_bootstrap().name or None
+
+    @_project_name.setter
+    def _project_name(self, _value: str | None) -> None:
+        # name is derived from root (basename) — assignment is a no-op kept for the
+        # transitional _resolve_project writes; the getter always reflects the root.
+        pass
+
+    @property
+    def _member_repos(self) -> list[str]:
+        return self._active_or_bootstrap().member_repos
+
+    @_member_repos.setter
+    def _member_repos(self, value: list[str]) -> None:
+        self._active_or_bootstrap().member_repos = list(value)
+
+    @property
+    def _compose_path(self) -> str | None:
+        return self._active_or_bootstrap().compose_path
+
+    @_compose_path.setter
+    def _compose_path(self, value: str | None) -> None:
+        self._active_or_bootstrap().compose_path = value
+
+    @property
+    def _container_state(self) -> dict:
+        return self._active_or_bootstrap().container_state
+
+    @_container_state.setter
+    def _container_state(self, value: dict) -> None:
+        self._active_or_bootstrap().container_state = value
+
+    # `_repo_root`/`_repo_name` are aliases of the active project root/name used by
+    # the pinned-main-leaf code; they delegate to the same active Project.
+    @property
+    def _repo_root(self) -> str | None:
+        return self._project_root
+
+    @_repo_root.setter
+    def _repo_root(self, _value: str | None) -> None:
+        pass  # alias; the project root is the single source of truth
+
+    @property
+    def _repo_name(self) -> str | None:
+        return self._project_name
+
+    @_repo_name.setter
+    def _repo_name(self, _value: str | None) -> None:
+        pass  # alias
 
     # --- CSS provider (UI-SPEC Color) ---------------------------------------
 
