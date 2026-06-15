@@ -2402,6 +2402,13 @@ class ArduisWindow(Adw.ApplicationWindow):
                 "toggled",
                 self._make_tab_toggled_cb(proj.root),
             )
+            # D-10: right-click context menu on the tab → "Remover projeto"
+            # (mirrors the sidebar row context-menu shape). The action target is
+            # the project root; teardown + confirm live in _remove_project.
+            gesture = Gtk.GestureClick()
+            gesture.set_button(Gdk.BUTTON_SECONDARY)
+            gesture.connect("pressed", self._make_tab_menu_cb(proj.root, btn))
+            btn.add_controller(gesture)
             self._chip_bar.append(btn)
 
         if overflow:
@@ -2518,6 +2525,151 @@ class ArduisWindow(Adw.ApplicationWindow):
         """win.switch_project(root) — backs the +N overflow menu items (D-03)."""
         if param is not None:
             self._switch_project(param.get_string())
+
+    # --- project removal + teardown (D-10) ----------------------------------
+
+    def _make_tab_menu_cb(self, root: str, btn: Gtk.ToggleButton):
+        """A secondary-click handler popping a 'Remover projeto' menu for ``root``."""
+        def _on_secondary(_gesture, _n_press, x, y) -> None:
+            menu = Gio.Menu()
+            item = Gio.MenuItem.new("Remover projeto", None)
+            item.set_action_and_target_value(
+                "win.remove_project", GLib.Variant.new_string(root)
+            )
+            menu.append_item(item)
+            popover = Gtk.PopoverMenu.new_from_model(menu)
+            popover.set_parent(btn)
+            rect = Gdk.Rectangle()
+            rect.x = int(x)
+            rect.y = int(y)
+            rect.width = 1
+            rect.height = 1
+            popover.set_pointing_to(rect)
+            popover.popup()
+        return _on_secondary
+
+    def _on_remove_project_action(self, _action, param) -> None:
+        """win.remove_project(root) — backs the tab context-menu item (D-10)."""
+        if param is not None:
+            self._remove_project(param.get_string())
+
+    def _project_isolation_available(self, proj) -> bool:
+        """True iff THIS project has a root compose AND docker is on PATH (CONT-01).
+
+        Per-project variant of ``_isolation_available`` (which reads the ACTIVE
+        project). Remove/exit teardown must consult the REMOVED/iterated project's
+        OWN ``compose_path`` — never the active project's — so the per-project
+        compose identity is correct (D-10/D-11).
+        """
+        return proj.compose_path is not None and self._docker_available
+
+    def _teardown_project_containers(self, proj) -> None:
+        """Brief-sync ``compose down -v`` for each enabled task of ``proj`` (D-10/D-11).
+
+        Uses THIS project's OWN compose identity (``proj.container_state`` +
+        per-task ``project_name``/``task_dir``) — never the active project's — so two
+        projects produce two DISTINCT compose-down argv. argv is built as a LIST via
+        ``compose.down_argv`` + ``HostRunner.wrap_argv`` (never a shell string), so a
+        crafted project/branch name cannot inject (T-03.4-11). Best-effort, capped.
+        """
+        if not self._project_isolation_available(proj):
+            return
+        for task in proj.store.all():
+            state = proj.container_state.get(task.task_id)
+            if state is None or not state.enabled:
+                continue
+            project_name = state.project_name or compose.sanitize_project_name(
+                task.branch
+            )
+            argv = self._runner.wrap_argv(
+                compose.down_argv(project_name, task.task_dir)
+            )
+            try:
+                subprocess.run(argv, capture_output=True, timeout=10, check=False)
+            except (OSError, subprocess.SubprocessError):
+                pass  # best-effort; the daemon outlives the app regardless
+
+    def _drop_project(self, root: str) -> None:
+        """Drop ``root`` from the registry + projects.json; reselect active if needed.
+
+        NEVER deletes worktrees/task dirs on disk (D-10 hard rule). Only mutates the
+        in-memory registry + the persisted roots list. If the removed project was the
+        active one, pick the first remaining project (or None) and switch to it so the
+        sidebar/workspace never points at the dropped project.
+        """
+        was_active = self._registry.active() is not None and (
+            self._registry.active().root == root
+        )
+        self._registry.remove(root)
+        remaining = self._registry.all()
+        if was_active:
+            new_active = remaining[0].root if remaining else None
+            if new_active is not None:
+                # _switch_project rebuilds tabs + sidebar + persists last_active.
+                self._switch_project(new_active)
+                return
+            # No project left: clear the active pointer + persist; rebuild chrome.
+            self._refresh_project_chrome()
+            self._rebuild_sidebar()
+        self._build_project_tabs()
+        active = self._registry.active()
+        projects_store.save_projects(
+            self._projects_json,
+            [p.root for p in remaining],
+            active.root if active is not None else None,
+        )
+
+    def _remove_project(self, root: str) -> None:
+        """Remove a project from the topbar, tearing down its live tasks (D-10).
+
+        If the project has NO live (ACTIVE) tasks: drop silently (no dialog) — there
+        is nothing to tear down. If it has live tasks: present a DESTRUCTIVE
+        ``Adw.AlertDialog`` (UI-SPEC copy); on confirm, tear down each live task
+        (kill agent pgids via ``_teardown_session_terminals`` + clear its state files)
+        and ``compose down -v`` for each isolated task using THIS project's OWN compose
+        identity, THEN drop it from the registry + projects.json. The teardown is kill
+        pgids + compose down -v ONLY — arduis NEVER deletes worktrees/task dirs on
+        disk (D-10 hard rule; no ``git worktree remove`` / ``rm`` anywhere here).
+        """
+        proj = self._registry.get(root)
+        if proj is None:
+            return
+        live = [t for t in proj.store.all() if t.state == SessionState.ACTIVE]
+        if not live:
+            # Nothing running — drop without a dialog (UI-SPEC silent path).
+            self._drop_project(root)
+            return
+
+        dialog = Adw.AlertDialog(
+            heading=f"Remover {proj.name} e encerrar suas tasks?",
+            body=(
+                "Isto encerra os agentes e containers das tasks ativas deste "
+                "projeto. As worktrees e pastas no disco são preservadas."
+            ),
+        )
+        dialog.add_response("cancel", "Cancelar")
+        dialog.add_response("remove", "Remover")
+        dialog.set_response_appearance(
+            "remove", Adw.ResponseAppearance.DESTRUCTIVE
+        )
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+
+        def _on_response(_dlg, response):
+            if response != "remove":
+                return  # cancel — leave the project running, never silent-remove
+            # Kill every live task's terminal groups (agent + shell + splits) +
+            # clear its state files. Containers are a SEPARATE channel (daemon-owned,
+            # not in our pgid) — torn down ALONGSIDE via the per-project compose loop.
+            for task in live:
+                self._teardown_session_terminals(task)
+                self._clear_task_state_files(task)
+            self._teardown_project_containers(proj)
+            # NEVER delete worktrees/task dirs on disk — drop from list + JSON only.
+            self._drop_project(root)
+
+        dialog.connect("response", _on_response)
+        dialog.present(self)
 
     def _resolve_project(self) -> None:
         """Seed the ACTIVE project from the launch cwd (legacy single-project path).
@@ -4257,6 +4409,15 @@ class ArduisWindow(Adw.ApplicationWindow):
         )
         switch_project.connect("activate", self._on_switch_project_action)
         self.add_action(switch_project)
+
+        # 03.4 (D-10): win.remove_project(root) backs the project-tab right-click
+        # "Remover projeto" item. String target = project root; the handler tears
+        # down live tasks (behind a DESTRUCTIVE confirm) then drops from the list.
+        remove_project = Gio.SimpleAction.new(
+            "remove_project", GLib.VariantType.new("s")
+        )
+        remove_project.connect("activate", self._on_remove_project_action)
+        self.add_action(remove_project)
 
         # Phase 7 (CONT-01/02, D-11): win.toggle_isolation(task_id) backs the row
         # menu "Isolar/Desligar containers" entry. String target is the task_id;
