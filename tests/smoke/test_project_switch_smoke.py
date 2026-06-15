@@ -23,7 +23,7 @@ import sys
 import tempfile
 import time
 
-REPO = "/home/thallysrc/Projects/arduis/.claude/worktrees/agent-ae6fed5f8e71a3a43"
+REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 results = []
 
 
