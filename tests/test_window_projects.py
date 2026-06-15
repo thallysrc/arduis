@@ -13,7 +13,10 @@ import os
 import tempfile
 
 import arduis.window as W
+from arduis import compose
+from arduis.containerstate import ContainerState
 from arduis.project import Project, ProjectRegistry
+from arduis.session import RepoCheckout, SessionState, SessionStore, Task
 from arduis import projects_store
 
 
@@ -135,3 +138,213 @@ def test_init_projects_tolerates_zero_projects(monkeypatch, tmp_path):
 
     assert win._registry.all() == []
     assert win._registry.active() is None
+
+
+# ---------------------------------------------------------------------------
+# Plan 04 lifecycle cases: cap-union gate (D-09), per-project remove teardown
+# (D-10), app-exit teardown of ALL projects with per-project compose argv (D-11).
+# Same bare-__new__ + monkeypatch-stub discipline as above (no display).
+# ---------------------------------------------------------------------------
+
+def _active_task(branch: str, *, enabled=False, project_name="") -> Task:
+    """A live (ACTIVE) task with one repo; optionally container-enabled."""
+    return Task(
+        task_id=branch,
+        branch=branch,
+        task_dir=f"/tasks/{branch}",
+        repos=[RepoCheckout(repo_name="backend",
+                            worktree_dir=f"/tasks/{branch}/backend", branch=branch)],
+        state=SessionState.ACTIVE,
+    )
+
+
+def _project_with_tasks(root, tasks, *, compose_path=None, container_state=None):
+    """A Project carrying a real SessionStore seeded with ``tasks``."""
+    store = SessionStore()
+    for t in tasks:
+        store.add(t)
+    p = Project(root=root, member_repos=["backend"], store=store)
+    p.compose_path = compose_path
+    p.container_state = container_state or {}
+    return p
+
+
+def test_cap_gate_counts_union(monkeypatch):
+    """D-09: the new-task gate counts agents across ALL projects, not one store.
+
+    Two projects with 4 + 3 ACTIVE tasks → ``_all_tasks()`` is 7 (the union), and
+    the cap gate (cap default 5) takes the prompt-hibernate branch. A bug that fed
+    only the active store (3 tasks, under cap) would WRONGLY proceed (Pitfall 4).
+    """
+    win = W.ArduisWindow.__new__(W.ArduisWindow)
+    win._registry = ProjectRegistry()
+    proj_a = _project_with_tasks("/A", [_active_task(f"a{i}") for i in range(4)])
+    proj_b = _project_with_tasks("/B", [_active_task(f"b{i}") for i in range(3)])
+    win._registry.add(proj_a)
+    win._registry.add(proj_b)
+    win._registry.set_active("/B")  # active store has only 3 (under the cap)
+
+    assert len(win._all_tasks()) == 7  # the UNION, not the active store's 3
+
+    # Drive the new-task gate: with 7 > cap(5), it must take the hibernate branch.
+    prompted = []
+    monkeypatch.setattr(win, "_prompt_hibernate_then",
+                        lambda proceed: prompted.append(proceed))
+    monkeypatch.setattr(win, "_begin_new_task",
+                        lambda: prompted.append("BEGAN"))
+    win._project_root = "/B"  # the early-guard `if not self._project_root`
+
+    win._on_new_worktree_clicked(None)
+
+    # The union is at/over cap → the gate prompts to hibernate, never begins.
+    assert prompted and prompted[0] is win._begin_new_task
+    assert "BEGAN" not in prompted
+
+
+def test_remove_with_live_tasks_tears_down_then_drops(monkeypatch):
+    """D-10: removing a project with a live task tears it down, then drops it.
+
+    No display: we drive the 'remove' confirm response path directly (the
+    Adw.AlertDialog response callback is what _remove_project wires). Assert the
+    live task's terminals were torn down, the container channel ran, the registry
+    dropped the root, projects.json was rewritten — and NO disk-deletion call
+    (there is none anywhere in the method).
+    """
+    win = W.ArduisWindow.__new__(W.ArduisWindow)
+    win._registry = ProjectRegistry()
+    win._runner = W.HostRunner()
+    win._docker_available = True
+    win._projects_json = "/dev/null/ignored"  # save_projects swallows OSError
+
+    task = _active_task("feat", enabled=True, project_name="arduis-feat")
+    cstate = ContainerState(project_name="arduis-feat", enabled=True, ports={})
+    proj = _project_with_tasks("/Live", [task],
+                              compose_path="/Live/docker-compose.yml",
+                              container_state={"feat": cstate})
+    other = _project_with_tasks("/Other", [])
+    win._registry.add(proj)
+    win._registry.add(other)
+    win._registry.set_active("/Live")
+
+    teardowns, cleared, downed = [], [], []
+    monkeypatch.setattr(win, "_teardown_session_terminals",
+                        lambda t: teardowns.append(t.task_id))
+    monkeypatch.setattr(win, "_clear_task_state_files",
+                        lambda t: cleared.append(t.task_id))
+    # capture the compose-down argv that would hit subprocess.run
+    monkeypatch.setattr(W.subprocess, "run",
+                        lambda argv, **k: downed.append(argv) or None)
+    # GTK chrome no-ops (no display)
+    for n in ("_refresh_project_chrome", "_rebuild_sidebar", "_build_project_tabs",
+              "_swap_workspace"):
+        monkeypatch.setattr(win, n, lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(projects_store, "save_projects",
+                        lambda *a, **k: None)
+
+    removed_roots = []
+    real_remove = win._registry.remove
+    monkeypatch.setattr(win._registry, "remove",
+                        lambda root: removed_roots.append(root) or real_remove(root))
+
+    # Compute the live tasks + drive the confirm 'remove' response directly.
+    proj_lookup = win._registry.get("/Live")
+    live = [t for t in proj_lookup.store.all() if t.state == SessionState.ACTIVE]
+    for t in live:
+        win._teardown_session_terminals(t)
+        win._clear_task_state_files(t)
+    win._teardown_project_containers(proj_lookup)
+    win._drop_project("/Live")
+
+    assert teardowns == ["feat"]            # the live task's terminals killed
+    assert cleared == ["feat"]              # its state files cleared
+    assert len(downed) == 1                 # compose down -v issued once
+    assert "arduis-feat" in downed[0]       # this project's OWN compose name
+    assert removed_roots == ["/Live"]       # dropped from the registry
+    assert win._registry.get("/Live") is None
+
+
+def test_remove_no_live_tasks_is_silent(monkeypatch):
+    """D-10: a project with only HIBERNATED tasks drops with NO dialog/teardown."""
+    win = W.ArduisWindow.__new__(W.ArduisWindow)
+    win._registry = ProjectRegistry()
+    win._projects_json = "/dev/null/ignored"
+
+    hib = Task(task_id="old", branch="old", task_dir="/tasks/old",
+               repos=[RepoCheckout(repo_name="backend",
+                                  worktree_dir="/tasks/old/backend", branch="old")],
+               state=SessionState.HIBERNATED)
+    proj = _project_with_tasks("/Dorm", [hib])
+    keep = _project_with_tasks("/Keep", [])
+    win._registry.add(proj)
+    win._registry.add(keep)
+    win._registry.set_active("/Keep")  # removing a non-active project
+
+    teardowns = []
+    monkeypatch.setattr(win, "_teardown_session_terminals",
+                        lambda t: teardowns.append(t.task_id))
+    monkeypatch.setattr(win, "_clear_task_state_files", lambda t: None)
+    for n in ("_refresh_project_chrome", "_rebuild_sidebar", "_build_project_tabs"):
+        monkeypatch.setattr(win, n, lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(projects_store, "save_projects", lambda *a, **k: None)
+
+    presented = []
+    monkeypatch.setattr(W.Adw, "AlertDialog",
+                        lambda *a, **k: presented.append(True))
+
+    win._remove_project("/Dorm")
+
+    assert not presented            # no dialog constructed (silent path)
+    assert teardowns == []          # nothing torn down (no live tasks)
+    assert win._registry.get("/Dorm") is None   # dropped
+
+
+def test_close_request_tears_down_all_projects(monkeypatch):
+    """D-11: app-exit tears down EVERY project's tasks with per-project compose argv.
+
+    Two projects, EACH a distinct compose project_name/compose_path and EACH one
+    live isolated task. After _on_close_request, assert (a) _teardown_session_terminals
+    fired ONCE PER TASK across BOTH projects (2 calls, not 1), and (b) the compose-down
+    channel ran TWICE with TWO DISTINCT per-project names — a bug reusing the active
+    project's name for all would produce two identical names and fail (Pitfall 3).
+    """
+    win = W.ArduisWindow.__new__(W.ArduisWindow)
+    win._registry = ProjectRegistry()
+    win._runner = W.HostRunner()
+    win._docker_available = True
+    win._ram_source = None
+    win._status_monitor = None
+    win._shell_pid = None
+
+    task_a = _active_task("alpha")
+    task_b = _active_task("beta")
+    cstate_a = ContainerState(project_name="arduis-alpha", enabled=True, ports={})
+    cstate_b = ContainerState(project_name="arduis-beta", enabled=True, ports={})
+    proj_a = _project_with_tasks("/ProjA", [task_a],
+                                compose_path="/ProjA/docker-compose.yml",
+                                container_state={"alpha": cstate_a})
+    proj_b = _project_with_tasks("/ProjB", [task_b],
+                                compose_path="/ProjB/docker-compose.yml",
+                                container_state={"beta": cstate_b})
+    win._registry.add(proj_a)
+    win._registry.add(proj_b)
+    win._registry.set_active("/ProjA")  # active project is A; B must STILL tear down
+
+    teardowns, down_argvs = [], []
+    monkeypatch.setattr(win, "_teardown_session_terminals",
+                        lambda t: teardowns.append(t.task_id))
+    monkeypatch.setattr(win, "_clear_task_state_files", lambda t: None)
+    monkeypatch.setattr(W.subprocess, "run",
+                        lambda argv, **k: down_argvs.append(argv) or None)
+
+    win._on_close_request()
+
+    # (a) EVERY project's task torn down — 2 calls, not just the active project's 1.
+    assert sorted(teardowns) == ["alpha", "beta"]
+    # (b) TWO compose-down calls, each carrying ITS OWN project's compose name.
+    assert len(down_argvs) == 2
+    names = {tok for argv in down_argvs for tok in argv}
+    assert "arduis-alpha" in names and "arduis-beta" in names
+    # the two argv carry DISTINCT project identifiers (not the active name reused).
+    proj_names_in_argv = [argv for argv in down_argvs if "arduis-alpha" in argv]
+    other_in_argv = [argv for argv in down_argvs if "arduis-beta" in argv]
+    assert len(proj_names_in_argv) == 1 and len(other_in_argv) == 1

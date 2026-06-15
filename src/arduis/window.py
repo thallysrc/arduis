@@ -4759,36 +4759,29 @@ class ArduisWindow(Adw.ApplicationWindow):
             self._status_monitor = None
         if self._shell_pid:
             self._teardown_pgid(self._shell_pid)
-        # D-13: tear down EVERY terminal group of EVERY session (N-terminal model);
-        # iterating session.pid alone would orphan split agents (Pitfall 3/4). Also
-        # delete each task's state files so none linger past the window (Pitfall 5b).
-        for session in self._store.all():
-            self._teardown_session_terminals(session)
-            self._clear_task_state_files(session)
-        # Phase 7 (D-12, CONT-05, Pitfall 7): tear down every enabled task's
+        # D-11/D-13: tear down EVERY terminal group of EVERY session of EVERY OPEN
+        # PROJECT (no cross-project orphans — RESEARCH Pitfall 3). The old loop
+        # iterated only the active store (self._store.all()), orphaning background
+        # projects' agents. The OUTER loop over registry.all() fixes that; iterating
+        # session.pid alone would still orphan split agents (Pitfall 3/4). Also delete
+        # each task's state files so none linger past the window (Pitfall 5b).
+        for project in self._registry.all():
+            for session in project.store.all():
+                self._teardown_session_terminals(session)
+                self._clear_task_state_files(session)
+        # Phase 7 (D-11, D-12, CONT-05, Pitfall 7): tear down every enabled task's
         # container stack at app-exit as a SEPARATE loop from the killpg teardown
-        # above — never conflated. Async on_done may never fire because the window
-        # closes immediately, so here ONLY (app-exit, guaranteed-no-orphan) a brief
-        # SYNCHRONOUS subprocess.run is acceptable per CLAUDE.md ("blocking briefly
-        # is acceptable"). `down` can be slow → cap with a short timeout and swallow
-        # errors; the window still closes. The hibernate path stays async.
-        if self._isolation_available():
-            for session in self._store.all():
-                state = self._container_state.get(session.task_id)
-                if state is None or not state.enabled:
-                    continue
-                project = state.project_name or compose.sanitize_project_name(
-                    session.branch
-                )
-                argv = self._runner.wrap_argv(
-                    compose.down_argv(project, session.task_dir)
-                )
-                try:
-                    subprocess.run(
-                        argv, capture_output=True, timeout=10, check=False
-                    )
-                except (OSError, subprocess.SubprocessError):
-                    pass  # best-effort; the daemon outlives the app regardless
+        # above — never conflated. Iterate ALL projects; each enabled task's
+        # compose-down uses ITS OWN project's compose identity (per-project
+        # container_state + project_name) — NEVER the active project's name for all
+        # (a bug that reused one name would leak the other project's containers).
+        # Async on_done may never fire because the window closes immediately, so here
+        # ONLY (app-exit, guaranteed-no-orphan) a brief SYNCHRONOUS subprocess.run is
+        # acceptable per CLAUDE.md ("blocking briefly is acceptable"). `down` can be
+        # slow → cap with a short timeout and swallow errors; the window still closes.
+        # The hibernate path stays async.
+        for project in self._registry.all():
+            self._teardown_project_containers(project)
         return False  # allow the window to close
 
     def _sigkill_if_alive(self, pgid):
