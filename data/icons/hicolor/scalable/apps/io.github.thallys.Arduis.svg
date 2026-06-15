@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  arduis app icon (D-05 placeholder) — pure static SVG, Dracula palette.
+  Evokes parallel embedded terminals (stacked rounded panes) with a `>` prompt.
+  No external refs, no <script>, no raster — safe static artwork (threat T-09-03).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- rounded window background (Dracula bg) -->
+  <rect x="16" y="16" width="224" height="224" rx="32" ry="32" fill="#282a36"/>
+  <!-- title bar accent -->
+  <rect x="16" y="16" width="224" height="36" rx="32" ry="32" fill="#44475a"/>
+  <rect x="16" y="40" width="224" height="14" fill="#44475a"/>
+  <circle cx="44" cy="34" r="6" fill="#ff5555"/>
+  <circle cx="66" cy="34" r="6" fill="#f1fa8c"/>
+  <circle cx="88" cy="34" r="6" fill="#50fa7b"/>
+  <!-- back pane (parallel worktree, offset, purple) -->
+  <rect x="92" y="84" width="120" height="118" rx="14" ry="14" fill="#bd93f9" opacity="0.35"/>
+  <!-- middle pane (pink) -->
+  <rect x="72" y="96" width="120" height="118" rx="14" ry="14" fill="#ff79c6" opacity="0.5"/>
+  <!-- front terminal pane (foreground) -->
+  <rect x="48" y="108" width="132" height="110" rx="14" ry="14" fill="#1e1f29" stroke="#6272a4" stroke-width="3"/>
+  <!-- prompt glyph `>` (green) -->
+  <path d="M 70 138 L 92 158 L 70 178" fill="none" stroke="#50fa7b" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- command line / cursor (cyan) -->
+  <rect x="104" y="150" width="58" height="11" rx="5" ry="5" fill="#8be9fd"/>
+</svg>
