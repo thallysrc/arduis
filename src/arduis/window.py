@@ -282,6 +282,11 @@ class ArduisWindow(Adw.ApplicationWindow):
         # selected, else onto this bootstrap fallback.
         self._registry = ProjectRegistry()
         self._bootstrap = Project(root="")  # fallback target before a project is active
+        # The remembered-projects app-state file (D-05): XDG config dir; the GLib
+        # lookup lives here (window.py) so projects_store stays gi-free.
+        self._projects_json = os.path.join(
+            GLib.get_user_config_dir(), "arduis", "projects.json"
+        )
         # Docker-on-PATH is a MACHINE fact, not per-project — kept a plain field.
         self._docker_available = False
         # task_ids with an in-flight compose op (toggle disabled + spinner shown).
@@ -488,16 +493,14 @@ class ArduisWindow(Adw.ApplicationWindow):
         # GTK4 window-close signal (NOT GTK3 "delete-event").
         self.connect("close-request", self._on_close_request)
 
-        # Resolve the PROJECT FIRST (D-05/D-06/D-07) so the pinned main leaf can
-        # open in the project root rather than $HOME, the topbar shows the project
-        # name, and the New-task dialog knows the member repos.
-        self._resolve_project()
-
-        # Rediscover past tasks from `../<root>-tasks/` (D-11: disk is the source of
-        # truth, no state file). Tasks are created HIBERNATED and DO NOT spawn —
-        # resume relaunches them on demand (Pitfall 6). Runs after resolution (it
-        # needs the project root) and before the RAM-poll seed.
-        self._scan_tasks()
+        # 03.4 (D-05/D-06/D-07): restore the remembered projects, auto-register the
+        # launch cwd, select the active project, and rediscover EACH project's tasks
+        # (D-11: disk is the source of truth; tasks are HIBERNATED and DO NOT spawn —
+        # resume relaunches on demand, Pitfall 6). This replaces the single
+        # _resolve_project + _scan_tasks startup pair; it renders the active
+        # project's sidebar + project tabs and persists the (possibly newly-added)
+        # cwd root. Runs before the attention watcher + the RAM-poll seed.
+        self._init_projects()
 
         # Phase 4 attention infra (STATUS-01): refresh the installed hook script,
         # offer the consent dialog once, and start the status-dir watcher. Runs
@@ -2285,65 +2288,137 @@ class ArduisWindow(Adw.ApplicationWindow):
 
     # --- project resolution (D-05/D-06/D-07) --------------------------------
 
-    def _resolve_project(self) -> None:
-        """Resolve the launch PROJECT (root + member repos); topbar shows its name.
+    def _resolve_cwd_project(self) -> tuple[str | None, list[str]]:
+        """Resolve the launch cwd → ``(root, member_repos)`` (D-05/D-07). Pure.
 
         D-05: a project root is a folder whose DIRECT subdirs carry a ``.git``.
         D-07: no walk-up — if the cwd has no member subdirs but is itself a git
         repo, it is the degenerate 1-repo project (preserving 03.1 behavior). The
         ``git rev-parse`` fallback is a short read-only host query — blocking
         briefly at startup is acceptable (CLAUDE.md) — routed through the
-        HostRunner seam. ``_repo_root``/``_repo_name`` are kept as aliases of the
-        project root/name so the pinned-leaf code keeps working.
+        HostRunner seam. Returns ``(None, [])`` when the cwd is not a project.
+        Does NOT mutate any state (the seeding is ``_init_projects``'s job).
         """
         cwd = os.getcwd()
         members = detect_member_repos(cwd)          # D-05 direct-subdir .git scan
         if members:
-            self._project_root = cwd
-            self._project_name = os.path.basename(cwd.rstrip("/"))
-            self._member_repos = members
-        else:
-            # D-07: cwd itself a git repo → degenerate 1-repo project (03.1 behavior)
-            argv = self._runner.wrap_argv(
-                ["git", "-C", cwd, "rev-parse", "--show-toplevel"]
-            )
-            try:
-                proc = subprocess.run(argv, capture_output=True, text=True, timeout=5)
-                top = proc.stdout.strip() if proc.returncode == 0 else ""
-            except (OSError, subprocess.SubprocessError):
-                top = ""
-            if top:
-                self._project_root = top
-                self._project_name = os.path.basename(top)
-                # The sole member IS the repo itself; `_member_repo_path` maps it
-                # back to `project_root` (not a subdir) in the degenerate case.
-                self._member_repos = [os.path.basename(top)]
-            else:
-                self._project_root = None
-                self._project_name = None
-                self._member_repos = []
+            return cwd, members
+        # D-07: cwd itself a git repo → degenerate 1-repo project (03.1 behavior)
+        argv = self._runner.wrap_argv(
+            ["git", "-C", cwd, "rev-parse", "--show-toplevel"]
+        )
+        try:
+            proc = subprocess.run(argv, capture_output=True, text=True, timeout=5)
+            top = proc.stdout.strip() if proc.returncode == 0 else ""
+        except (OSError, subprocess.SubprocessError):
+            top = ""
+        if top:
+            # The sole member IS the repo itself; `_member_repo_path` maps it back
+            # to `project_root` (not a subdir) in the degenerate case.
+            return top, [os.path.basename(top)]
+        return None, []
 
-        # Keep the pinned-leaf aliases working (they read `_repo_root`/`_repo_name`).
-        self._repo_root = self._project_root
-        self._repo_name = self._project_name
+    def _detect_compose_path(self, root: str | None) -> str | None:
+        """Root ``docker-compose.yml``/``compose.yaml`` path, or None (CONT-01, D-11)."""
+        if not root:
+            return None
+        for name in ("docker-compose.yml", "compose.yaml"):
+            cand = os.path.join(root, name)
+            if os.path.isfile(cand):
+                return cand
+        return None
 
-        # Phase 7 (CONT-01, D-11): auto-detect the root compose + docker on PATH so
-        # the per-task isolation toggle is offered ONLY when both are present (the
-        # opt-in IS the consent gate). Most projects have no compose → strict no-op.
-        self._docker_available = shutil.which("docker") is not None
-        self._compose_path = None
-        if self._project_root:
-            for name in ("docker-compose.yml", "compose.yaml"):
-                cand = os.path.join(self._project_root, name)
-                if os.path.isfile(cand):
-                    self._compose_path = cand
-                    break
-
+    def _refresh_project_chrome(self) -> None:
+        """Sync the +New button + window title to the ACTIVE project (D-03/D-06)."""
         enabled = self._project_root is not None
         self._new_btn.set_sensitive(enabled)
         self._new_btn.set_tooltip_text("Nova task" if enabled else _NO_REPO_HINT)
         if getattr(self, "_title_widget", None) is not None:
             self._title_widget.set_title(self._project_name or "arduis")
+
+    def _resolve_project(self) -> None:
+        """Seed the ACTIVE project from the launch cwd (legacy single-project path).
+
+        Retained for any caller that wants the degenerate "cwd is the one project"
+        behavior without the full ``projects.json`` machinery. Resolves the cwd,
+        ensures it in the registry, selects it active, then syncs chrome. Startup
+        uses ``_init_projects`` instead (which also restores remembered projects).
+        """
+        root, members = self._resolve_cwd_project()
+        self._docker_available = shutil.which("docker") is not None
+        if root:
+            proj = ensure_project(self._registry, root, members)
+            proj.compose_path = self._detect_compose_path(root)
+            self._registry.set_active(root)
+        self._refresh_project_chrome()
+
+    def _init_projects(self) -> None:
+        """Seed the registry from projects.json + auto-register the cwd (D-05/D-07).
+
+        The full launch sequence (RESEARCH Pitfall 7 ordering):
+          a. ``load_projects`` the remembered roots (+ last_active); missing roots
+             are already skipped (D-06).
+          b. For EACH remembered root: detect its members, ``ensure_project`` it,
+             compute its compose_path, and ``_scan_tasks(project=...)`` so its tasks
+             are rediscovered into ITS own store (D-02) — a background project is
+             fully populated even before it is ever selected.
+          c. Resolve the cwd project; if its root is not already registered,
+             auto-register it (D-07) so launching inside a project always shows it.
+          d. Choose active: ``last`` if still registered, else the cwd root, else
+             None (no projects — the truly-empty fallback).
+          e. Persist the possibly-newly-added cwd root + the chosen last_active.
+        Then drive the initial render through the active project's store.
+        """
+        self._docker_available = shutil.which("docker") is not None
+
+        # a + b: restore remembered projects (each into its own store).
+        roots, last = projects_store.load_projects(self._projects_json)
+        for r in roots:
+            proj = ensure_project(self._registry, r, detect_member_repos(r))
+            proj.compose_path = self._detect_compose_path(r)
+            self._scan_tasks(project=proj)
+
+        # c: auto-register the cwd project (D-07) if absent.
+        cwd_root, cwd_members = self._resolve_cwd_project()
+        if cwd_root and self._registry.get(cwd_root) is None:
+            proj = ensure_project(self._registry, cwd_root, cwd_members)
+            proj.compose_path = self._detect_compose_path(cwd_root)
+            self._scan_tasks(project=proj)
+
+        # d: choose the active project (D-07). Launching INSIDE a project always
+        # lands you in it — the cwd project wins when it resolved (whether it was
+        # just auto-registered or was already remembered). Only when the cwd is NOT
+        # a project (launched from a neutral dir) does the remembered last_active
+        # take over; otherwise (no projects at all) active stays None.
+        registered = {p.root for p in self._registry.all()}
+        if cwd_root in registered:
+            chosen = cwd_root
+        elif last in registered:
+            chosen = last
+        else:
+            chosen = None
+        if chosen is not None:
+            self._registry.set_active(chosen)
+
+        # e: persist (the cwd root may be newly added; last_active may have moved).
+        projects_store.save_projects(
+            self._projects_json,
+            [p.root for p in self._registry.all()],
+            chosen,
+        )
+
+        # Initial render: chrome + sidebar + workspace from the active project.
+        self._refresh_project_chrome()
+        self._rebuild_sidebar()
+        # The project-tab switcher is rendered by Task 3; tolerate its absence so
+        # this task alone keeps `main` launchable.
+        build_tabs = getattr(self, "_build_project_tabs", None)
+        if build_tabs is not None:
+            build_tabs()
+        # Phase 7 (D-13): conservative startup reconcile of orphaned `arduis-*`
+        # compose projects (was the tail of the legacy single-project _scan_tasks).
+        # Async + surface-only; no-op without docker.
+        self._reconcile_orphans()
 
     def _member_repo_path(self, name: str) -> str:
         """Absolute path of member repo ``name`` (D-07 degenerate-case aware).
@@ -2363,7 +2438,7 @@ class ArduisWindow(Adw.ApplicationWindow):
 
     # --- startup task scan (D-11: disk is the source of truth) ---------------
 
-    def _scan_tasks(self) -> None:
+    def _scan_tasks(self, project: Project | None = None) -> None:
         """Rediscover past tasks from ``../<root>-tasks/`` as HIBERNATED (D-11).
 
         Disk is the source of truth — there is NO persisted app-state file. At
@@ -2373,8 +2448,22 @@ class ArduisWindow(Adw.ApplicationWindow):
         inferred from its worktree subdirs. CRITICAL (Pitfall 6): this NEVER spawns
         a terminal — every terminal's pid/pgid stays ``None`` and rows render
         dimmed; ``_on_resume`` (Task 1) spawns the default layout on demand.
+
+        03.4 (D-02): when ``project`` is given, scan THAT project's root and write
+        into ITS store / container_state (used by ``_init_projects`` to seed each
+        remembered project at startup), skipping the active-project-only sidebar
+        rebuild + orphan reconcile. When called with no argument the disk-scan logic
+        is unchanged — it operates on the ACTIVE project's store and finishes with
+        the sidebar rebuild + reconcile (the legacy single-project path).
         """
-        root = self._project_root
+        if project is not None:
+            root = project.root or None
+            store = project.store
+            container_state = project.container_state
+        else:
+            root = self._project_root
+            store = self._store
+            container_state = self._container_state
         if not root:
             return  # no project resolved → nothing to scan
 
@@ -2417,7 +2506,7 @@ class ArduisWindow(Adw.ApplicationWindow):
                 )
             if not repos:
                 continue  # validated but no worktree children → skip
-            self._store.add(
+            store.add(
                 Task(
                     task_id=task_id,
                     branch=task_id,
@@ -2432,9 +2521,12 @@ class ArduisWindow(Adw.ApplicationWindow):
             # Phase 7 (CONT-04, D-07/D-13): load the durable container state so port
             # badges render at startup for tasks isolated before this restart. A
             # task with no arduis.container.toml yields the no-op default (OFF).
-            self._container_state[task_id] = containerstate.load_container_state(
+            container_state[task_id] = containerstate.load_container_state(
                 entry.path
             )
+
+        if project is not None:
+            return  # seeding a background project: no active-project UI work here
 
         # The sidebar was built (from an empty store) before this scan runs, so
         # reflect the rediscovered tasks now — otherwise they only appear after
