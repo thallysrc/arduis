@@ -1,5 +1,5 @@
 ---
-status: partial
+status: accepted
 phase: 09-packaging-aur-deb
 source: [09-05-PLAN.md]
 started: 2026-06-15
@@ -8,7 +8,10 @@ updated: 2026-06-15
 
 ## Current Test
 
-[awaiting hardware UAT — clean install + Wayland launch on real Ubuntu 24.04 + Arch]
+[PO accepted closure 2026-06-15 WITHOUT running the hardware UAT — explicit risk acceptance.
+The build+lint half is verified green (commit 4fffd03); the real-distro clean-install +
+Wayland launch on Ubuntu 24.04 + Arch was NOT executed. Items 1-3 remain to confirm on hardware
+whenever a real install is done; reopen as gap closure if any fails.]
 
 ## Tests
 
