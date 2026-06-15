@@ -234,9 +234,10 @@ def test_remove_with_live_tasks_tears_down_then_drops(monkeypatch):
     # capture the compose-down argv that would hit subprocess.run
     monkeypatch.setattr(W.subprocess, "run",
                         lambda argv, **k: downed.append(argv) or None)
-    # GTK chrome no-ops (no display)
+    # GTK chrome no-ops (no display). _open_shell_leaf: dropping the active project
+    # switches to /Other, which (03.4 UAT fix) seeds its main shell — stub the spawn.
     for n in ("_refresh_project_chrome", "_rebuild_sidebar", "_build_project_tabs",
-              "_swap_workspace"):
+              "_swap_workspace", "_open_shell_leaf"):
         monkeypatch.setattr(win, n, lambda *a, **k: None, raising=False)
     monkeypatch.setattr(projects_store, "save_projects",
                         lambda *a, **k: None)
@@ -348,3 +349,46 @@ def test_close_request_tears_down_all_projects(monkeypatch):
     proj_names_in_argv = [argv for argv in down_argvs if "arduis-alpha" in argv]
     other_in_argv = [argv for argv in down_argvs if "arduis-beta" in argv]
     assert len(proj_names_in_argv) == 1 and len(other_in_argv) == 1
+
+
+def test_switch_to_unseeded_project_seeds_its_main_shell(monkeypatch):
+    """Regression (UAT): opening/switching to a project shown for the FIRST time
+    spawns ITS pinned main scratch shell, so its workspace shows a terminal (D-07).
+
+    The reported bug: launch arduis in repo A, "Abrir projeto" repo B → B's tab
+    appears but the canvas is blank, because only __init__ seeds the launch
+    project's main leaf. _switch_project must seed an unseeded project's shell.
+    """
+    win = W.ArduisWindow.__new__(W.ArduisWindow)
+    win._registry = ProjectRegistry()
+    win._bootstrap = Project(root="")
+    win._projects_json = "/tmp/does-not-matter.json"
+
+    proj_a = Project(root="/tmp/A")
+    proj_b = Project(root="/tmp/B")
+    win._registry.add(proj_a)
+    win._registry.add(proj_b)
+    win._registry.set_active("/tmp/A")
+    # A is already seeded (its bundle carries the spawned main leaf); B is not.
+    win._bundle_for(proj_a)["leaf_by_sid"]["main:t0"] = object()
+
+    seeded = []
+
+    def fake_open_shell_leaf():
+        # Simulate the real seed: spawn into the NOW-active project's bundle.
+        win._leaf_by_sid["main:t0"] = object()
+        seeded.append(win._registry.active().root)
+
+    monkeypatch.setattr(win, "_open_shell_leaf", fake_open_shell_leaf)
+    for n in ("_refresh_project_chrome", "_rebuild_sidebar", "_build_project_tabs",
+              "_swap_workspace"):
+        monkeypatch.setattr(win, n, lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(projects_store, "save_projects", lambda *a, **k: None)
+
+    # Switching to the unseeded project B spawns B's main shell exactly once.
+    win._switch_project("/tmp/B")
+    assert seeded == ["/tmp/B"]
+
+    # Switching back to the already-seeded A does NOT respawn (no double shell).
+    win._switch_project("/tmp/A")
+    assert seeded == ["/tmp/B"]

@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 03.4 context gathered
-last_updated: "2026-06-15T19:50:08.246Z"
-last_activity: 2026-06-15
+stopped_at: Phase 03.4 waves 1-4 done + automated UAT green; awaiting live human UAT (Plan 05 T3)
+last_updated: "2026-06-15T21:21:34.312Z"
+last_activity: 2026-06-15 -- Phase 03.4 execution started
 progress:
   total_phases: 13
-  completed_phases: 10
-  total_plans: 42
-  completed_plans: 41
+  completed_phases: 11
+  total_plans: 47
+  completed_plans: 46
   percent: 98
 ---
 
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-08)
 
 **Core value:** Tirar a ideia "quero começar uma branch nova" e ter um agente de IA rodando numa worktree isolada em segundos — gerenciando N agentes em paralelo e sempre sabendo qual deles te espera.
-**Current focus:** Phase 8 — review-cleanup
+**Current focus:** Phase 03.4 — topbar-multi-project-switcher-corrective
 
 ## Current Position
 
-Phase: 9
-Plan: Not started
-Status: Executing Phase 8
-Last activity: 2026-06-15
+Phase: 03.4 (topbar-multi-project-switcher-corrective) — EXECUTING
+Plan: 1 of 5
+Status: Executing Phase 03.4
+Last activity: 2026-06-15 -- Phase 03.4 execution started
 
 Progress: [██████░░░░] 60%
 
@@ -98,6 +98,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-06-15T19:50:08.235Z
-Stopped at: Phase 03.4 context gathered
+Last session: 2026-06-15T21:21:34.308Z
+Stopped at: Phase 03.4 waves 1-4 done + automated UAT green; awaiting live human UAT (Plan 05 T3)
 Resume with: phase verification for Phase 02 (orchestrator owns this next)

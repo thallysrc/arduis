@@ -2331,6 +2331,31 @@ class ArduisWindow(Adw.ApplicationWindow):
             return top, [os.path.basename(top)]
         return None, []
 
+    def _resolve_members(self, root: str) -> list[str]:
+        """Member repos of ``root`` WITH the D-07 degenerate fallback.
+
+        ``detect_member_repos`` only finds DIRECT subdirs whose ``.git`` is a dir.
+        A root that is ITSELF a git repo (no member subdirs — the degenerate
+        1-repo project, e.g. a plain ``~/Projects/foo`` checkout) has no such
+        subdir, so report its own basename as the sole member. This mirrors
+        ``_resolve_cwd_project`` so a project OPENED via the picker behaves like a
+        LAUNCHED one: its New-task dialog lists the repo (D-12) and its pinned main
+        scratch shell can seed. ``_open_project``/``_init_projects`` route every
+        root through here so remembered single-repo projects survive a relaunch.
+        """
+        members = detect_member_repos(root)
+        if members:
+            return members
+        argv = self._runner.wrap_argv(
+            ["git", "-C", root, "rev-parse", "--is-inside-work-tree"]
+        )
+        try:
+            proc = subprocess.run(argv, capture_output=True, text=True, timeout=5)
+            inside = proc.returncode == 0 and proc.stdout.strip() == "true"
+        except (OSError, subprocess.SubprocessError):
+            inside = False
+        return [os.path.basename(os.path.normpath(root))] if inside else []
+
     def _detect_compose_path(self, root: str | None) -> str | None:
         """Root ``docker-compose.yml``/``compose.yaml`` path, or None (CONT-01, D-11)."""
         if not root:
@@ -2470,7 +2495,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         """
         existing = self._registry.get(root)
         if existing is None:
-            proj = ensure_project(self._registry, root, detect_member_repos(root))
+            proj = ensure_project(self._registry, root, self._resolve_members(root))
             proj.compose_path = self._detect_compose_path(root)
             self._scan_tasks(project=proj)
             projects_store.save_projects(
@@ -2502,6 +2527,16 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         self._registry.set_active(root)
         active = self._registry.active()
+
+        # 03.4 UAT fix: a project shown for the FIRST time (just opened via the
+        # picker, or a remembered project never yet selected) has no spawned main
+        # scratch shell in its per-project bundle — only __init__ seeds the LAUNCH
+        # project. Without this, switching to it shows a blank canvas (the reported
+        # "opened a repo, no terminal"). Seed it now so its workspace shows a shell
+        # (D-07). `_open_shell_leaf` spawns into the NOW-active project's bundle and
+        # reflects _MAIN_SID; the `_swap_workspace` below is then idempotent.
+        if active is not None and f"{_MAIN_SID}:t0" not in self._leaf_by_sid:
+            self._open_shell_leaf()
 
         # Render the new active project: chrome + sidebar + workspace.
         self._refresh_project_chrome()
@@ -2709,7 +2744,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         # a + b: restore remembered projects (each into its own store).
         roots, last = projects_store.load_projects(self._projects_json)
         for r in roots:
-            proj = ensure_project(self._registry, r, detect_member_repos(r))
+            proj = ensure_project(self._registry, r, self._resolve_members(r))
             proj.compose_path = self._detect_compose_path(r)
             self._scan_tasks(project=proj)
 

@@ -91,13 +91,13 @@ Plans:
   4. arduis launched inside a repo/root auto-registers that as the first project (preserves D-07 launch-lands-you-in-it)
   5. Member-repo selection happens in the New-task dialog (topbar no longer carries repo chips); `detect_member_repos` + the `.git`-dir filter still feed it
   6. A real GTK-free `Project` model encapsulates root + member_repos + task store + terminals (no more window.py singletons)
-**Plans:** 5 plans
+**Plans:** 4/5 plans executed
 
 Plans:
-- [ ] 03.4-01-PLAN.md — GTK-free spine (TDD): Project + ProjectRegistry + projects.json persist + term_id namespacing (A3) + register PROJ-01
-- [ ] 03.4-02-PLAN.md — delete ChipState + chip render (D-04), New-task all-checked (D-12), cap-union test (D-09), repair MOTIVATION.md
-- [ ] 03.4-03-PLAN.md — window.py structural swap: singletons→registry, project tabs + "+ Abrir projeto" picker, launch auto-register (D-07), both-alive switch (D-08)
-- [ ] 03.4-04-PLAN.md — lifecycle: cap-union gate (D-09), per-project remove teardown (D-10), app-exit all-projects teardown (D-11) + headless regression
+- [x] 03.4-01-PLAN.md — GTK-free spine (TDD): Project + ProjectRegistry + projects.json persist + term_id namespacing (A3) + register PROJ-01
+- [x] 03.4-02-PLAN.md — delete ChipState + chip render (D-04), New-task all-checked (D-12), cap-union test (D-09), repair MOTIVATION.md
+- [x] 03.4-03-PLAN.md — window.py structural swap: singletons→registry, project tabs + "+ Abrir projeto" picker, launch auto-register (D-07), both-alive switch (D-08)
+- [x] 03.4-04-PLAN.md — lifecycle: cap-union gate (D-09), per-project remove teardown (D-10), app-exit all-projects teardown (D-11) + headless regression
 - [ ] 03.4-05-PLAN.md — acceptance: headless lifecycle smoke + live human-verify of the 6 success criteria + no-orphans process-tree checks (checkpoint)
 
 ### Phase 03.2: Projects and Cross-Repo Tasks (INSERTED)
