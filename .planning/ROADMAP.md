@@ -18,7 +18,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 03.1: worktree-as-terminal-workspace (INSERTED)** - Canvas shows ONE worktree's terminals (workspace); per-worktree LayoutModel; sidebar swaps the whole workspace; re-targeted C-Space/RAM/hibernate semantics
 - [x] **Phase 03.2: Projects and Cross-Repo Tasks (INSERTED)** - Project = multi-repo root folder; task = set of worktrees (one per chosen repo) mirroring the root layout; sidebar lists tasks, workspace shows a task's terminals (completed 2026-06-12)
 - [x] **Phase 03.3: Topbar Repo Chips (INSERTED, corrective)** - Surface member repos as toggleable chips in the topbar (mockup affordance, supersedes 03.2 D-06 name-only); toggled set seeds New-task default; active task reflected; detection filters out linked worktrees (completed 2026-06-14) — **superseded by 03.4 (wrong level)**
-- [ ] **Phase 03.4: Topbar = multi-PROJECT switcher (INSERTED, corrective)** - Topbar lists multiple PROJECTS (each a multi-repo root), switchable + running in parallel ("both alive"); "Open project" picker + remembered list persisted across launches; member repos move out of the topbar into the New-task dialog. Supersedes 03.3 (repo chips) and 03.2 D-06 in full. Executes BEFORE Phase 9.
+- [x] **Phase 03.4: Topbar = multi-PROJECT switcher (INSERTED, corrective)** - Topbar lists multiple PROJECTS (each a multi-repo root), switchable + running in parallel ("both alive"); "Open project" picker + remembered list persisted across launches; member repos move out of the topbar into the New-task dialog. Supersedes 03.3 (repo chips) and 03.2 D-06 in full. Executes BEFORE Phase 9. (completed 2026-06-15)
 - [x] **Phase 4: Attention Detection (who's waiting)** - Hooks-first status (running/waiting/idle/ready), sidebar+pane dots, desktop notification, idle auto-suspend (completed 2026-06-13)
 - [x] **Phase 5: Agent Swap + tmux Keybindings + Themes** - Agent = configurable command (Ctrl+C swaps), tmux-style chords, Dracula default + swappable themes (completed 2026-06-13)
 - [x] **Phase 6: Per-Worktree Setup via `.arduis.toml`** - Repo config with sensible defaults; setup commands run on worktree creation via the login shell (completed 2026-06-13)
@@ -91,14 +91,14 @@ Plans:
   4. arduis launched inside a repo/root auto-registers that as the first project (preserves D-07 launch-lands-you-in-it)
   5. Member-repo selection happens in the New-task dialog (topbar no longer carries repo chips); `detect_member_repos` + the `.git`-dir filter still feed it
   6. A real GTK-free `Project` model encapsulates root + member_repos + task store + terminals (no more window.py singletons)
-**Plans:** 4/5 plans executed
+**Plans:** 5/5 plans complete
 
 Plans:
 - [x] 03.4-01-PLAN.md — GTK-free spine (TDD): Project + ProjectRegistry + projects.json persist + term_id namespacing (A3) + register PROJ-01
 - [x] 03.4-02-PLAN.md — delete ChipState + chip render (D-04), New-task all-checked (D-12), cap-union test (D-09), repair MOTIVATION.md
 - [x] 03.4-03-PLAN.md — window.py structural swap: singletons→registry, project tabs + "+ Abrir projeto" picker, launch auto-register (D-07), both-alive switch (D-08)
 - [x] 03.4-04-PLAN.md — lifecycle: cap-union gate (D-09), per-project remove teardown (D-10), app-exit all-projects teardown (D-11) + headless regression
-- [ ] 03.4-05-PLAN.md — acceptance: headless lifecycle smoke + live human-verify of the 6 success criteria + no-orphans process-tree checks (checkpoint)
+- [x] 03.4-05-PLAN.md — acceptance: headless lifecycle smoke + live human-verify of the 6 success criteria + no-orphans process-tree checks (checkpoint)
 
 ### Phase 03.2: Projects and Cross-Repo Tasks (INSERTED)
 
