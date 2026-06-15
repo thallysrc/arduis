@@ -309,14 +309,19 @@ class ArduisWindow(Adw.ApplicationWindow):
         # Phase 03.1 pivot (D-04): ONE LayoutModel PER worktree (keyed by worktree
         # sid) instead of one global tree. The canvas shows exactly ONE worktree's
         # terminals at a time; selecting a sidebar row swaps the whole workspace.
-        self._layouts: dict[str, LayoutModel] = {}            # worktree sid -> its tree
-        self._active_workspace_sid: str | None = None         # which worktree is visible
-
-        # Widget maps are now keyed by TERMINAL id (e.g. "main:t0", "feat:t0",
-        # "feat:t1"), NOT by worktree sid — a worktree owns N terminals (D-02/D-03).
-        self._leaf_by_sid: dict[str, Gtk.Widget] = {}
-        self._term_by_sid: dict[str, Vte.Terminal] = {}
+        #
+        # 03.4 D-08 ("both alive"): the per-project GTK widget maps below
+        # (_layouts / _active_workspace_sid / _leaf_by_sid / _term_by_sid and the
+        # Phase-4/5 dot/notif/subline/record/calm/activity/badge maps) are
+        # PARTITIONED per project — each Project carries its own bundle so
+        # switching never destroys the background project's leaves/terminals (they
+        # sit unparented but ALIVE). They are now @property delegations onto the
+        # active Project's lazily-created map bundle (see `_m`). Nothing to
+        # initialize here — the bundle is created on first access per project.
+        #
         # sidebar row <-> session_id (the main row maps to the scratch shell).
+        # These stay window-global: the sidebar renders ONLY the active project, so
+        # they always describe the currently-rendered rows (rebuilt on switch).
         self._sid_by_row: dict[Gtk.ListBoxRow, str] = {}
         self._row_by_sid: dict[str, Gtk.ListBoxRow] = {}
         # the row a right-click context menu currently targets (D-08).
@@ -326,9 +331,9 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._prefix_armed = False
         # ~2s off-loop RAM poll source id (RAM-03); removed on close.
         self._ram_source: int | None = None
-        # The aggregate RAM footer + per-row RAM sub-line labels (Plan 03-05).
+        # The aggregate RAM footer label (window-global chrome). The per-row RAM
+        # sub-line labels (_subline_by_sid) are PER-PROJECT (D-08) — see `_m`.
         self._footer_label: Gtk.Label | None = None
-        self._subline_by_sid: dict[str, Gtk.Label] = {}
 
         # --- Phase 4 attention/status (STATUS-01/02/03, RAM-04) --------------
         # The optional [attention] config (auto-suspend / idle / notify / sound).
@@ -342,38 +347,20 @@ class ArduisWindow(Adw.ApplicationWindow):
         # (Pitfall 5a). clear_status_dir also makes the dir.
         self._status_dir = attention.status_dir()
         attention.clear_status_dir(self._status_dir)
-        # {state_file_path -> (task, TerminalRecord)} — the watcher's O(1) lookup
-        # from a touched file back to the record whose .status it flips. Registered
-        # at spawn (per agent terminal), cleaned on every teardown path (Pitfall 5b).
-        self._record_by_state_file: dict[str, tuple[Task, TerminalRecord]] = {}
-        # Sidebar task-aggregate dot (keyed by sid) + pane-header per-terminal dot
-        # (keyed by terminal id) handles, kept so state-file events flip CSS classes
-        # in place without rebuilding the canvas (D-06/D-07).
-        self._dot_by_sid: dict[str, Gtk.Label] = {}
-        self._pane_dot_by_tid: dict[str, Gtk.Label] = {}
-        # ONE Notify.Notification per terminal (replace-id per terminal, D-09) so a
-        # waiting burst updates the same notification instead of stacking.
-        self._notif_by_tid: dict[str, object] = {}
-        # The status-dir Gio.FileMonitor; cancelled in _on_close_request.
+        # The status-dir Gio.FileMonitor; cancelled in _on_close_request
+        # (window-global — one watcher covers every project's status files, which
+        # are project-namespaced on disk via project_term_id in Task 1c).
         self._status_monitor: Gio.FileMonitor | None = None
         # True in degraded mode (consent declined or settings unparseable) — Plan 04
-        # surfaces the hint; here it is only the flag + marker logic.
+        # surfaces the hint; here it is only the flag + marker logic. Window-global.
         self._degraded = False
-        # Plan 04 / RAM-04 (D-12): per-task wall-clock when the aggregate ENTERED a
-        # calm state (ready/idle/ended); reset to None whenever the aggregate goes
-        # running/waiting/None or the task is not ACTIVE. The auto-suspend tick reads
-        # it via attention.should_autosuspend. NEVER consulted in degraded mode.
-        self._calm_since: dict[str, float] = {}
-        # Plan 04 / D-13 (degraded mode): per agent terminal, the last contents-changed
-        # activity epoch; drives the running/idle coarse signal when hooks were declined.
-        self._activity_ts: dict[str, float] = {}
-        # Throttle for the degraded contents-changed handler (last-handled epoch per
-        # terminal) — a TUI repaint storm must not flood the loop (T-04-21).
-        self._activity_last_handled: dict[str, float] = {}
-        # Pane-header badge label handle per terminal id — degraded mode flips it to
-        # "esperando?" on a bell and back to "claude" on activity (D-13 lower-confidence
-        # label). Populated by _make_leaf.
-        self._badge_by_tid: dict[str, Gtk.Label] = {}
+        #
+        # PER-PROJECT (D-08) maps now live on each Project's lazy bundle (see `_m`):
+        #   _record_by_state_file, _dot_by_sid, _pane_dot_by_tid, _notif_by_tid,
+        #   _calm_since, _activity_ts, _activity_last_handled, _badge_by_tid,
+        #   _subline_by_sid, _leaf_by_sid, _term_by_sid, _layouts,
+        #   _active_workspace_sid.
+        # They are exposed via @property delegations and are NOT initialized here.
 
         # --- Phase 5 config region (AGENT-01/UI-01/UI-02) --------------------
         # One shared config path (the file Phase 4 introduced for [attention]).
@@ -620,6 +607,91 @@ class ArduisWindow(Adw.ApplicationWindow):
     @_repo_name.setter
     def _repo_name(self, _value: str | None) -> None:
         pass  # alias
+
+    # --- per-project GTK widget map bundle (03.4 D-08 "both alive") ----------
+    # The leaf/term/layout + Phase-4/5 status maps are partitioned per project so a
+    # background project's terminals stay alive (unparented but never destroyed)
+    # while another project is on screen. Each Project gets one lazily-created
+    # bundle of plain dicts (holding GTK values window.py created — the dicts keep
+    # `project.py` gi-free). `_m()` returns the ACTIVE project's bundle; the named
+    # @property accessors below read/write the corresponding entry so every
+    # existing call site (`self._leaf_by_sid`, `_reflect_layout`'s unparent loop,
+    # …) operates on the active project alone — verbatim, no call-site churn.
+
+    _MAP_NAMES = (
+        "leaf_by_sid", "term_by_sid", "layouts", "dot_by_sid", "pane_dot_by_tid",
+        "notif_by_tid", "subline_by_sid", "record_by_state_file", "calm_since",
+        "activity_ts", "activity_last_handled", "badge_by_tid",
+    )
+
+    def _bundle_for(self, proj: Project) -> dict:
+        """The project's lazily-created map bundle (dicts + the visible sid scalar)."""
+        bundle = getattr(proj, "_gtk_maps", None)
+        if bundle is None:
+            bundle = {name: {} for name in self._MAP_NAMES}
+            bundle["active_workspace_sid"] = None
+            proj._gtk_maps = bundle  # plain attr on the dataclass; gi-free dicts
+        return bundle
+
+    def _m(self) -> dict:
+        """The ACTIVE project's (or bootstrap's) GTK map bundle."""
+        return self._bundle_for(self._active_or_bootstrap())
+
+    @property
+    def _layouts(self) -> dict:
+        return self._m()["layouts"]
+
+    @property
+    def _leaf_by_sid(self) -> dict:
+        return self._m()["leaf_by_sid"]
+
+    @property
+    def _term_by_sid(self) -> dict:
+        return self._m()["term_by_sid"]
+
+    @property
+    def _dot_by_sid(self) -> dict:
+        return self._m()["dot_by_sid"]
+
+    @property
+    def _pane_dot_by_tid(self) -> dict:
+        return self._m()["pane_dot_by_tid"]
+
+    @property
+    def _notif_by_tid(self) -> dict:
+        return self._m()["notif_by_tid"]
+
+    @property
+    def _subline_by_sid(self) -> dict:
+        return self._m()["subline_by_sid"]
+
+    @property
+    def _record_by_state_file(self) -> dict:
+        return self._m()["record_by_state_file"]
+
+    @property
+    def _calm_since(self) -> dict:
+        return self._m()["calm_since"]
+
+    @property
+    def _activity_ts(self) -> dict:
+        return self._m()["activity_ts"]
+
+    @property
+    def _activity_last_handled(self) -> dict:
+        return self._m()["activity_last_handled"]
+
+    @property
+    def _badge_by_tid(self) -> dict:
+        return self._m()["badge_by_tid"]
+
+    @property
+    def _active_workspace_sid(self) -> str | None:
+        return self._m()["active_workspace_sid"]
+
+    @_active_workspace_sid.setter
+    def _active_workspace_sid(self, value: str | None) -> None:
+        self._m()["active_workspace_sid"] = value
 
     # --- CSS provider (UI-SPEC Color) ---------------------------------------
 
