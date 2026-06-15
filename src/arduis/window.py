@@ -1397,6 +1397,12 @@ class ArduisWindow(Adw.ApplicationWindow):
             # still has worktrees on disk (diff) and an on-disk branch/PR (status).
             if session is not None:
                 self._append_review_menu_items(menu, session)
+            # Phase 8 (REVIEW-03, D-04): the LOAD-BEARING "Concluir task" — the safe
+            # ordered teardown. Appended for BOTH ACTIVE and HIBERNATED tasks (a
+            # hibernated task still has worktrees on disk; an ACTIVE task's step (a)
+            # kills the live agents first). No target — uses _menu_target_sid.
+            if session is not None:
+                menu.append("Concluir task", "win.conclude")
             popover = Gtk.PopoverMenu.new_from_model(menu)
             popover.set_parent(row)
             rect = Gdk.Rectangle()
@@ -3251,6 +3257,262 @@ class ArduisWindow(Adw.ApplicationWindow):
             cwd=repo.worktree_dir,
         )
 
+    # --- Phase 8: "Concluir task" — the SAFE ordered teardown (REVIEW-03, D-04) ---
+
+    def _on_conclude_action(self, _action, _param) -> None:
+        """Row-menu ``win.conclude``: confirm, then run the D-04 safe teardown.
+
+        Resolves the right-clicked task via ``_menu_session`` and presents a
+        DESTRUCTIVE-styled Adw.AlertDialog that states plainly what conclude does:
+        it removes the task's WORKTREES while KEEPING the branch and the source
+        repos (D-10 / criterion 4). Declining aborts (nothing is touched). On "ok"
+        the FIXED ordered chain ``_conclude_task`` runs.
+        """
+        task = self._menu_session()
+        if task is None:
+            return
+        dialog = Adw.AlertDialog(
+            heading=f"Concluir {task.branch}?",
+            body=(
+                "Remove as worktrees da task. O código-fonte, o histórico e a "
+                "branch ficam intactos. Se alguma worktree tiver mudanças não "
+                "commitadas, a conclusão é bloqueada (nada é removido)."
+            ),
+        )
+        dialog.add_response("cancel", "Cancelar")
+        dialog.add_response("ok", "Concluir")
+        dialog.set_response_appearance("ok", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+
+        def _on_response(_dlg, response):
+            if response == "ok":
+                self._conclude_task(task)
+
+        dialog.connect("response", _on_response)
+        dialog.present(self)
+
+    def _conclude_task(self, task: Task) -> None:
+        """The FIXED D-04 safe teardown order (REVIEW-03 criterion 4 — load-bearing).
+
+        Composes three already-built channels in an INVARIANT order, structured as a
+        small async state machine driven by ``run_git_async`` callbacks because the
+        git reads/removes are async. The ORDER is the security of this phase:
+
+          (a) ``_teardown_session_terminals`` (kill the task's agent/shell process
+              groups, killpg) then ``_clear_task_state_files`` (delete RUNTIME state
+              files — D-10-exempt arduis-owned data).
+          (b) ``_container_down`` (Phase-7 compose-down channel; no-op via its own
+              guards if isolation was OFF — a SEPARATE channel from killpg, T-07-13).
+          (c) CLEAN-GATE: per-repo ``git status --porcelain`` — ALL-OR-NOTHING. If
+              ANY repo is dirty the WHOLE conclude REFUSES; nothing is removed and a
+              pt-BR dialog/toast names the dirty repo(s). NEVER ``--force`` (the
+              cardinal-sin guard).
+          (d) ``git worktree remove`` (NO ``--force``) per repo, run with cwd=SOURCE
+              member repo (D-10), removing only the WORKTREE dir.
+          (e) ``git worktree prune`` per source repo.
+          (f) unlink the task folder's RELATIVE symlinks (``os.path.islink`` guard —
+              the LINK only, never the target/source/branch — D-10), rmdir if empty.
+          (g) drop the task from the store, rebuild the sidebar, fall back to main if
+              it was the active workspace, and drop the ``{sid}:`` widget/handle maps
+              the way ``_hibernate_task`` does.
+        """
+        # (a) kill agents + clear runtime state files.
+        self._teardown_session_terminals(task)
+        self._clear_task_state_files(task)
+        # (b) compose down (its own guards no-op if isolation was off).
+        self._container_down(task)
+        # (c) clean-gate → on success continues to (d)..(g).
+        self._conclude_clean_gate(task)
+
+    def _conclude_clean_gate(self, task: Task) -> None:
+        """(c) Per-repo porcelain clean-gate — ALL-OR-NOTHING refusal (D-04, A2).
+
+        Reads ``git status --porcelain`` for EVERY repo (cwd=worktree). Collects all
+        results, then if ANY repo is dirty (or any read failed rc!=0) REFUSES the
+        WHOLE conclude — ZERO worktree-remove argv is ever issued — and surfaces a
+        pt-BR dialog naming the dirty repo(s). Only when EVERY repo is clean does it
+        proceed to ``_conclude_remove_worktrees`` (T-08-12).
+        """
+        repos = list(task.repos)
+        if not repos:
+            # No worktrees on disk to remove; go straight to store cleanup (f)+(g).
+            self._conclude_clean_task_folder(task)
+            self._conclude_finalize(task)
+            return
+
+        pending = {"n": len(repos)}
+        dirty: list[str] = []
+
+        def _make_on_status(repo):
+            def _on_status(rc: int, out: str, _err: str) -> None:
+                if rc != 0 or not review.parse_porcelain_clean(out):
+                    dirty.append(repo.repo_name)
+                pending["n"] -= 1
+                if pending["n"] == 0:
+                    if dirty:
+                        names = ", ".join(sorted(dirty))
+                        self._toast(
+                            f"Conclusão bloqueada: worktree(s) com mudanças não "
+                            f"commitadas — {names}. Conclua ou descarte antes."
+                        )
+                        self._conclude_refuse_dialog(names)
+                        return  # REFUSE — nothing removed (all-or-nothing)
+                    self._conclude_remove_worktrees(task)
+            return _on_status
+
+        for repo in repos:
+            run_git_async(
+                review.argv_status_porcelain(repo.worktree_dir),
+                _make_on_status(repo),
+                runner=self._runner,
+                cwd=repo.worktree_dir,
+            )
+
+    def _conclude_refuse_dialog(self, dirty_names: str) -> None:
+        """Surface the all-or-nothing dirty refusal as a pt-BR dialog (no force path).
+
+        Names the dirty repo(s) and makes plain that NOTHING was removed — there is
+        no "force" affordance in the UI (the cardinal-sin guard, criterion 4).
+        """
+        dialog = Adw.AlertDialog(
+            heading="Conclusão bloqueada",
+            body=(
+                f"As worktrees a seguir têm mudanças não commitadas: {dirty_names}. "
+                "Conclua ou descarte essas mudanças antes de concluir a task. "
+                "Nenhuma worktree foi removida."
+            ),
+        )
+        dialog.add_response("ok", "Entendi")
+        dialog.set_default_response("ok")
+        dialog.set_close_response("ok")
+        dialog.present(self)
+
+    def _conclude_remove_worktrees(self, task: Task) -> None:
+        """(d) Per-repo ``git worktree remove`` (NO ``--force``), cwd=SOURCE repo (D-10).
+
+        Runs ``review.argv_worktree_remove(source_repo, worktree_dir)`` for EACH repo
+        with cwd=the SOURCE member repo (never the worktree). The remove TARGET is
+        always the worktree dir; the source repo and the branch are never touched. If
+        git itself refuses (rc!=0 — e.g. the tree went dirty/locked between (c) and
+        (d)) the chain STOPS and surfaces the stderr in pt-BR — it does NOT escalate
+        to ``--force`` (T-08-14, Pitfall 3/6). When every remove succeeds → prune (e).
+        """
+        repos = list(task.repos)
+        pending = {"n": len(repos)}
+        failed: list[str] = []
+
+        def _make_on_remove(repo):
+            def _on_remove(rc: int, _out: str, err: str) -> None:
+                if rc != 0:
+                    detail = (err or "").strip().splitlines()
+                    msg = detail[0] if detail else f"código {rc}"
+                    failed.append(f"{repo.repo_name}: {msg}")
+                pending["n"] -= 1
+                if pending["n"] == 0:
+                    if failed:
+                        self._toast(
+                            "Falha ao remover worktree(s): " + "; ".join(failed)
+                        )
+                        return  # STOP — no --force escalation
+                    self._conclude_prune(task)
+            return _on_remove
+
+        for repo in repos:
+            source = self._member_repo_path(repo.repo_name)
+            run_git_async(
+                review.argv_worktree_remove(source, repo.worktree_dir),
+                _make_on_remove(repo),
+                runner=self._runner,
+                cwd=source,
+            )
+
+    def _conclude_prune(self, task: Task) -> None:
+        """(e) Per-source-repo ``git worktree prune`` (clean stale admin entries).
+
+        Fire-and-forget per source repo; when all prunes return, proceeds to the
+        symlink cleanup (f) + store drop (g). A prune failure is non-fatal (the
+        worktree is already gone) — it never blocks the store cleanup.
+        """
+        repos = list(task.repos)
+        pending = {"n": len(repos)}
+
+        def _on_prune(_rc: int, _out: str, _err: str) -> None:
+            pending["n"] -= 1
+            if pending["n"] == 0:
+                self._conclude_clean_task_folder(task)
+                self._conclude_finalize(task)
+
+        for repo in repos:
+            source = self._member_repo_path(repo.repo_name)
+            run_git_async(
+                review.argv_worktree_prune(source),
+                _on_prune,
+                runner=self._runner,
+                cwd=source,
+            )
+
+    def _conclude_clean_task_folder(self, task: Task) -> None:
+        """(f) Unlink the task folder's RELATIVE symlinks — the LINK only (D-10).
+
+        Recomputes the symlink dst set via ``symlink_plan`` and ``os.unlink``s ONLY
+        the dsts that are ``os.path.islink`` (the LINK, never ``realpath`` + delete,
+        never ``shutil.rmtree`` — that would follow/strip the targets, Pitfall 5).
+        Then ``os.rmdir`` the task folder ONLY if it is now empty (swallow OSError if
+        not — never recursively remove). The source repos, symlink TARGETS, branches
+        and the meta-repo ``.git`` are NEVER touched (T-08-13).
+        """
+        root = self._project_root
+        if root is None:
+            return
+        chosen = {r.repo_name for r in task.repos}
+        try:
+            plan = symlink_plan(root, task.task_dir, chosen)
+        except OSError:
+            plan = []
+        for _src, dst in plan:
+            try:
+                if os.path.islink(dst):  # the LINK only — never the target (D-10)
+                    os.unlink(dst)
+            except OSError:
+                pass  # best-effort; never crash the GLib loop on cleanup
+        try:
+            os.rmdir(task.task_dir)  # only succeeds if empty — never rmtree
+        except OSError:
+            pass  # not empty / already gone — leave it (D-10: never force-delete)
+
+    def _conclude_finalize(self, task: Task) -> None:
+        """(g) Drop the task from the store + rebuild sidebar + main fallback (D-04).
+
+        Mirrors the ``_hibernate_task`` store/widget-map drop: removes the task from
+        the SessionStore, drops its saved layout + every ``{sid}:``-prefixed
+        widget/handle map entry, falls back to the always-present main workspace if
+        the concluded task was the visible one, and rebuilds the sidebar so the row
+        disappears. The branch + source repos remain on disk (D-10).
+        """
+        sid = task.task_id
+        self._store.remove(sid)
+        self._calm_since.pop(sid, None)
+        self._layouts.pop(sid, None)
+        prefix = f"{sid}:"
+        for tid in [t for t in self._leaf_by_sid if t.startswith(prefix)]:
+            self._leaf_by_sid.pop(tid, None)
+        for tid in [t for t in self._term_by_sid if t.startswith(prefix)]:
+            self._term_by_sid.pop(tid, None)
+        for tid in [t for t in self._pane_dot_by_tid if t.startswith(prefix)]:
+            self._pane_dot_by_tid.pop(tid, None)
+        for tid in [t for t in self._notif_by_tid if t.startswith(prefix)]:
+            self._notif_by_tid.pop(tid, None)
+        for tid in [t for t in self._badge_by_tid if t.startswith(prefix)]:
+            self._badge_by_tid.pop(tid, None)
+        for tid in [t for t in self._activity_ts if t.startswith(prefix)]:
+            self._activity_ts.pop(tid, None)
+        for tid in [t for t in self._activity_last_handled if t.startswith(prefix)]:
+            self._activity_last_handled.pop(tid, None)
+        if self._active_workspace_sid == sid:
+            self._swap_workspace(_MAIN_SID)
+        self._rebuild_sidebar()
+
     def _next_term_id(self, sid: str) -> str:
         """Return the next free ``{sid}:tN`` terminal id for workspace ``sid``."""
         n = 0
@@ -3733,6 +3995,13 @@ class ArduisWindow(Adw.ApplicationWindow):
         open_pr = Gio.SimpleAction.new("open_pr", None)
         open_pr.connect("activate", self._on_open_pr)
         self.add_action(open_pr)
+
+        # Phase 8 (REVIEW-03, D-04): win.conclude is the LOAD-BEARING safe teardown.
+        # No-target, uses _menu_target_sid like hibernate; _on_conclude_action
+        # presents the confirm dialog, then _conclude_task runs the FIXED order.
+        conclude = Gio.SimpleAction.new("conclude", None)
+        conclude.connect("activate", self._on_conclude_action)
+        self.add_action(conclude)
 
     def _menu_session(self) -> Task | None:
         """Resolve the right-clicked row back to its tracked Task (D-08)."""
