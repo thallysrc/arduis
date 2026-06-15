@@ -71,6 +71,8 @@ from arduis.spawn import build_spawn_command, build_worktree_spawn  # noqa: E402
 from arduis.exit_status import decode_exit  # noqa: E402
 from arduis.git_service import run_git_async  # noqa: E402
 from arduis import compose, containerstate, docker_service  # noqa: E402
+from arduis import gh, review  # noqa: E402  (Phase 8: read-only diff/PR surfaces)
+from arduis.review_cache import ReviewCache, GH_TTL_S  # noqa: E402
 from arduis import attention, caps, resource_monitor  # noqa: E402
 from arduis.attention import AgentStatus  # noqa: E402
 from arduis.layout import LayoutModel, LeafNode, SplitNode  # noqa: E402
@@ -1383,6 +1385,11 @@ class ArduisWindow(Adw.ApplicationWindow):
             # Default OFF; the label flips with the persisted ContainerState. While
             # a compose op is in flight for this task the entry is omitted (busy).
             self._append_isolation_menu_item(menu, sid)
+            # Phase 8 (D-02/D-03/D-05): Ver diff ▸ / Atualizar status / Abrir PR.
+            # Appended for BOTH active and hibernated tasks — a hibernated task
+            # still has worktrees on disk (diff) and an on-disk branch/PR (status).
+            if session is not None:
+                self._append_review_menu_items(menu, session)
             popover = Gtk.PopoverMenu.new_from_model(menu)
             popover.set_parent(row)
             rect = Gdk.Rectangle()
@@ -1393,6 +1400,41 @@ class ArduisWindow(Adw.ApplicationWindow):
             popover.set_pointing_to(rect)
             popover.popup()
         return _on_secondary
+
+    def _append_review_menu_items(self, menu: Gio.Menu, session: Task) -> None:
+        """Append the Phase 8 review entries to a task's row menu (D-02/D-03/D-05).
+
+        - "Ver diff ▸ <repo>" (REVIEW-01, D-02): a submenu with one item per repo
+          for a multi-repo task; a single "Ver diff" item for a 1-repo task. String
+          target = repo_name (mirrors win.close_repo).
+        - "Atualizar status" (D-03): forces a TTL-bypassing status re-read.
+        - "Abrir PR (web)" (D-05/REVIEW-02): the ONE allowed write, appended ONLY
+          when gh is available.
+        """
+        repos = session.repos
+        if repos:
+            if len(repos) > 1:
+                diff_menu = Gio.Menu()
+                for repo in repos:
+                    item = Gio.MenuItem.new(repo.repo_name, None)
+                    item.set_action_and_target_value(
+                        "win.ver_diff", GLib.Variant.new_string(repo.repo_name)
+                    )
+                    diff_menu.append_item(item)
+                menu.append_submenu("Ver diff", diff_menu)
+            else:
+                item = Gio.MenuItem.new("Ver diff", None)
+                item.set_action_and_target_value(
+                    "win.ver_diff", GLib.Variant.new_string(repos[0].repo_name)
+                )
+                menu.append_item(item)
+
+        # D-03: manual status refresh (forces a re-read, bypasses TTL).
+        menu.append("Atualizar status", "win.refresh_status")
+
+        # D-05/REVIEW-02: the ONE allowed write — offered only when gh is present.
+        if gh.gh_available():
+            menu.append("Abrir PR (web)", "win.open_pr")
 
     # --- Phase 7: per-task container isolation (CONT-01..05) -----------------
 
@@ -2957,6 +2999,117 @@ class ArduisWindow(Adw.ApplicationWindow):
             records.extend(repo.terminals)
         return records
 
+    # --- Phase 8: read-only diff leaf (REVIEW-01, D-02) ----------------------
+
+    def _open_diff_leaf(self, task: Task, repo: RepoCheckout) -> None:
+        """Open a READ-ONLY VTE leaf running ``git --no-pager diff`` for ``repo`` (D-02).
+
+        REVIEW-01: spawn a NEW leaf in the ACTIVE workspace, reusing the same
+        leaf-insertion path a split uses (``_make_terminal`` → ``_make_leaf`` →
+        register in the widget maps → ``LayoutModel.split`` → ``_reflect_layout``).
+        ``terminal.set_input_enabled(False)`` (VTE 0.76, confirmed present) makes
+        the pane a read-only viewer — scroll/copy still work, but no keystroke
+        reaches the child (T-08-08). The login shell resolves PATH/pager/color, runs
+        the diff, then drops to ``exec zsh -i`` so the buffer stays alive for
+        scroll/copy. argv is a LIST with ``cwd=worktree_dir`` — the branch is never
+        interpolated into the command string (T-08-09).
+
+        Teardown (PINNED): the diff leaf is NOT tracked as a TerminalRecord (it is
+        not an agent and never writes a state file). ``_close_terminal`` cleans it up
+        via the layout/widget-map path alone — the ``record is None`` branch there
+        simply drops the leaf without a pgid kill, and the leaf's own ``✕`` runs
+        ``_close_terminal``. The diff child dies with its PTY when the pane closes.
+        """
+        sid = self._active_workspace_sid
+        if sid is None:
+            return  # no active workspace to host the diff leaf
+        model = self._workspace_layout(sid)
+
+        diff_tid = f"{sid}:diff:{repo.repo_name}"
+        # If a diff leaf for this repo is already open, just re-reflect (focus it)
+        # rather than stacking duplicates.
+        if diff_tid in self._term_by_sid:
+            model.focused_id = diff_tid
+            self._reflect_layout()
+            return
+
+        terminal = self._make_terminal()
+        # Read-only viewer: disable input BEFORE spawning so no keystroke ever
+        # reaches the child (REVIEW-01 / T-08-08). 0.76 floor: confirmed present.
+        terminal.set_input_enabled(False)
+        leaf = self._make_leaf(
+            diff_tid, f"diff {repo.repo_name}", terminal, badge_label="diff"
+        )
+        self._leaf_by_sid[diff_tid] = leaf
+        self._term_by_sid[diff_tid] = terminal
+
+        # Insert beside the focused pane exactly like a split. If the workspace has
+        # no focused leaf yet (degenerate), root it.
+        if model.focused_id is not None and model.focused_id in self._term_by_sid:
+            model.split(model.focused_id, diff_tid, "h")
+        else:
+            model.root = LeafNode(diff_tid)
+            model.focused_id = diff_tid
+            model.touch(diff_tid)
+        self._reflect_layout()
+
+        terminal.spawn_async(
+            Vte.PtyFlags.DEFAULT,
+            repo.worktree_dir,
+            ["zsh", "-l", "-i", "-c", "git --no-pager diff; exec zsh -i"],
+            ["TERM=xterm-256color"],
+            GLib.SpawnFlags.DEFAULT,
+            None,                 # child_setup
+            None,                 # child_setup_data
+            -1,                   # timeout (-1 = none)
+            None,                 # cancellable
+            self._make_diff_spawn_cb(diff_tid),
+        )
+
+    def _make_diff_spawn_cb(self, diff_tid: str):
+        """Benign spawn callback for the read-only diff leaf (no record to write).
+
+        The diff leaf is not tracked as a TerminalRecord; on spawn failure the pane
+        just stays a usable read-only shell (no banner). No pid is stored — the
+        child dies with its PTY when the leaf is closed via ``_close_terminal``.
+        """
+
+        def _on_diff_spawned(_terminal, _pid, _error) -> None:
+            return  # nothing to track; layout/widget cleanup handles teardown
+
+        return _on_diff_spawned
+
+    def _on_ver_diff(self, _action, param) -> None:
+        """Row-menu ``win.ver_diff(repo_name)``: open the read-only diff for that repo.
+
+        Resolves the right-clicked task + the repo by the string target (mirrors
+        ``win.close_repo``). A hibernated task still has worktrees on disk, so the
+        diff is available there too.
+        """
+        if self._menu_target_sid is None:
+            return
+        task = self._store.get(self._menu_target_sid)
+        if task is None:
+            return
+        repo_name = param.get_string()
+        repo = next((r for r in task.repos if r.repo_name == repo_name), None)
+        if repo is None:
+            return
+        self._open_diff_leaf(task, repo)
+
+    # --- Phase 8: branch + PR status subline (GIT-01/REVIEW-02, D-03) --------
+    # NOTE: _refresh_task_status / _on_refresh_status / _on_open_pr are wired in
+    # Tasks 2 & 3 of plan 08-03; the action registrations above reference them so
+    # they must exist. Tasks 2/3 replace these placeholders with the real logic.
+
+    def _on_refresh_status(self, _action, _param) -> None:
+        """Placeholder — replaced in Task 2 (forces a TTL-bypassing status re-read)."""
+        return
+
+    def _on_open_pr(self, _action, _param) -> None:
+        """Placeholder — replaced in Task 3 (runs `gh pr create --web`)."""
+        return
+
     def _next_term_id(self, sid: str) -> str:
         """Return the next free ``{sid}:tN`` terminal id for workspace ``sid``."""
         n = 0
@@ -3422,6 +3575,23 @@ class ArduisWindow(Adw.ApplicationWindow):
         )
         toggle_isolation.connect("activate", self._on_toggle_isolation_action)
         self.add_action(toggle_isolation)
+
+        # Phase 8 (REVIEW-01, D-02): win.ver_diff(repo_name) opens a read-only diff
+        # leaf for that repo's worktree (string target = repo_name, mirroring
+        # close_repo). win.refresh_status (D-03) forces a status re-read; win.open_pr
+        # (D-05) runs the ONE allowed write `gh pr create --web`. Both no-target,
+        # using _menu_target_sid like hibernate.
+        ver_diff = Gio.SimpleAction.new("ver_diff", GLib.VariantType.new("s"))
+        ver_diff.connect("activate", self._on_ver_diff)
+        self.add_action(ver_diff)
+
+        refresh_status = Gio.SimpleAction.new("refresh_status", None)
+        refresh_status.connect("activate", self._on_refresh_status)
+        self.add_action(refresh_status)
+
+        open_pr = Gio.SimpleAction.new("open_pr", None)
+        open_pr.connect("activate", self._on_open_pr)
+        self.add_action(open_pr)
 
     def _menu_session(self) -> Task | None:
         """Resolve the right-clicked row back to its tracked Task (D-08)."""
