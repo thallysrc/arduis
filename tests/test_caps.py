@@ -12,6 +12,7 @@ Decisions pinned:
 """
 from arduis import caps
 from arduis.caps import ACTIVE_CAP_DEFAULT, active_count, at_cap
+from arduis.project import Project
 from arduis.session import RepoCheckout, SessionState, Task, default_repo_terminals
 
 
@@ -69,6 +70,43 @@ def test_at_cap_at():
 def test_at_cap_custom():
     # configurable cap: 3 active with cap=3 -> at cap.
     assert at_cap(_active(3), cap=3) is True
+
+
+def test_cap_counts_union_across_projects():
+    # D-09: the active-agent cap is GLOBAL across all open projects — RAM is a
+    # machine-global resource. Each Project owns its OWN store (D-02); the cap is
+    # fed the FLAT UNION of every project's tasks, not one store.
+    a = Project(root="/home/u/Livon-Saude")
+    b = Project(root="/home/u/KarveLabs")
+    for i in range(4):
+        a.store.add(_task(f"a{i}", SessionState.ACTIVE))
+    for i in range(3):
+        b.store.add(_task(f"b{i}", SessionState.ACTIVE))
+
+    union = [t for p in (a, b) for t in p.store.all()]
+    assert active_count(union) == 7  # 4 + 3, machine-wide
+    assert at_cap(union) is True  # 7 >= ACTIVE_CAP_DEFAULT (6)
+
+    # Pitfall 4 regression guard: feeding ONE store alone would NOT trip the cap —
+    # only the union does, which is exactly the bug this locks against.
+    assert active_count(a.store.all()) == 4
+    assert active_count(b.store.all()) == 3
+    assert at_cap(a.store.all()) is False
+    assert at_cap(b.store.all()) is False
+
+
+def test_cap_union_hibernated_excluded():
+    # A HIBERNATED task in EITHER project's store is not counted toward the cap.
+    a = Project(root="/home/u/Livon-Saude")
+    b = Project(root="/home/u/KarveLabs")
+    a.store.add(_task("a0", SessionState.ACTIVE))
+    a.store.add(_task("a1", SessionState.HIBERNATED))
+    b.store.add(_task("b0", SessionState.ACTIVE))
+    b.store.add(_task("b1", SessionState.HIBERNATED))
+
+    union = [t for p in (a, b) for t in p.store.all()]
+    assert active_count(union) == 2  # the two ACTIVE, hibernated excluded
+    assert at_cap(union) is False
 
 
 def test_caps_is_gtk_free():
