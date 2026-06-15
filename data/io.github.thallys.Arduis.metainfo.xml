@@ -17,5 +17,9 @@
     <p>Degrau 1: janela GTK4 com um terminal VTE rodando o shell do host.</p>
   </description>
   <launchable type="desktop-id">io.github.thallys.Arduis.desktop</launchable>
+  <url type="homepage">https://github.com/thallysrc/arduis</url>
   <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="1.0.0" date="2026-06-15"/>
+  </releases>
 </component>

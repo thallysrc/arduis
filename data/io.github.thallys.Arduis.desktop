@@ -5,5 +5,5 @@ Exec=arduis
 Icon=io.github.thallys.Arduis
 Terminal=false
 Type=Application
-Categories=Development;Utility;
+Categories=Development;
 Keywords=terminal;agents;worktree;claude;
