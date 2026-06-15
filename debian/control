@@ -1,0 +1,29 @@
+Source: arduis
+Section: devel
+Priority: optional
+Maintainer: thallys <thallys.costa@livon.io>
+Build-Depends: meson,
+               ninja-build,
+               debhelper-compat (= 13),
+               python3
+Standards-Version: 4.6.2
+Homepage: https://github.com/thallysrc/arduis
+Rules-Requires-Root: no
+
+Package: arduis
+Architecture: all
+Depends: ${misc:Depends},
+         python3 (>= 3.12),
+         python3-gi,
+         gir1.2-gtk-4.0,
+         gir1.2-adw-1,
+         gir1.2-vte-3.91 | libvte-2.91-gtk4-0
+Description: Orchestrate parallel AI agents in isolated git worktrees
+ arduis is a lightweight GNOME desktop app that runs several AI coding
+ agents (Claude Code) in parallel — each in its own git worktree, with
+ real embedded VTE terminals. It is the Linux, terminal-centric answer
+ for developers who live in the terminal and use AI agents heavily.
+ .
+ Each agent runs in an isolated worktree with a real PTY-backed terminal,
+ letting you manage N agents at once and always know which one is waiting
+ on you. Uses the system VTE (no bundling, no sandbox).
