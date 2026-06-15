@@ -64,13 +64,13 @@ Requirements para o lançamento inicial (paralelismo simples). Cada um mapeia pa
 
 ### Review / Cleanup (REVIEW)
 
-- [ ] **REVIEW-01**: Usuário vê o diff (read-only) das mudanças de uma worktree
-- [ ] **REVIEW-02**: Usuário abre PR via `gh` (shell-out); o app lê o status do PR
-- [ ] **REVIEW-03**: "Concluir worktree" → remove a worktree (+ teardown de containers)
+- [x] **REVIEW-01**: Usuário vê o diff (read-only) das mudanças de uma worktree
+- [x] **REVIEW-02**: Usuário abre PR via `gh` (shell-out); o app lê o status do PR
+- [x] **REVIEW-03**: "Concluir worktree" → remove a worktree (+ teardown de containers)
 
 ### Git Info (GIT)
 
-- [ ] **GIT-01**: O app lê e exibe branch + status de PR via git/`gh` (somente leitura)
+- [x] **GIT-01**: O app lê e exibe branch + status de PR via git/`gh` (somente leitura)
 
 ### Distribuição (DIST)
 
@@ -154,10 +154,10 @@ Qual fase cobre qual requisito. Cada requisito v1 mapeia para exatamente uma fas
 | CONT-03 | Phase 7 | Complete (UAT pending) |
 | CONT-04 | Phase 7 | Complete (UAT pending) |
 | CONT-05 | Phase 7 | Complete (UAT pending) |
-| REVIEW-01 | Phase 8 | Pending |
-| REVIEW-02 | Phase 8 | Pending |
-| REVIEW-03 | Phase 8 | Pending |
-| GIT-01 | Phase 8 | Pending |
+| REVIEW-01 | Phase 8 | Complete (UAT pending) |
+| REVIEW-02 | Phase 8 | Complete (UAT pending) |
+| REVIEW-03 | Phase 8 | Complete (UAT pending) |
+| GIT-01 | Phase 8 | Complete (UAT pending) |
 | DIST-02 | Phase 9 | Pending |
 | DIST-03 | Phase 9 | Pending |
 | DIST-04 | Phase 9 | Pending |

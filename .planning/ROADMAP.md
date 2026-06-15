@@ -22,7 +22,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 5: Agent Swap + tmux Keybindings + Themes** - Agent = configurable command (Ctrl+C swaps), tmux-style chords, Dracula default + swappable themes (completed 2026-06-13)
 - [x] **Phase 6: Per-Worktree Setup via `.arduis.toml`** - Repo config with sensible defaults; setup commands run on worktree creation via the login shell (completed 2026-06-13)
 - [x] **Phase 7: Opt-in Isolated Containers** - Per-worktree docker-compose isolation with stable project name, auto port offset + probing, port badges, guaranteed teardown (completed 2026-06-14)
-- [ ] **Phase 8: Review + Cleanup** - Read-only diff, branch/PR status via git/gh, "conclude worktree" with correct teardown order
+- [x] **Phase 8: Review + Cleanup** - Read-only diff, branch/PR status via git/gh, "conclude worktree" with correct teardown order (completed 2026-06-15)
 - [ ] **Phase 9: Packaging (AUR + .deb)** - Team-installable on Ubuntu + Arch under real Wayland as native packages using the system VTE; Flatpak deferred to v2
 
 ## Phase Details
@@ -202,11 +202,11 @@ Plans:
   4. "Conclude worktree" follows the safe teardown order (kill agent → compose down → verify clean → `git worktree remove` → `prune`), never force-deleting a dirty tree
 **Plans**: 6 plans
 Plans:
-- [ ] 08-01-PLAN.md — review.py (git diff/porcelain/never-force remove/ahead-behind argv + parsers) + review_cache.py TTL (Wave 1, TDD)
-- [ ] 08-02-PLAN.md — gh.py (pr view/create-web argv + JSON parse + absent/exit-4 degrade) + run_git_async cwd= (Wave 1, TDD)
-- [ ] 08-03-PLAN.md — window.py read surfaces: read-only diff leaf, branch/PR subline + TTL throttle, Abrir PR (web) (Wave 2)
-- [ ] 08-04-PLAN.md — window.py "Concluir task": D-04 ordered teardown + dirty clean-gate (no --force) + conclude unit test (Wave 3)
-- [ ] 08-05-PLAN.md — headless acceptance smoke: menu, real-git clean/dirty conclude, on-disk D-10, gh-absent degrade (Wave 4)
+- [x] 08-01-PLAN.md — review.py (git diff/porcelain/never-force remove/ahead-behind argv + parsers) + review_cache.py TTL (Wave 1, TDD)
+- [x] 08-02-PLAN.md — gh.py (pr view/create-web argv + JSON parse + absent/exit-4 degrade) + run_git_async cwd= (Wave 1, TDD)
+- [x] 08-03-PLAN.md — window.py read surfaces: read-only diff leaf, branch/PR subline + TTL throttle, Abrir PR (web) (Wave 2)
+- [x] 08-04-PLAN.md — window.py "Concluir task": D-04 ordered teardown + dirty clean-gate (no --force) + conclude unit test (Wave 3)
+- [x] 08-05-PLAN.md — headless acceptance smoke: menu, real-git clean/dirty conclude, on-disk D-10, gh-absent degrade (Wave 4)
 - [ ] 08-06-PLAN.md — live human-verify checklist (diff color+read-only, real PR, clean vs dirty conclude) (Wave 4, checkpoint)
 **UI hint**: yes
 
@@ -248,5 +248,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 5. Agent Swap + Keys + Themes | 4/4 | Complete    | 2026-06-13 |
 | 6. Setup via `.arduis.toml` | 3/3 | Complete    | 2026-06-13 |
 | 7. Isolated Containers | 5/5 | Complete    | 2026-06-14 |
-| 8. Review + Cleanup | 0/TBD | Not started | - |
+| 8. Review + Cleanup | 5/6 | Complete    | 2026-06-15 |
 | 9. Packaging | 0/TBD | Not started | - |
