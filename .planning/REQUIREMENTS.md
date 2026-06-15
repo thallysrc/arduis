@@ -23,6 +23,10 @@ Requirements para o lançamento inicial (paralelismo simples). Cada um mapeia pa
 - [ ] **PAR-02**: Uma sidebar lista todas as worktrees; selecionar uma foca nela
 - [ ] **PAR-03**: Usuário troca entre worktrees pela UI e por atalhos estilo tmux
 
+### Projetos (PROJ)
+
+- [ ] **PROJ-01**: Topbar lista múltiplos projetos multi-repo, alternáveis e persistidos entre execuções; trocar de projeto mantém os outros vivos ("both alive")
+
 ### Status / Atenção (STATUS)
 
 - [x] **STATUS-01**: O app detecta "aguardando input" via hooks do Claude Code (`Notification`/`Stop` → state file)
@@ -140,6 +144,7 @@ Qual fase cobre qual requisito. Cada requisito v1 mapeia para exatamente uma fas
 | LAYOUT-01 | Phase 3 | Pending |
 | RAM-02 | Phase 3 | Pending |
 | RAM-03 | Phase 3 | Pending |
+| PROJ-01 | Phase 03.4 | Pending |
 | STATUS-01 | Phase 4 | Complete (UAT pending) |
 | STATUS-02 | Phase 4 | Complete (UAT pending) |
 | STATUS-03 | Phase 4 | Complete (UAT pending) |
@@ -166,10 +171,10 @@ Qual fase cobre qual requisito. Cada requisito v1 mapeia para exatamente uma fas
 **Nota cross-cutting:** RAM management é tecido entre as fases — RAM-01 (agent-half) na Phase 2, RAM-02/03 (ResourceMonitor + visibilidade + caps) na Phase 3, RAM-04 (auto-suspend) na Phase 4; a metade de containers amadurece na Phase 7. Cada RAM-REQ é "owned" por uma única fase (acima), mas a feature evolui ao longo do roadmap.
 
 **Coverage:**
-- v1 requirements: 32 total (DIST-01/Flatpak movido pro v2)
-- Mapped to phases: 32 ✓
+- v1 requirements: 33 total (DIST-01/Flatpak movido pro v2)
+- Mapped to phases: 33 ✓
 - Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-06-08*
-*Last updated: 2026-06-08 — pivô de distribuição: Flatpak → nativo (.deb + AUR), DIST-01 movido pro v2*
+*Last updated: 2026-06-15 — PROJ-01 adicionado (Phase 03.4 corretiva: topbar = multi-projeto switcher "both alive" + persistência)*
