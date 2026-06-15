@@ -278,6 +278,13 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._container_state: dict[str, containerstate.ContainerState] = {}
         # task_ids with an in-flight compose op (toggle disabled + spinner shown).
         self._compose_busy: set[str] = set()
+
+        # --- Phase 8 (REVIEW-02/GIT-01, D-03): branch+PR status throttle --------
+        # The TTL cache (gh payload keyed by task_id) + an in-flight debounce set
+        # mirroring _compose_busy. Reads are manual-refresh + auto-on-create/activate
+        # + TTL + debounce — NEVER a poll (gh is network/rate-limited, T-08-10).
+        self._review_cache = ReviewCache()
+        self._pr_busy: set[str] = set()
         # Pending enable data (project + port_map) stashed between the async
         # config-step and the up-step, keyed by task_id.
         self._compose_pending: dict[str, dict] = {}
@@ -1777,6 +1784,10 @@ class ArduisWindow(Adw.ApplicationWindow):
             self._show_hibernated_placeholder(task)
             return
         self._swap_workspace(sid)
+        # Phase 8 (D-03): auto-read status ONCE on activation of an ACTIVE task. The
+        # TTL cache makes rapid row-switching a no-op for gh (no spam, no poll).
+        if task is not None and task.state == SessionState.ACTIVE:
+            self._refresh_task_status(task)
 
     def _show_hibernated_placeholder(self, task: Task) -> None:
         """Show a HIBERNATED task's workspace as a centered explicit-resume card.
@@ -2834,6 +2845,11 @@ class ArduisWindow(Adw.ApplicationWindow):
             self._show_error("Algumas repos não foram criadas", "\n".join(repo_errors))
         self._rebuild_sidebar()
 
+        # Phase 8 (D-03): auto-read branch+PR status ONCE on create (after the task
+        # is fully in the store with its repos). force=False so the TTL cache gates
+        # rapid re-creates; gh is gated on availability + TTL + debounce — no poll.
+        self._refresh_task_status(task)
+
     def _task_root_cwd(self, task: Task) -> str:
         """Working dir for the task's terminals (UX pivot): the task folder root.
 
@@ -3098,13 +3114,111 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._open_diff_leaf(task, repo)
 
     # --- Phase 8: branch + PR status subline (GIT-01/REVIEW-02, D-03) --------
-    # NOTE: _refresh_task_status / _on_refresh_status / _on_open_pr are wired in
-    # Tasks 2 & 3 of plan 08-03; the action registrations above reference them so
-    # they must exist. Tasks 2/3 replace these placeholders with the real logic.
+
+    def _set_status_subline(self, sid: str, text: str) -> None:
+        """Update a task row's subline label in place (guard a rebuilt/missing row).
+
+        Reuses the EXISTING ``_subline_by_sid`` label set in ``_make_row`` — no row
+        rebuild. The row may have been rebuilt between the async read kick and the
+        callback, so a missing label is a silent no-op (never crash the GLib loop).
+        """
+        label = self._subline_by_sid.get(sid)
+        if label is not None:
+            label.set_text(text)
+
+    def _refresh_task_status(self, task: Task, *, force: bool = False) -> None:
+        """Read branch + ahead/behind (git) + PR (gh) and render the row subline (D-03).
+
+        THROTTLE (T-08-10): branch/ahead-behind are cheap local git reads; the PR
+        read is gated on ``gh.gh_available()`` FIRST (absent → ``GH_ABSENT_MSG``,
+        never call gh), then on the TTL cache (``fresh_payload`` within ``GH_TTL_S``)
+        unless ``force``, then on the ``_pr_busy`` in-flight debounce (DROP, never
+        queue). All reads go through ``run_git_async`` with ``cwd=worktree`` on the
+        GLib loop. NEVER a poll. Uses the task's PRIMARY repo (``task.repos[0]``) —
+        aggregate-in-subline per the plan.
+        """
+        if not task.repos:
+            return
+        repo = task.repos[0]
+        sid = task.task_id
+        now = time.monotonic()
+
+        # State threaded through the async branch/ahead-behind chain so the PR
+        # render can prefix the branch subline.
+        branch_sub = {"text": gh.format_branch_subline(repo.branch, 0, 0)}
+
+        def _kick_pr() -> None:
+            # PR read: gate availability → TTL cache → debounce.
+            if not gh.gh_available():
+                self._set_status_subline(sid, gh.GH_ABSENT_MSG)
+                return
+            if not force:
+                cached = self._review_cache.fresh_payload(sid, now, GH_TTL_S)
+                if cached is not None:
+                    self._set_status_subline(
+                        sid, f"{branch_sub['text']} · {gh.format_pr_subline(cached)}"
+                    )
+                    return
+            if sid in self._pr_busy:
+                return  # in-flight — DROP (debounce, never queue)
+            self._pr_busy.add(sid)
+            run_git_async(
+                gh.argv_pr_view(repo.branch),
+                _on_pr,
+                runner=self._runner,
+                cwd=repo.worktree_dir,
+            )
+
+        def _on_pr(rc: int, out: str, err: str) -> None:
+            self._pr_busy.discard(sid)  # ALWAYS clear the in-flight guard
+            if rc == gh.GH_EXIT_NEEDS_AUTH:
+                self._set_status_subline(sid, gh.GH_UNAUTH_MSG)
+                return
+            if rc != 0 or not out.strip():
+                self._set_status_subline(sid, f"{branch_sub['text']} · sem PR")
+                return
+            try:
+                pr = gh.parse_pr_view(out)
+            except (ValueError, TypeError):
+                return  # garbage — never crash the GLib loop (T-08-05)
+            self._review_cache.put(sid, pr, time.monotonic())
+            self._set_status_subline(
+                sid, f"{branch_sub['text']} · {gh.format_pr_subline(pr)}"
+            )
+
+        def _on_ahead_behind(rc: int, out: str, _err: str) -> None:
+            if rc == 0:
+                ahead, behind = review.parse_ahead_behind(out)
+                branch_sub["text"] = gh.format_branch_subline(
+                    repo.branch, ahead, behind
+                )
+            self._set_status_subline(sid, branch_sub["text"])
+            _kick_pr()
+
+        def _on_branch(rc: int, out: str, _err: str) -> None:
+            name = out.strip() if rc == 0 and out.strip() else repo.branch
+            branch_sub["text"] = gh.format_branch_subline(name, 0, 0)
+            self._set_status_subline(sid, branch_sub["text"])
+            run_git_async(
+                review.argv_ahead_behind(repo.worktree_dir, name),
+                _on_ahead_behind,
+                runner=self._runner,
+                cwd=repo.worktree_dir,
+            )
+
+        run_git_async(
+            review.argv_current_branch(repo.worktree_dir),
+            _on_branch,
+            runner=self._runner,
+            cwd=repo.worktree_dir,
+        )
 
     def _on_refresh_status(self, _action, _param) -> None:
-        """Placeholder — replaced in Task 2 (forces a TTL-bypassing status re-read)."""
-        return
+        """Row-menu ``win.refresh_status``: force a TTL-bypassing status re-read (D-03)."""
+        task = self._menu_session()
+        if task is None:
+            return
+        self._refresh_task_status(task, force=True)
 
     def _on_open_pr(self, _action, _param) -> None:
         """Placeholder — replaced in Task 3 (runs `gh pr create --web`)."""
