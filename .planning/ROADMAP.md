@@ -241,7 +241,13 @@ Plans:
   2. A native `.deb` package installs and runs on Ubuntu 24.04 (depends on system `gir1.2-vte-3.91` 0.76, `python3-gi`, `gir1.2-gtk-4.0`, `libadwaita`)
   3. A clean install runs on both Ubuntu and Arch under real Wayland (hard gate)
   4. `HostRunner` confirmed as a no-op on native builds (direct PTY spawn; no `flatpak-spawn` dependency)
-**Plans**: TBD
+**Plans**: 5 plans (4 waves)
+Plans:
+- [ ] 09-01-PLAN.md — Wave 0: install build/lint toolchain, fix metainfo (homepage + 1.0.0 release), generate SVG icon, write 3 packaging test files (native no-op / version / install-tree)
+- [ ] 09-02-PLAN.md — meson foundation (D-01/D-02): purelib install_sources of the arduis pkg incl. hooks data + generated bin/arduis launcher (no sys.path hack) + data XDG install
+- [ ] 09-03-PLAN.md — .deb (DIST-03): debian/ set wrapping meson via dh, Architecture: all, exact CLAUDE.md Depends; builds locally + lintian clean
+- [ ] 09-04-PLAN.md — AUR (DIST-02): PKGBUILD arch=any wrapping meson, exact Arch deps, no .install; README packaging section (D-06)
+- [ ] 09-05-PLAN.md — acceptance: full automated gate + live hardware UAT (clean install + Wayland launch on real Ubuntu + Arch, DIST-04/SC-3) (checkpoint)
 
 ## Cross-Cutting: RAM Management & Swarm Seams (not phases)
 
