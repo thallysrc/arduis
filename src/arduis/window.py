@@ -2009,9 +2009,19 @@ class ArduisWindow(Adw.ApplicationWindow):
         if row is not None and self._listbox.get_selected_row() is not row:
             self._listbox.select_row(row)
 
+    def _all_tasks(self) -> list[Task]:
+        """The UNION of every OPEN project's tasks (D-09 global cap).
+
+        RAM is a machine-global resource, so the active-agent cap must count agents
+        across ALL open projects, not just the active store (RESEARCH Pitfall 4).
+        Feed this list to ``caps.at_cap`` / ``caps.active_count`` at every gate so a
+        second project can't silently push the live-agent count past the cap.
+        """
+        return [t for p in self._registry.all() for t in p.store.all()]
+
     def _resume_gated(self, task: Task) -> None:
         """Resume ``task`` through the active-task cap gate (RAM-02/D-14)."""
-        if caps.at_cap(self._store.all()):
+        if caps.at_cap(self._all_tasks()):
             self._prompt_hibernate_then(lambda: self._resume_task(task))
             return
         self._resume_task(task)
@@ -2740,7 +2750,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         # RAM-02/D-15/D-16: BLOCK at the active-agent cap and force a hibernate
         # BEFORE any task is created/spawned — never silent-allow, never
         # create-hibernated. Proceed only once a task is freed.
-        if caps.at_cap(self._store.all()):
+        if caps.at_cap(self._all_tasks()):
             self._prompt_hibernate_then(self._begin_new_task)
             return
         self._begin_new_task()
@@ -2776,7 +2786,11 @@ class ArduisWindow(Adw.ApplicationWindow):
             proceed()
             return
 
-        n = caps.active_count(self._store.all())
+        # D-09: the COUNT in the heading is the GLOBAL union across all open
+        # projects (RAM is machine-wide). The chooser LIST stays scoped to the
+        # ACTIVE project's active tasks — cross-project hibernation in the chooser
+        # is a documented deferral (RESEARCH Open Q2), not a D-09 correctness gap.
+        n = caps.active_count(self._all_tasks())
         dialog = Adw.AlertDialog(
             heading=f"Você está com {n} agentes ativos",
             body="Hiberne uma worktree para liberar RAM antes de abrir outra.",
