@@ -693,6 +693,28 @@ class ArduisWindow(Adw.ApplicationWindow):
     def _active_workspace_sid(self, value: str | None) -> None:
         self._m()["active_workspace_sid"] = value
 
+    # --- per-project status-file namespacing (03.4 A3 / Pitfall 1) ----------
+    def _proj_term_id(self, term_id: str) -> str:
+        """Namespace ``term_id`` with the ACTIVE project's root discriminator (A3).
+
+        ``term_id`` is branch-derived (``feat:t0``) so two projects with a
+        same-named task would otherwise collide on the GLOBAL attention status-file
+        path. Prefixing the active project's ``project_term_id`` discriminator makes
+        every status-file path project-unique. CRITICAL CONSISTENCY: this is applied
+        at ALL status-file derive sites (the env path the hook writes to, the
+        ``_record_by_state_file`` write key, the watcher-tick re-read, and the
+        teardown unlink) so the path WRITTEN is identical to the path READ — the
+        watcher always matches the record it registered. A status terminal is only
+        ever spawned/read/cleared within its owning (active) project in this plan
+        (switching never tears down — D-08), so the active root is the right and
+        stable discriminator. Falls back to the bare ``term_id`` only when no
+        project is active (degenerate launch — single status namespace, unchanged).
+        """
+        root = self._project_root
+        if not root:
+            return term_id
+        return project_term_id(root, term_id)
+
     # --- CSS provider (UI-SPEC Color) ---------------------------------------
 
     def _install_css(self) -> None:
@@ -3524,7 +3546,12 @@ class ArduisWindow(Adw.ApplicationWindow):
         """
         extra_env: list[str] | None = None
         if task is not None and kind == "agent":
-            state_file = attention.state_file_path(self._status_dir, term_id)
+            # A3: namespace the status-file path per project so two projects with a
+            # same-named branch never share a status file. The hook writes to this
+            # exact path and the watcher key below is the SAME path → consistent.
+            state_file = attention.state_file_path(
+                self._status_dir, self._proj_term_id(term_id)
+            )
             extra_env = [
                 f"ARDUIS_STATE_FILE={state_file}",
                 f"ARDUIS_SESSION_META={term_id}",
@@ -3705,7 +3732,10 @@ class ArduisWindow(Adw.ApplicationWindow):
             for t in terms:
                 if t.kind != "agent" or t.status is None:
                     continue
-                path = attention.state_file_path(self._status_dir, t.term_id)
+                # A3: re-read the SAME project-namespaced path registered at spawn.
+                path = attention.state_file_path(
+                    self._status_dir, self._proj_term_id(t.term_id)
+                )
                 if path in self._record_by_state_file:
                     self._apply_state_file(task, t, path)
 
@@ -4234,7 +4264,10 @@ class ArduisWindow(Adw.ApplicationWindow):
         handle so a stale Notification is not reused after teardown.
         """
         for record in self._all_task_terminals(task):
-            path = attention.state_file_path(self._status_dir, record.term_id)
+            # A3: unlink + drop the SAME project-namespaced path registered at spawn.
+            path = attention.state_file_path(
+                self._status_dir, self._proj_term_id(record.term_id)
+            )
             try:
                 os.unlink(path)
             except FileNotFoundError:
@@ -4252,7 +4285,10 @@ class ArduisWindow(Adw.ApplicationWindow):
         status-dir-only path composition as ``_clear_task_state_files`` (T-04-16).
         """
         for record in repo.terminals:
-            path = attention.state_file_path(self._status_dir, record.term_id)
+            # A3: unlink + drop the SAME project-namespaced path registered at spawn.
+            path = attention.state_file_path(
+                self._status_dir, self._proj_term_id(record.term_id)
+            )
             try:
                 os.unlink(path)
             except FileNotFoundError:
