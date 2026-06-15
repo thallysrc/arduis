@@ -186,6 +186,9 @@ def _build_css(theme: Theme) -> str:
     border: 1px solid {theme.accent};
     background-color: {theme.surface};
 }}
+.arduis-tab-label-active {{
+    font-weight: 600;
+}}
 .arduis-dot-active {{
     color: {theme.dot_active};
 }}
@@ -2336,6 +2339,176 @@ class ArduisWindow(Adw.ApplicationWindow):
         if getattr(self, "_title_widget", None) is not None:
             self._title_widget.set_title(self._project_name or "arduis")
 
+    # --- project-tab switcher (03.4 D-03, UI-SPEC) --------------------------
+
+    def _build_project_tabs(self) -> None:
+        """Render one tab per open project + "+ Abrir projeto" in the _chip_bar slot.
+
+        Reuses the (now-empty) ``_chip_bar`` Box at ``header.pack_start`` (D-03/D-04).
+        Each project is a flat ``Gtk.ToggleButton`` in a LINKED group (``set_group`` →
+        GTK enforces exactly-one-active) whose child is a single ``Gtk.Label`` set via
+        ``set_text`` ONLY (never ``set_markup`` — T-03.4-07 path-injection guard); the
+        tooltip is the full root path. The ACTIVE project's button gets the reused
+        ``.arduis-chip-active`` rule (accent border + surface fill, theme-sourced) and
+        a semibold (600) label. NO status dot on tabs (label-only, deferred). Beyond
+        ``_MAX_VISIBLE_CHIPS`` projects, the overflow folds into a ``+N`` MenuButton
+        whose ``Gio.Menu`` items target ``win.switch_project(root)`` (D-03). The
+        trailing "+ Abrir projeto" flat button triggers the folder picker.
+        """
+        # Clear the slot.
+        child = self._chip_bar.get_first_child()
+        while child is not None:
+            nxt = child.get_next_sibling()
+            self._chip_bar.remove(child)
+            child = nxt
+
+        projects = self._registry.all()
+        active = self._registry.active()
+        active_root = active.root if active is not None else None
+
+        group: Gtk.ToggleButton | None = None
+        visible = projects[:_MAX_VISIBLE_CHIPS]
+        overflow = projects[_MAX_VISIBLE_CHIPS:]
+
+        for proj in visible:
+            btn = Gtk.ToggleButton()
+            btn.add_css_class("flat")
+            btn.add_css_class("arduis-chip")
+            label = Gtk.Label()
+            label.set_text(proj.name)  # set_text ONLY (T-03.4-07)
+            btn.set_child(label)
+            btn.set_tooltip_text(proj.root)
+            if group is None:
+                group = btn
+            else:
+                btn.set_group(group)  # linked group → exactly-one-active
+            is_active = proj.root == active_root
+            btn.set_active(is_active)
+            if is_active:
+                btn.add_css_class("arduis-chip-active")
+                label.add_css_class("arduis-tab-label-active")
+            # Switch on toggle-on (ignore the toggle-off of the previous active).
+            btn.connect(
+                "toggled",
+                self._make_tab_toggled_cb(proj.root),
+            )
+            self._chip_bar.append(btn)
+
+        if overflow:
+            menu = Gio.Menu()
+            for proj in overflow:
+                item = Gio.MenuItem.new(proj.name, None)
+                item.set_action_and_target_value(
+                    "win.switch_project", GLib.Variant.new_string(proj.root)
+                )
+                menu.append_item(item)
+            more = Gtk.MenuButton(label=f"+{len(overflow)}", menu_model=menu)
+            more.add_css_class("flat")
+            more.set_tooltip_text("Mais projetos")
+            self._chip_bar.append(more)
+
+        # Trailing "+ Abrir projeto" picker trigger (D-03).
+        open_btn = Gtk.Button(label="+ Abrir projeto")
+        open_btn.add_css_class("flat")
+        open_btn.set_tooltip_text("Abrir projeto")
+        open_btn.connect("clicked", self._on_open_project_clicked)
+        self._chip_bar.append(open_btn)
+
+    def _make_tab_toggled_cb(self, root: str):
+        """A ToggleButton 'toggled' handler that switches to ``root`` when toggled ON."""
+        def _cb(btn: Gtk.ToggleButton) -> None:
+            if not btn.get_active():
+                return  # ignore the auto-toggle-off of the previously active tab
+            active = self._registry.active()
+            if active is not None and active.root == root:
+                return  # already active — no-op (avoids re-entrant swap)
+            self._switch_project(root)
+        return _cb
+
+    def _on_open_project_clicked(self, _btn) -> None:
+        """"+ Abrir projeto" → a native folder picker (Gtk.FileDialog, 4.10+)."""
+        dialog = Gtk.FileDialog()
+        dialog.set_title("Abrir projeto")
+        dialog.select_folder(self, None, self._on_project_folder_chosen)
+
+    def _on_project_folder_chosen(self, dialog, result) -> None:
+        """FileDialog callback: register + switch to the chosen folder (D-03)."""
+        try:
+            folder = dialog.select_folder_finish(result)
+        except GLib.Error:
+            return  # user cancelled
+        if folder is None:
+            return
+        root = folder.get_path()
+        if root:
+            self._open_project(root)
+
+    def _open_project(self, root: str) -> None:
+        """Register ``root`` (detect members + compose + scan), persist, switch (D-03).
+
+        Picker validation that the dir is a plausible project root is skipped per
+        CONTEXT discretion — a no-git dir registers as a degenerate project (its
+        own ``_resolve``/scan simply finds no members/tasks). Never tears anything
+        down (D-08). Idempotent: re-opening an already-open project just switches.
+        """
+        existing = self._registry.get(root)
+        if existing is None:
+            proj = ensure_project(self._registry, root, detect_member_repos(root))
+            proj.compose_path = self._detect_compose_path(root)
+            self._scan_tasks(project=proj)
+            projects_store.save_projects(
+                self._projects_json,
+                [p.root for p in self._registry.all()],
+                root,
+            )
+        self._switch_project(root)
+
+    def _switch_project(self, root: str) -> None:
+        """Make ``root`` the active project: swap sidebar + workspace, NEVER teardown.
+
+        The project switch is the workspace-swap one level up (RESEARCH Pattern 3):
+        remember the OUTGOING project's visible workspace into its
+        ``last_active_task`` (so switch-back restores it), re-point ``set_active``,
+        rebuild the sidebar from the NEW active project's store, run the existing
+        ``_swap_workspace`` (which re-grabs terminal focus — Pitfall 2), restyle the
+        tabs, and persist ``last_active_project``. CRITICAL (D-08): NO teardown — the
+        previous project's leaf/term maps stay alive + unparented in its own bundle.
+        """
+        if self._registry.get(root) is None:
+            return
+        # Remember the outgoing project's current workspace for switch-back.
+        outgoing = self._registry.active()
+        if outgoing is not None:
+            cur_sid = self._active_workspace_sid
+            if cur_sid is not None:
+                outgoing.last_active_task = cur_sid
+
+        self._registry.set_active(root)
+        active = self._registry.active()
+
+        # Render the new active project: chrome + sidebar + workspace.
+        self._refresh_project_chrome()
+        self._rebuild_sidebar()
+        target = (active.last_active_task if active is not None else None) or _MAIN_SID
+        # If the remembered workspace no longer exists in this project, fall back to
+        # the pinned main leaf (always present, D-07).
+        if target != _MAIN_SID and active is not None and active.store.get(target) is None:
+            target = _MAIN_SID
+        self._swap_workspace(target)
+        self._build_project_tabs()
+
+        # Persist the new last_active_project.
+        projects_store.save_projects(
+            self._projects_json,
+            [p.root for p in self._registry.all()],
+            root,
+        )
+
+    def _on_switch_project_action(self, _action, param) -> None:
+        """win.switch_project(root) — backs the +N overflow menu items (D-03)."""
+        if param is not None:
+            self._switch_project(param.get_string())
+
     def _resolve_project(self) -> None:
         """Seed the ACTIVE project from the launch cwd (legacy single-project path).
 
@@ -4062,6 +4235,14 @@ class ArduisWindow(Adw.ApplicationWindow):
         set_theme = Gio.SimpleAction.new("set_theme", GLib.VariantType.new("s"))
         set_theme.connect("activate", self._on_set_theme)
         self.add_action(set_theme)
+
+        # 03.4 (D-03): win.switch_project(root) backs the project-tab +N overflow
+        # menu items. String target = project root; _on_switch_project_action swaps.
+        switch_project = Gio.SimpleAction.new(
+            "switch_project", GLib.VariantType.new("s")
+        )
+        switch_project.connect("activate", self._on_switch_project_action)
+        self.add_action(switch_project)
 
         # Phase 7 (CONT-01/02, D-11): win.toggle_isolation(task_id) backs the row
         # menu "Isolar/Desligar containers" entry. String target is the task_id;
