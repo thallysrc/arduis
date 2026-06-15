@@ -81,6 +81,7 @@ Roadmap-shaping decisions affecting current work:
 
 - Phase 03.1 inserted after Phase 3: worktree-as-terminal-workspace (URGENT)
 - Phase 03.2 inserted after Phase 3 (2026-06-10): Projects and Cross-Repo Tasks (URGENT) — level-1 pivot: project = multi-repo root folder (meta-repo with root CLAUDE.md/compose/.arduis.toml); task = set of worktrees mirroring the root layout; sidebar = tasks, workspace = the task's terminals. Single-repo project is the degenerate case. DECIDED: single root docker-compose.yml per project (not per repo) — Phase 7 re-anchored to COMPOSE_PROJECT_NAME per task; Phase 4 re-anchored to per-task attention rollup (depends on 03.2 now). Supersedes the "topbar = single repos" reading of docs/MOTIVATION.md.
+- Phase 03.4 inserted after Phase 3 (2026-06-15): Topbar = multi-PROJECT switcher (URGENT, corrective) — PO flagged GSD modeled the topbar at the WRONG LEVEL twice (03.2 D-06 name-only, then 03.3 repo-chips). Correct model: topbar lists multiple PROJECTS (each a multi-repo root: Livon-Saude, KarveLabs), switchable + "both alive" (other projects keep terminals/agents/containers running). "Open project" picker + remembered list persisted across launches (kills "one arduis = one launch-dir project"). Member repos move out of the topbar into the New-task dialog. Needs a real GTK-free `Project` model. **Supersedes Phase 03.3 (repo chips) and 03.2 D-06 in full.** Executes BEFORE Phase 9. GAP: .planning/phases/03.3-topbar-repo-chips/03.3-GAP-topbar-multi-project.md.
 
 ### Pending Todos
 

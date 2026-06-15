@@ -17,7 +17,8 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 3: Parallel Worktrees + Sidebar + RAM Groundwork** - N worktrees side by side, free pane layout, sidebar with focus/switch, per-worktree RAM visibility and active caps
 - [x] **Phase 03.1: worktree-as-terminal-workspace (INSERTED)** - Canvas shows ONE worktree's terminals (workspace); per-worktree LayoutModel; sidebar swaps the whole workspace; re-targeted C-Space/RAM/hibernate semantics
 - [x] **Phase 03.2: Projects and Cross-Repo Tasks (INSERTED)** - Project = multi-repo root folder; task = set of worktrees (one per chosen repo) mirroring the root layout; sidebar lists tasks, workspace shows a task's terminals (completed 2026-06-12)
-- [x] **Phase 03.3: Topbar Repo Chips (INSERTED, corrective)** - Surface member repos as toggleable chips in the topbar (mockup affordance, supersedes 03.2 D-06 name-only); toggled set seeds New-task default; active task reflected; detection filters out linked worktrees (completed 2026-06-14)
+- [x] **Phase 03.3: Topbar Repo Chips (INSERTED, corrective)** - Surface member repos as toggleable chips in the topbar (mockup affordance, supersedes 03.2 D-06 name-only); toggled set seeds New-task default; active task reflected; detection filters out linked worktrees (completed 2026-06-14) — **superseded by 03.4 (wrong level)**
+- [ ] **Phase 03.4: Topbar = multi-PROJECT switcher (INSERTED, corrective)** - Topbar lists multiple PROJECTS (each a multi-repo root), switchable + running in parallel ("both alive"); "Open project" picker + remembered list persisted across launches; member repos move out of the topbar into the New-task dialog. Supersedes 03.3 (repo chips) and 03.2 D-06 in full. Executes BEFORE Phase 9.
 - [x] **Phase 4: Attention Detection (who's waiting)** - Hooks-first status (running/waiting/idle/ready), sidebar+pane dots, desktop notification, idle auto-suspend (completed 2026-06-13)
 - [x] **Phase 5: Agent Swap + tmux Keybindings + Themes** - Agent = configurable command (Ctrl+C swaps), tmux-style chords, Dracula default + swappable themes (completed 2026-06-13)
 - [x] **Phase 6: Per-Worktree Setup via `.arduis.toml`** - Repo config with sensible defaults; setup commands run on worktree creation via the login shell (completed 2026-06-13)
@@ -77,6 +78,23 @@ Plans:
 - [x] 03-04-PLAN.md — window.py: replace TabView with sidebar + nested GtkPaned canvas reflecting LayoutModel (PAR-01/PAR-02/LAYOUT-01)
 - [x] 03-05-PLAN.md — window.py: C-Space prefix machine + ~2s RAM poll + cap prompt-to-hibernate + presets/zoom + manual acceptance (PAR-03/RAM-02/RAM-03)
 **UI hint**: yes
+
+### Phase 03.4: Topbar = multi-PROJECT switcher (corrective) (INSERTED)
+
+**Goal:** Correct the topbar to its right LEVEL in the approved 3-level model (`docs/MOTIVATION.md`: "Topbar = projetos. Um projeto é uma pasta raiz multi-repo"). The topbar lists multiple **PROJECTS** — each a whole multi-repo root (`Livon-Saude`, `KarveLabs`) — switchable and running **in parallel ("both alive":** other projects keep their terminals/agents/containers running; the topbar only changes which is visible). A project is added via an "Open project" folder picker and **remembered across launches** (persisted list), killing the "one arduis = one launch-dir project" premise. Member repos (`backend`/`frontend`/`keycloak`) **leave the topbar** and surface only in the "Nova task" dialog. This requires a real GTK-free `Project` model (root + member_repos + task store + live terminals) and swapping sidebar+workspace on project switch. **Supersedes Phase 03.3 (repo chips) and Phase 03.2 D-06 in full** — both modeled the topbar at the wrong level. Full rationale + decided design + architectural implications + open questions: `.planning/phases/03.3-topbar-repo-chips/03.3-GAP-topbar-multi-project.md`.
+**Requirements**: TBD (PROJ-* / topbar — to be mapped at planning)
+**Depends on:** Phase 03.3 (repurposes its topbar render + reuses `detect_member_repos`). Executes BEFORE Phase 9 (packaging ships the final v1 UX — topbar must be right first).
+**Success criteria (draft — refine at planning):**
+  1. The topbar lists every remembered project; selecting one swaps the sidebar (its tasks) + workspace
+  2. "Open project" registers a multi-repo root and persists it across app restarts
+  3. Switching projects leaves the other projects' live terminals/agents/containers running ("both alive")
+  4. arduis launched inside a repo/root auto-registers that as the first project (preserves D-07 launch-lands-you-in-it)
+  5. Member-repo selection happens in the New-task dialog (topbar no longer carries repo chips); `detect_member_repos` + the `.git`-dir filter still feed it
+  6. A real GTK-free `Project` model encapsulates root + member_repos + task store + terminals (no more window.py singletons)
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 03.4 to break down)
 
 ### Phase 03.2: Projects and Cross-Repo Tasks (INSERTED)
 
