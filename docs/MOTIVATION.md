@@ -139,6 +139,8 @@ A navegação tem **três níveis**, de cima para baixo:
   orquestração de N projects + networks externas na mão.)
 - ~~**Layout** dos panes: grade fixa vs. livre~~ → **RESOLVIDO** pelo modelo de 3 níveis
   (ver "Estrutura da interface"): os panes do workspace são os **terminais de UMA
-  worktree** (default 2, sem limite rígido), com split estilo tmux — não várias worktrees
-  numa grade. Repos no topbar, worktrees na sidebar.
+  task** (default 2, sem limite rígido), com split estilo tmux — não várias tasks numa
+  grade. **Topbar = projetos** (cada um uma raiz multi-repo, alternáveis e "ambos vivos"),
+  **sidebar = tasks** do projeto selecionado; os repos-membro aparecem só no diálogo "Nova
+  task", não no topbar.
 - Features além do MVP: diff/review embutido, kanban de cards, pane de logs do container.
