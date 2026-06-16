@@ -710,16 +710,46 @@ class ArduisWindow(Adw.ApplicationWindow):
         at ALL status-file derive sites (the env path the hook writes to, the
         ``_record_by_state_file`` write key, the watcher-tick re-read, and the
         teardown unlink) so the path WRITTEN is identical to the path READ — the
-        watcher always matches the record it registered. A status terminal is only
-        ever spawned/read/cleared within its owning (active) project in this plan
-        (switching never tears down — D-08), so the active root is the right and
-        stable discriminator. Falls back to the bare ``term_id`` only when no
-        project is active (degenerate launch — single status namespace, unchanged).
+        watcher always matches the record it registered. A status terminal is
+        spawned/read/cleared within its OWNING project; at spawn time the owning
+        project is the active one (switching never tears down — D-08), so the active
+        root is the right and stable discriminator for the write key. The read/clear
+        sites that touch BACKGROUND tasks (260616-buk, finding #6) pass the owning
+        root explicitly via :meth:`_proj_term_id_for`. Falls back to the bare
+        ``term_id`` only when no project is active (degenerate launch — single
+        status namespace, unchanged).
         """
-        root = self._project_root
+        return self._proj_term_id_for(self._project_root, term_id)
+
+    def _proj_term_id_for(self, root: str | None, term_id: str) -> str:
+        """``_proj_term_id`` logic parameterized on an EXPLICIT owning root (260616-buk).
+
+        Multi-project attention surfacing (finding #4) and the teardown clear path
+        (finding #6) must derive a BACKGROUND task's status-file path with ITS OWN
+        project's root, not the active one — otherwise the path read/cleared differs
+        from the path the hook writes to (registered at spawn under the owning root).
+        Falsy ``root`` → the bare ``term_id`` (degenerate launch, unchanged).
+        """
         if not root:
             return term_id
         return project_term_id(root, term_id)
+
+    def _project_for_task(self, task: "Task") -> "Project | None":
+        """The registered Project that OWNS ``task`` (its store holds it), else None.
+
+        Used by the cross-project attention path (260616-buk): a status event or RAM
+        tick for a BACKGROUND task must resolve that task's owning project so the
+        correct bundle (notif dedup store, ``record_by_state_file``) and the correct
+        root-namespaced status-file path are used. Identity is ``store.get(task_id)``
+        being the SAME object (records are kept per-project, keyed by task_id).
+        """
+        registry = getattr(self, "_registry", None)
+        if registry is None:
+            return None
+        for proj in registry.all():
+            if proj.store.get(task.task_id) is task:
+                return proj
+        return None
 
     # --- CSS provider (UI-SPEC Color) ---------------------------------------
 
@@ -949,12 +979,33 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         O(1) dict lookup from the touched path back to (task, record); unknown
         files (mkstemp leftovers, foreign files) are ignored (T-04-15).
+
+        260616-buk (finding #4): the watcher is GLOBAL (one status dir for ALL
+        projects), so a BACKGROUND project's agent entering WAITING fires here too —
+        but its (task, record) lives in the OWNING project's bundle, not the active
+        one. Search every registered project's ``record_by_state_file`` for the
+        touched path so a background project's WAITING agent is surfaced (notify +
+        status flip) exactly like the active project's. Falls back to the active
+        bundle in the bootstrap/registry-empty case (degenerate launch, unchanged).
         """
-        entry = self._record_by_state_file.get(gfile.get_path())
-        if entry is None:
+        path = gfile.get_path()
+        registry = getattr(self, "_registry", None)
+        projects = registry.all() if registry is not None else []
+        if not projects:
+            # Bootstrap / no registered project: keep the original active-bundle path.
+            entry = self._record_by_state_file.get(path)
+            if entry is None:
+                return
+            task, record = entry
+            self._apply_state_file(task, record, path)
             return
-        task, record = entry
-        self._apply_state_file(task, record, gfile.get_path())
+        for proj in projects:
+            bundle = self._bundle_for(proj)
+            entry = bundle["record_by_state_file"].get(path)
+            if entry is not None:
+                task, record = entry
+                self._apply_state_file(task, record, path)
+                return
 
     def _apply_state_file(self, task: Task, record: TerminalRecord, path: str) -> None:
         """Read one state file → recompute the record's effective status (D-05).
@@ -1094,11 +1145,21 @@ class ArduisWindow(Adw.ApplicationWindow):
             getattr(doc, "message", "") or "Aprovação pendente"
         )
         icon = "dialog-information"
+        # 260616-buk (finding #4): dedup the ONE Notification per terminal (D-09) in
+        # the task's OWNING bundle, so a BACKGROUND project's WAITING agent reuses its
+        # OWN handle (the active bundle's notif store is the wrong one for it). The
+        # gating (should_notify) is unchanged — background tasks notify exactly like
+        # active ones (window unfocused → notify).
+        proj = self._project_for_task(task)
+        notif_by_tid = (
+            self._bundle_for(proj)["notif_by_tid"] if proj is not None
+            else self._notif_by_tid
+        )
         try:
-            notif = self._notif_by_tid.get(record.term_id)
+            notif = notif_by_tid.get(record.term_id)
             if notif is None:
                 notif = Notify.Notification.new(title, body, icon)
-                self._notif_by_tid[record.term_id] = notif
+                notif_by_tid[record.term_id] = notif
             else:
                 notif.update(title, body, icon)
             notif.show()
@@ -4172,92 +4233,135 @@ class ArduisWindow(Adw.ApplicationWindow):
         are skipped (Pitfall 3) and per-pid errors are swallowed inside
         ``group_rss_kb``. Returns ``SOURCE_CONTINUE`` so the timeout keeps firing.
 
+        260616-buk (finding #4): the poll runs across EVERY registered project, not
+        just the active one. A BACKGROUND project's agent must still be RAM-polled,
+        re-read (so a WAITING transition the FileMonitor missed is surfaced — notify +
+        status flip), and time-degraded. Per project we use ITS OWN bundle dicts
+        (subline labels, ``calm_since``, ``record_by_state_file``, ``activity_ts``)
+        and recompute status-file paths with the OWNING root (``_proj_term_id_for``,
+        also closes finding #6), iterating ``proj.store.all()``. The subline
+        ``set_text`` is a no-op for background tasks (their label widget lives in the
+        inactive bundle → ``None``), and the dot refresh in ``_apply_state_file`` /
+        ``_refresh_status_ui`` is likewise a harmless widget no-op for background
+        tasks (dots reconcile on switch — D-08); the VALUE is the background
+        notification + the in-memory ``record.status`` kept fresh.
+
         Phase 4 / RAM-04 (D-12): this tick also drives idle auto-suspend. Calm-state
-        tracking (``_calm_since``) and the ``should_autosuspend`` gate are evaluated
-        per ACTIVE task and the matching tasks are suspended AFTER the loop (suspend
-        mutates layouts/widgets — never during iteration). Degraded mode is excluded
-        entirely (no ``ready`` state → never auto-suspend; T-04-18).
+        tracking and the ``should_autosuspend`` gate are evaluated per ACTIVE task and
+        the matching tasks are suspended AFTER the whole loop (suspend mutates
+        layouts/widgets — never during iteration). AUTO-SUSPEND IS RESTRICTED TO THE
+        ACTIVE PROJECT (260616-buk decision (i)): ``_hibernate_task`` (the shared
+        teardown body) is wired to the active bundle's layout/workspace/sidebar maps,
+        so auto-suspending a BACKGROUND task would tear down its groups while leaving
+        the active bundle's widgets/layout stale. Background NOTIFY + dot
+        reconcile-on-switch + background RAM polling/re-read all work regardless; only
+        the unattended kill is deferred to when the project is active. Degraded mode is
+        excluded entirely (no ``ready`` state → never auto-suspend; T-04-18).
         """
         to_suspend: list[Task] = []
         now = time.time()
-        for task in self._store.all():
-            if task.state != SessionState.ACTIVE:
-                # Not active → drop any stale calm tracking (Pitfall 8 chain).
-                self._calm_since.pop(task.task_id, None)
-                continue  # skip hibernated (Pitfall 3)
-            # D-10/D-14 (UX pivot): a task's RAM is the SUM of every terminal's
-            # process group — the task-level pair + any user splits + any per-repo
-            # split. Poll each live group (pgid not None — skip the not-yet-spawned),
-            # writing each terminal's rss_kb back, then sum for the row subline.
-            terms = self._all_task_terminals(task)
-            for t in (t for t in terms if t.pgid is not None):
-                t.rss_kb = resource_monitor.group_rss_kb(t.pgid)
-            total = sum(t.rss_kb for t in terms if t.rss_kb)
-            label = self._subline_by_sid.get(task.task_id)
-            if label is not None:
-                label.set_text(
-                    f"claude · {resource_monitor.format_ram_kb(total or None)}"
-                )
-            # Phase 4 (D-05): ride this tick for the TIME-BASED transitions the
-            # FileMonitor never sees — IDLE (ready + threshold) and staleness
-            # (running with a dead pgid → ended). Cheap: re-read only the agent
-            # records that already have a registered state file (~a few tiny JSON
-            # reads). _apply_state_file re-aggregates + refreshes the dots.
-            for t in terms:
-                if t.kind != "agent" or t.status is None:
-                    continue
-                # A3: re-read the SAME project-namespaced path registered at spawn.
-                path = attention.state_file_path(
-                    self._status_dir, self._proj_term_id(t.term_id)
-                )
-                if path in self._record_by_state_file:
-                    self._apply_state_file(task, t, path)
-
-            # Phase 4 / D-13 (degraded mode): with hooks declined there are no state
-            # files — the ONLY status signal is the bell (→waiting) and the
-            # contents-changed activity timestamp. On this tick, an agent terminal with
-            # NO activity for idle_minutes degrades to 'idle' (never 'ready' — D-13 has
-            # no ready state, and degraded mode never auto-suspends so 'idle' here is
-            # purely cosmetic). A 'waiting' bell hint is sticky and is NOT idle-aged.
-            if self._degraded:
-                idle_after = self._att_config.idle_minutes * 60
-                changed = False
+        registry = getattr(self, "_registry", None)
+        projects = registry.all() if registry is not None else []
+        if not projects:
+            # Bootstrap / no registered project: poll the single active store.
+            projects = [self._active_or_bootstrap()]
+        active_proj = registry.active() if registry is not None else None
+        for proj in projects:
+            bundle = self._bundle_for(proj)
+            subline_by_sid = bundle["subline_by_sid"]
+            calm_since = bundle["calm_since"]
+            record_by_state_file = bundle["record_by_state_file"]
+            activity_ts = bundle["activity_ts"]
+            is_active_proj = proj is active_proj
+            for task in proj.store.all():
+                if task.state != SessionState.ACTIVE:
+                    # Not active → drop any stale calm tracking (Pitfall 8 chain).
+                    calm_since.pop(task.task_id, None)
+                    continue  # skip hibernated (Pitfall 3)
+                # D-10/D-14 (UX pivot): a task's RAM is the SUM of every terminal's
+                # process group — the task-level pair + any user splits + any per-repo
+                # split. Poll each live group (pgid not None — skip the not-yet-spawned),
+                # writing each terminal's rss_kb back, then sum for the row subline.
+                terms = self._all_task_terminals(task)
+                for t in (t for t in terms if t.pgid is not None):
+                    t.rss_kb = resource_monitor.group_rss_kb(t.pgid)
+                total = sum(t.rss_kb for t in terms if t.rss_kb)
+                label = subline_by_sid.get(task.task_id)
+                if label is not None:
+                    label.set_text(
+                        f"claude · {resource_monitor.format_ram_kb(total or None)}"
+                    )
+                # Phase 4 (D-05): ride this tick for the TIME-BASED transitions the
+                # FileMonitor never sees — IDLE (ready + threshold) and staleness
+                # (running with a dead pgid → ended). Cheap: re-read only the agent
+                # records that already have a registered state file (~a few tiny JSON
+                # reads). _apply_state_file re-aggregates + refreshes the dots.
                 for t in terms:
                     if t.kind != "agent" or t.status is None:
                         continue
-                    if t.status == AgentStatus.WAITING.value:
-                        continue  # sticky bell hint — only activity clears it
-                    last = self._activity_ts.get(t.term_id)
-                    if (
-                        last is not None
-                        and idle_after > 0
-                        and (now - last) >= idle_after
-                        and t.status != AgentStatus.IDLE.value
-                    ):
-                        t.status = AgentStatus.IDLE.value
-                        t.status_ts = now
-                        changed = True
-                if changed:
-                    self._refresh_status_ui(task)
+                    # A3: re-read the SAME project-namespaced path registered at
+                    # spawn, using the OWNING project's root (finding #6).
+                    path = attention.state_file_path(
+                        self._status_dir,
+                        self._proj_term_id_for(proj.root, t.term_id),
+                    )
+                    if path in record_by_state_file:
+                        self._apply_state_file(task, t, path)
 
-            # Phase 4 / RAM-04 (D-12, Pitfall 6): track when this task ENTERED a calm
-            # aggregate (ready/idle/ended) and evaluate auto-suspend. The aggregate is
-            # recomputed AFTER the status re-apply above so it reflects the freshest
-            # idle/staleness transitions. Degraded mode is excluded — it has no `ready`
-            # and killing on a coarse signal risks SIGKILL'ing a working agent (T-04-18).
-            agg = attention.aggregate_task(terms)
-            if agg in (AgentStatus.READY, AgentStatus.IDLE, AgentStatus.ENDED):
-                self._calm_since.setdefault(task.task_id, now)
-            else:
-                # running/waiting/None → reset; a real activity burst un-calms the task.
-                self._calm_since.pop(task.task_id, None)
-            if not self._degraded and attention.should_autosuspend(
-                agg,
-                self._calm_since.get(task.task_id),
-                now,
-                self._att_config.auto_suspend_minutes,
-            ):
-                to_suspend.append(task)
+                # Phase 4 / D-13 (degraded mode): with hooks declined there are no
+                # state files — the ONLY status signal is the bell (→waiting) and the
+                # contents-changed activity timestamp. On this tick, an agent terminal
+                # with NO activity for idle_minutes degrades to 'idle' (never 'ready'
+                # — D-13 has no ready state, and degraded mode never auto-suspends so
+                # 'idle' here is purely cosmetic). A 'waiting' bell hint is sticky and
+                # is NOT idle-aged.
+                if self._degraded:
+                    idle_after = self._att_config.idle_minutes * 60
+                    changed = False
+                    for t in terms:
+                        if t.kind != "agent" or t.status is None:
+                            continue
+                        if t.status == AgentStatus.WAITING.value:
+                            continue  # sticky bell hint — only activity clears it
+                        last = activity_ts.get(t.term_id)
+                        if (
+                            last is not None
+                            and idle_after > 0
+                            and (now - last) >= idle_after
+                            and t.status != AgentStatus.IDLE.value
+                        ):
+                            t.status = AgentStatus.IDLE.value
+                            t.status_ts = now
+                            changed = True
+                    if changed:
+                        self._refresh_status_ui(task)
+
+                # Phase 4 / RAM-04 (D-12, Pitfall 6): track when this task ENTERED a
+                # calm aggregate (ready/idle/ended) and evaluate auto-suspend. The
+                # aggregate is recomputed AFTER the status re-apply above so it
+                # reflects the freshest idle/staleness transitions. Degraded mode is
+                # excluded — it has no `ready` and killing on a coarse signal risks
+                # SIGKILL'ing a working agent (T-04-18).
+                agg = attention.aggregate_task(terms)
+                if agg in (AgentStatus.READY, AgentStatus.IDLE, AgentStatus.ENDED):
+                    calm_since.setdefault(task.task_id, now)
+                else:
+                    # running/waiting/None → reset; a real burst un-calms the task.
+                    calm_since.pop(task.task_id, None)
+                # 260616-buk decision (i): only the ACTIVE project auto-suspends (the
+                # shared hibernate body is active-bundle-bound). Background calm
+                # tracking still advances above so a switched-to task suspends promptly.
+                if (
+                    is_active_proj
+                    and not self._degraded
+                    and attention.should_autosuspend(
+                        agg,
+                        calm_since.get(task.task_id),
+                        now,
+                        self._att_config.auto_suspend_minutes,
+                    )
+                ):
+                    to_suspend.append(task)
 
         # Suspend AFTER the iteration (each suspend drops layouts/widgets/maps and
         # rebuilds the sidebar — never mutate while iterating the store snapshot).
@@ -4829,10 +4933,21 @@ class ArduisWindow(Adw.ApplicationWindow):
         it can ever be unlinked — T-04-16). Also drops the per-terminal notification
         handle so a stale Notification is not reused after teardown.
         """
+        # 260616-buk (finding #6): derive paths + pop maps with the task's OWNING
+        # project root, not the active root. At app-exit (_on_close_request) this
+        # method runs for EVERY project's tasks; the active-root _proj_term_id would
+        # unlink the WRONG path and leave the background task's record stuck in its
+        # bundle. Resolve the owner; fall back to the active root for the bootstrap /
+        # not-yet-registered case (behavior unchanged for active-project tasks).
+        owner = self._project_for_task(task)
+        root = owner.root if owner is not None else self._project_root
+        bundle = self._bundle_for(owner) if owner is not None else self._m()
+        record_by_state_file = bundle["record_by_state_file"]
+        notif_by_tid = bundle["notif_by_tid"]
         for record in self._all_task_terminals(task):
             # A3: unlink + drop the SAME project-namespaced path registered at spawn.
             path = attention.state_file_path(
-                self._status_dir, self._proj_term_id(record.term_id)
+                self._status_dir, self._proj_term_id_for(root, record.term_id)
             )
             try:
                 os.unlink(path)
@@ -4840,20 +4955,26 @@ class ArduisWindow(Adw.ApplicationWindow):
                 pass
             except OSError:
                 pass
-            self._record_by_state_file.pop(path, None)
-            self._notif_by_tid.pop(record.term_id, None)
+            record_by_state_file.pop(path, None)
+            notif_by_tid.pop(record.term_id, None)
 
-    def _clear_repo_state_files(self, repo) -> None:
+    def _clear_repo_state_files(self, repo, root: str | None = None) -> None:
         """Delete ONLY a closed repo's terminal state files (D-10 scoped, Pitfall 5b).
 
         Used by close-repo: the task-level pair's agents keep running (their state
         files stay live), so only the repo's own ``terminals`` are cleared. Same
         status-dir-only path composition as ``_clear_task_state_files`` (T-04-16).
+
+        260616-buk (finding #6): ``root`` lets the caller name the OWNING project's
+        root explicitly; it defaults to the active root (the only close-repo path
+        today acts on the active project's task — behavior unchanged).
         """
+        if root is None:
+            root = self._project_root
         for record in repo.terminals:
             # A3: unlink + drop the SAME project-namespaced path registered at spawn.
             path = attention.state_file_path(
-                self._status_dir, self._proj_term_id(record.term_id)
+                self._status_dir, self._proj_term_id_for(root, record.term_id)
             )
             try:
                 os.unlink(path)
