@@ -1,10 +1,11 @@
 ---
 phase: 3
 slug: parallel-worktrees-sidebar-ram-groundwork
-status: draft
-nyquist_compliant: false
-wave_0_complete: false
+status: validated
+nyquist_compliant: true
+wave_0_complete: true
 created: 2026-06-09
+validated: 2026-06-15
 ---
 
 # Phase 3 — Validation Strategy
@@ -42,20 +43,27 @@ created: 2026-06-09
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| 3-01-01 | 01 | 0 | LAYOUT-01 | — | N/A | unit | `python -m pytest tests/test_layout.py -q` | ❌ W0 | ⬜ pending |
-| 3-01-02 | 01 | 0 | RAM-03 | — | N/A | unit | `python -m pytest tests/test_resource_monitor.py -q` | ❌ W0 | ⬜ pending |
-| 3-01-03 | 01 | 0 | RAM-02 | — | N/A | unit | `python -m pytest tests/test_caps.py -q` | ❌ W0 | ⬜ pending |
+| 3-01-01 | 01 | 0 | LAYOUT-01, PAR-01, PAR-02 | — | N/A | unit | `python -m pytest tests/test_layout.py -q` (9 tests) | ✅ | ✅ green |
+| 3-01-02 | 01 | 0 | RAM-03 | — | N/A | unit | `python -m pytest tests/test_resource_monitor.py -q` (6 tests) | ✅ | ✅ green |
+| 3-01-03 | 01 | 0 | RAM-02 | — | N/A | unit | `python -m pytest tests/test_caps.py -q` (9 tests) | ✅ | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
+
+> **Post-execution reconcile (2026-06-15):** All three Wave-0 test files were created during
+> execution and pass green (24 tests total). `tests/test_layout.py::test_focus_or_swap`
+> additionally covers **PAR-02** (sidebar focus-or-swap), which was originally scoped as
+> manual-only — automatable coverage exceeded the plan. The GTK-free seams (layout tree,
+> /proc RSS parsing including the comm-with-parens parse trap, cap union across projects) are
+> fully sampled. Only true live-GTK/display/keyboard behaviors remain manual (below).
 
 ---
 
 ## Wave 0 Requirements
 
-- [ ] `tests/test_layout.py` — binary split/leaf tree mutations (split focused, close+collapse parent, visible-leaf set) for LAYOUT-01, PAR-01
-- [ ] `tests/test_resource_monitor.py` — `/proc/<pid>/smaps_rollup` + `statm` parsing, process-group enumeration via pgid, comm-with-parens parse trap fixture for RAM-03
-- [ ] `tests/test_caps.py` — active-agent cap policy (at-cap detection, prompt-to-hibernate trigger) for RAM-02
-- [ ] Existing `tests/` infrastructure (session, spawn argv, theme, host_runner) covers the reused seams
+- [x] `tests/test_layout.py` — binary split/leaf tree mutations (split focused, close+collapse parent, visible-leaf set) for LAYOUT-01, PAR-01, PAR-02
+- [x] `tests/test_resource_monitor.py` — `/proc/<pid>/smaps_rollup` + `statm` parsing, process-group enumeration via pgid, comm-with-parens parse trap fixture for RAM-03
+- [x] `tests/test_caps.py` — active-agent cap policy (at-cap detection, prompt-to-hibernate trigger, union across projects) for RAM-02
+- [x] Existing `tests/` infrastructure (session, spawn argv, theme, host_runner) covers the reused seams
 
 *The GTK-free seams are the Nyquist sampling surface; the planner must create these Wave 0 test files before the implementation tasks that depend on them.*
 
@@ -75,11 +83,26 @@ created: 2026-06-09
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 10s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references
+- [x] No watch-mode flags
+- [x] Feedback latency < 10s
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** validated 2026-06-15 (post-execution reconcile)
+
+---
+
+## Validation Audit 2026-06-15
+
+| Metric | Count |
+|--------|-------|
+| Gaps found | 0 (all Wave-0 tests created during execution) |
+| Resolved | 3 task rows reconciled to ✅ green (24 tests) |
+| Escalated | 0 |
+
+No MISSING automated gaps — the auditor was not needed. The VALIDATION.md was stale (drafted
+at plan-time, never reconciled after execution shipped the Wave-0 tests). Reconciled the
+per-task map, Wave-0 checklist, and sign-off to reflect the green automated surface. PAR-02
+coverage (`test_focus_or_swap`) promoted from manual-only to automated.
