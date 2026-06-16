@@ -61,4 +61,24 @@ processes orphan. The container teardown already uses synchronous `subprocess.ru
 sleep if a pgid is still alive?).
 
 ## Fixed this session
-See quick task(s) following this doc. All fixes shipped with regression tests; full suite green.
+See quick task(s) following this doc. All fixes shipped with regression tests; full suite green
+(437 -> 448, 11 new tests).
+
+- #1, #2, #3 -> quick 260615-trz
+- #5 -> quick 260615-tzk
+- #4, #6 -> quick 260616-buk
+- #7 -> deferred (non-issue for v1: arduis writes no root-level scalar TOML keys)
+
+## Adversarial verification of the attention fix (260616-buk / commit a6ff97f)
+A focused code-reviewer re-examined the 313-line attention diff for regressions. **Result: no
+high-confidence regressions; active-project path confirmed byte-identical.** Verified: single-project
+`registry.all()` lookup == old active-bundle property; `_proj_term_id` delegation is identical for
+active callers; `_poll_ram` `to_suspend` is correctly active-only (identity check); `_project_for_task`
+identity match is sound; SHA1 owning-root namespacing is collision-free; no O(N) blowup; no stale
+reference between ticks (GLib serializes callbacks; `registry.all()` re-read each tick).
+
+**Latent (non-triggerable) note — not a live bug:** `_clear_repo_state_files` pops from the ACTIVE
+bundle's `record_by_state_file`/`notif_by_tid` regardless of its `root` param. Its only caller passes
+the default (active) root and is gated to ACTIVE tasks, so no wrong-bundle pop is reachable today. If a
+future caller ever passes a non-active root, switch it to the owning bundle (mirror the
+`_clear_task_state_files` pattern). Left unchanged to avoid an untested edit to teardown code.
