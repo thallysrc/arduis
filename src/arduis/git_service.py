@@ -24,7 +24,7 @@ from __future__ import annotations
 import gi
 
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gio  # noqa: E402
+from gi.repository import GLib, Gio  # noqa: E402
 
 from arduis.host_runner import HostRunner  # noqa: E402
 
@@ -51,15 +51,25 @@ def run_git_async(
     """
     wrapped = (runner or HostRunner()).wrap_argv(argv)  # route through the seam
     flags = Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
-    if cwd is None:
-        proc = Gio.Subprocess.new(wrapped, flags)
-    else:
-        launcher = Gio.SubprocessLauncher.new(flags)
-        launcher.set_cwd(cwd)
-        proc = launcher.spawnv(wrapped)
+    try:
+        if cwd is None:
+            proc = Gio.Subprocess.new(wrapped, flags)
+        else:
+            launcher = Gio.SubprocessLauncher.new(flags)
+            launcher.set_cwd(cwd)
+            proc = launcher.spawnv(wrapped)
+    except GLib.Error as exc:
+        # Spawn can raise (missing exe, deleted cwd when a worktree concluded
+        # mid-flight). Surface it through on_done so the UI never hangs waiting.
+        on_done(-1, "", str(exc))
+        return
 
     def _cb(p, res):
-        ok, out, err = p.communicate_utf8_finish(res)
+        try:
+            ok, out, err = p.communicate_utf8_finish(res)
+        except GLib.Error as exc:
+            on_done(-1, "", str(exc))
+            return
         on_done(p.get_exit_status(), out or "", err or "")
 
     proc.communicate_utf8_async(None, None, _cb)

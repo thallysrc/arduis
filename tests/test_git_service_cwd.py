@@ -93,3 +93,34 @@ def test_run_git_async_cwd_runs_child_in_that_dir():
         assert result["rc"] == 0, result.get("err")
         # The child resolved the TEMP repo, proving it ran in cwd (not the test's).
         assert os.path.realpath(result["out"].strip()) == repo
+
+
+def test_run_git_async_missing_cwd_calls_on_done_not_raises():
+    """Finding #1: a deleted/non-existent cwd must NOT escape into the GLib loop.
+
+    Spawning with a cwd that no longer exists (a worktree concluded mid-flight)
+    makes ``launcher.spawnv`` raise ``GLib.Error``. The guard must catch it and
+    call ``on_done`` exactly once with a non-zero status, so the UI never hangs
+    waiting for a callback that otherwise never fires.
+    """
+    calls: list = []
+
+    def _on_done(rc, out, err):
+        calls.append((rc, out, err))
+
+    missing = "/nonexistent/arduis-xyz-does-not-exist"
+    assert not os.path.exists(missing)
+
+    # Must NOT raise — the GLib.Error is caught and surfaced via on_done.
+    run_git_async(
+        ["git", "rev-parse", "--show-toplevel"], _on_done, cwd=missing,
+    )
+
+    # on_done fires synchronously on the spawn-failure path (no async needed),
+    # but drive the loop briefly in case the platform defers it.
+    if not calls:
+        _drive_until(lambda: bool(calls))
+
+    assert len(calls) == 1, f"on_done must fire exactly once, got {calls}"
+    rc, out, err = calls[0]
+    assert rc != 0, "spawn failure must report a non-zero status"
