@@ -104,8 +104,18 @@ None yet.
 |---|-------------|------|--------|-----------|
 | 260615-t37 | Fix _reconcile_orphans cross-project scope (cosmetic false-positive orphan toast) | 2026-06-15 | c1751f4 | [260615-t37-fix-reconcile-orphans-cross-project-scop](./quick/260615-t37-fix-reconcile-orphans-cross-project-scop/) |
 
+### Validation Reconcile (2026-06-15)
+
+Autonomous session reconciled **all phase VALIDATION.md files to `nyquist_compliant: true`**
+(except 03.3, superseded by 03.4). The docs were stale plan-time drafts / unfilled templates;
+the phases had shipped with passing tests that were never reflected in the validation contracts.
+Each was verified against the live suite (437 passing) with genuine requirement→test mappings,
+not rubber-stamped. Live-GTK / display / keyboard / real-hardware behaviors remain correctly
+classified Manual-Only (tracked in the per-phase *-HUMAN-UAT.md) and do not block compliance.
+DIST-04 (hardware launch) stays manual-only/PO-accepted. Commits: 3e9eb05, aa2dcda, 28d7c90, d118411.
+
 ## Session Continuity
 
 Last session: 2026-06-15T23:30:17.674Z
-Stopped at: Phase 9 automated gate green (5/5 plans, .deb builds+lints); awaiting hardware UAT on real Ubuntu+Arch (DIST-04)
-Resume with: phase verification for Phase 02 (orchestrator owns this next)
+Stopped at: All phase validations nyquist-compliant; cosmetic _reconcile_orphans bug fixed (260615-t37). Remaining v1 debt is human/hardware-gated (live UATs, DIST-04) or PO-gated (v2 scope, milestone archival via /gsd-complete-milestone).
+Resume with: /gsd-complete-milestone (reconciles REQUIREMENTS.md traceability + archives v1.0 — needs PO to define v2 scope)
