@@ -303,10 +303,11 @@ def test_close_request_tears_down_all_projects(monkeypatch):
     """D-11: app-exit tears down EVERY project's tasks with per-project compose argv.
 
     Two projects, EACH a distinct compose project_name/compose_path and EACH one
-    live isolated task. After _on_close_request, assert (a) _teardown_session_terminals
-    fired ONCE PER TASK across BOTH projects (2 calls, not 1), and (b) the compose-down
-    channel ran TWICE with TWO DISTINCT per-project names — a bug reusing the active
-    project's name for all would produce two identical names and fail (Pitfall 3).
+    live isolated task. After _on_close_request, assert (a) _teardown_session_terminals_now
+    (the close-path, no-GLib-timer variant — Finding #5) fired ONCE PER TASK across BOTH
+    projects (2 calls, not 1), and (b) the compose-down channel ran TWICE with TWO
+    DISTINCT per-project names — a bug reusing the active project's name for all would
+    produce two identical names and fail (Pitfall 3).
     """
     win = W.ArduisWindow.__new__(W.ArduisWindow)
     win._registry = ProjectRegistry()
@@ -331,8 +332,10 @@ def test_close_request_tears_down_all_projects(monkeypatch):
     win._registry.set_active("/ProjA")  # active project is A; B must STILL tear down
 
     teardowns, down_argvs = [], []
-    monkeypatch.setattr(win, "_teardown_session_terminals",
-                        lambda t: teardowns.append(t.task_id))
+    # Close path uses the no-timer variant (_teardown_session_terminals_now); it
+    # returns pgids that feed the synchronous sweep. Return [] so the sweep is a no-op.
+    monkeypatch.setattr(win, "_teardown_session_terminals_now",
+                        lambda t: teardowns.append(t.task_id) or [])
     monkeypatch.setattr(win, "_clear_task_state_files", lambda t: None)
     monkeypatch.setattr(W.subprocess, "run",
                         lambda argv, **k: down_argvs.append(argv) or None)

@@ -4732,6 +4732,64 @@ class ArduisWindow(Adw.ApplicationWindow):
         except ProcessLookupError:
             pass  # already gone
 
+    @staticmethod
+    def _teardown_pgid_now(pid: int) -> int | None:
+        """SIGHUP the child's process GROUP and RETURN its pgid (no timer).
+
+        Close-path variant of ``_teardown_pgid``: it does NOT schedule the GLib
+        ``SIGKILL`` sweep (the main loop ends the instant the last window closes, so
+        that timer would never fire → orphans). Instead it returns the pgid so the
+        caller can run a SYNCHRONOUS sweep (``_sync_sigkill_sweep``) after every group
+        has been SIGHUP'd. Returns ``None`` if the process is already gone.
+        """
+        try:
+            pgid = os.getpgid(pid)  # A1: don't assume pgid == pid
+            os.killpg(pgid, signal.SIGHUP)
+            return pgid
+        except ProcessLookupError:
+            return None  # already gone
+
+    @staticmethod
+    def _sync_sigkill_sweep(pgids, grace_ms: int = _SIGKILL_GRACE_MS) -> None:
+        """SYNCHRONOUS no-orphan sweep for the app-exit (close) path (D-13).
+
+        The GLib timer used by ``_teardown_pgid`` never fires on close (the main loop
+        ends with the window), so the close path SIGHUPs every group first, then calls
+        this. It:
+          - builds the live set (skips ``None`` from ``_teardown_pgid_now``);
+          - polls in short 50ms slices up to ``grace_ms``, dropping any group whose
+            ``killpg(pgid, 0)`` raises ``ProcessLookupError`` (it died on SIGHUP — the
+            common case → the loop exits early when the set empties, ~0 added latency);
+          - SIGKILLs every survivor after the grace window.
+        It NEVER raises out of close — ``ProcessLookupError``/``OSError`` are swallowed.
+        If the live set is empty up front it returns immediately (no sleep).
+        """
+        live = {p for p in pgids if p is not None}
+        if not live:
+            return  # common case: everything already gone / SIGHUP'd-and-dead
+        slice_ms = 50
+        waited = 0
+        while live and waited < grace_ms:
+            time.sleep(slice_ms / 1000.0)
+            waited += slice_ms
+            for pgid in list(live):
+                try:
+                    os.killpg(pgid, 0)  # probe: alive?
+                except ProcessLookupError:
+                    live.discard(pgid)  # died on SIGHUP — drop it
+                except OSError:
+                    live.discard(pgid)  # e.g. EPERM — can't manage it; stop tracking
+            if not live:
+                return  # early-exit: all gone → near-zero latency
+        # Grace window elapsed: SIGKILL every survivor (true SIGHUP-ignorers).
+        for pgid in live:
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass  # raced to death between probe and kill
+            except OSError:
+                pass  # never raise out of close
+
     def _teardown_session_terminals(self, task: Task) -> None:
         """Tear down EVERY terminal's process group of the task (Pitfall 3/4).
 
@@ -4743,6 +4801,23 @@ class ArduisWindow(Adw.ApplicationWindow):
         for t in self._all_task_terminals(task):
             if t.pid:
                 self._teardown_pgid(t.pid)
+
+    def _teardown_session_terminals_now(self, task: Task) -> list[int]:
+        """Close-path variant of ``_teardown_session_terminals`` (no GLib timer).
+
+        SIGHUPs every terminal group of the task via ``_teardown_pgid_now`` and
+        RETURNS the live pgids so the close handler can run one combined synchronous
+        ``_sync_sigkill_sweep`` after ALL groups are SIGHUP'd (so every group gets the
+        full grace window in parallel, not serially). Mirrors the hibernate/conclude
+        variant exactly except for the no-timer SIGHUP + pgid return.
+        """
+        pgids: list[int] = []
+        for t in self._all_task_terminals(task):
+            if t.pid:
+                pgid = self._teardown_pgid_now(t.pid)
+                if pgid is not None:
+                    pgids.append(pgid)
+        return pgids
 
     def _clear_task_state_files(self, task: Task) -> None:
         """Delete a task's per-terminal state files + their map entries (Pitfall 5b).
@@ -4800,8 +4875,17 @@ class ArduisWindow(Adw.ApplicationWindow):
         if self._status_monitor is not None:
             self._status_monitor.cancel()
             self._status_monitor = None
+        # CLOSE PATH ONLY: the GLib SIGKILL timer never fires here (the main loop
+        # ends the instant the last window closes), so a timer-based sweep would leave
+        # any SIGHUP-ignoring group orphaned — violating the "no orphans" hard
+        # acceptance bar. Collect every group's pgid, SIGHUP them ALL first
+        # (_teardown_pgid_now), then run ONE synchronous sweep so each group gets the
+        # full grace window in parallel (not serially). The hibernate/conclude paths
+        # keep the timer variant (their loop stays alive). Everything that dies on
+        # SIGHUP adds ~0 latency (the sweep early-exits when the live set empties).
+        pgids: list[int] = []
         if self._shell_pid:
-            self._teardown_pgid(self._shell_pid)
+            pgids.append(self._teardown_pgid_now(self._shell_pid))
         # D-11/D-13: tear down EVERY terminal group of EVERY session of EVERY OPEN
         # PROJECT (no cross-project orphans — RESEARCH Pitfall 3). The old loop
         # iterated only the active store (self._store.all()), orphaning background
@@ -4810,8 +4894,10 @@ class ArduisWindow(Adw.ApplicationWindow):
         # each task's state files so none linger past the window (Pitfall 5b).
         for project in self._registry.all():
             for session in project.store.all():
-                self._teardown_session_terminals(session)
+                pgids.extend(self._teardown_session_terminals_now(session))
                 self._clear_task_state_files(session)
+        # All groups SIGHUP'd → one combined synchronous SIGKILL sweep (never raises).
+        self._sync_sigkill_sweep(pgids)
         # Phase 7 (D-11, D-12, CONT-05, Pitfall 7): tear down every enabled task's
         # container stack at app-exit as a SEPARATE loop from the killpg teardown
         # above — never conflated. Iterate ALL projects; each enabled task's
