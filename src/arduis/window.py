@@ -1912,7 +1912,9 @@ class ArduisWindow(Adw.ApplicationWindow):
             if not isinstance(projects, list):
                 return
             live = {
-                compose.sanitize_project_name(t.branch) for t in self._store.all()
+                compose.sanitize_project_name(t.branch)
+                for p in self._registry.all()
+                for t in p.store.all()
             }
             orphans = [
                 p.get("Name", "")
