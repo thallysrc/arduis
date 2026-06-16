@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-06-08)
 Phase: 09
 Plan: Not started
 Status: Executing Phase 09
-Last activity: 2026-06-15
+Last activity: 2026-06-15 - Completed quick task 260615-t37: fix _reconcile_orphans cross-project scope
 
 Progress: [██████░░░░] 60%
 
@@ -97,6 +97,12 @@ None yet.
 - Phase 7 (research flag): compose isolation edge cases + snap-docker-on-Ubuntu behavior (docker runs on host directly).
 - ~~Uncommitted D1 draft / obsolete Flatpak manifest~~ **RESOLVED in Phase 1:** draft refactored into `src/arduis/{main,window}.py` (thin `src/main.py` shim kept, no `flatpak-spawn`); `data/*` committed; `io.github.thallys.Arduis.yml` + `dev.sh` deleted; native `run.sh` added (backups in `/tmp/arduis-untracked-bak/`).
 - `CLAUDE.md` tech-stack section rewritten native-first (2026-06-08) — Flatpak/bundling contradiction resolved.
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 260615-t37 | Fix _reconcile_orphans cross-project scope (cosmetic false-positive orphan toast) | 2026-06-15 | c1751f4 | [260615-t37-fix-reconcile-orphans-cross-project-scop](./quick/260615-t37-fix-reconcile-orphans-cross-project-scop/) |
 
 ## Session Continuity
 
