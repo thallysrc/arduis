@@ -392,3 +392,59 @@ def test_switch_to_unseeded_project_seeds_its_main_shell(monkeypatch):
     # Switching back to the already-seeded A does NOT respawn (no double shell).
     win._switch_project("/tmp/A")
     assert seeded == ["/tmp/B"]
+
+
+def test_reconcile_orphans_cross_project(monkeypatch):
+    """_reconcile_orphans must scope ``live`` across ALL projects, not just the active store.
+
+    Regression for the cosmetic v1.0 gap: a background project's compose stack was
+    wrongly flagged as an orphan because ``live`` was built from ``self._store.all()``
+    (the ACTIVE project only) instead of every registered project's tasks.
+    Audit ref: gaps.integration[reconcile-orphans-scope], window.py:1914.
+
+    Drives the REAL ``_reconcile_orphans``/``_on_ls`` path: ``run_compose_async`` is
+    stubbed to invoke the callback synchronously with a controlled ``docker compose ls``
+    payload, and the toast is captured. With the bug, ``feat/alpha`` (background project)
+    would surface as an orphan; with the fix, only the truly-unmatched stack does.
+    """
+    win = W.ArduisWindow.__new__(W.ArduisWindow)
+    win._registry = ProjectRegistry()
+    win._runner = W.HostRunner()
+    win._docker_available = True
+
+    proj_a = _project_with_tasks("/A", [_active_task("feat/alpha")])
+    proj_b = _project_with_tasks("/B", [_active_task("feat/beta")])
+    win._registry.add(proj_a)
+    win._registry.add(proj_b)
+    win._registry.set_active("/B")
+    # _store is the ACTIVE project's store — the bug reads only this.
+    win._store = win._registry.active().store
+
+    # docker compose ls payload: both projects' stacks + one true orphan.
+    ls_payload = [
+        {"Name": compose.sanitize_project_name("feat/alpha"), "Status": "running(1)"},
+        {"Name": compose.sanitize_project_name("feat/beta"), "Status": "running(1)"},
+        {"Name": compose.sanitize_project_name("feat/gamma"), "Status": "running(1)"},
+        {"Name": "unrelated-stack", "Status": "running(1)"},  # non-arduis: ignored
+    ]
+    import json as _json
+
+    def _fake_run_compose_async(argv, on_done, runner=None):
+        on_done(0, _json.dumps(ls_payload), "")
+
+    monkeypatch.setattr(W.docker_service, "run_compose_async", _fake_run_compose_async)
+
+    toasts = []
+    monkeypatch.setattr(win, "_toast", lambda msg: toasts.append(msg))
+
+    win._reconcile_orphans()
+
+    # Exactly one toast, naming exactly the gamma stack — alpha (background project)
+    # and beta (active) are both live; the non-arduis stack is ignored.
+    assert len(toasts) == 1
+    gamma = compose.sanitize_project_name("feat/gamma")
+    alpha = compose.sanitize_project_name("feat/alpha")
+    assert gamma in toasts[0]
+    assert alpha not in toasts[0]          # the background project is NOT an orphan
+    assert "unrelated-stack" not in toasts[0]
+    assert "1 stack" in toasts[0]          # exactly one orphan reported
