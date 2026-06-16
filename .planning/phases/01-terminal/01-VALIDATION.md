@@ -1,10 +1,11 @@
 ---
 phase: 1
 slug: terminal
-status: draft
-nyquist_compliant: false
-wave_0_complete: false
+status: validated
+nyquist_compliant: true
+wave_0_complete: true
 created: 2026-06-08
+validated: 2026-06-15
 ---
 
 # Phase 1 — Validation Strategy
@@ -42,12 +43,12 @@ created: 2026-06-08
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| TBD | TBD | 0 | TERM-01 | — | Test infra present | infra | `python3 -m pytest --version` | ❌ W0 | ⬜ pending |
-| TBD | TBD | — | TERM-01 | — | `os.waitstatus_to_exitcode` decodes exit 0 / 42 / SIGINT → 0 / 42 / -2 | unit | `pytest tests/test_exit_decode.py -x` | ❌ W0 | ⬜ pending |
-| TBD | TBD | — | TERM-01 | — | `HostRunner.wrap_argv`/`wrap_env` identity on native | unit | `pytest tests/test_host_runner.py::test_native_noop -x` | ❌ W0 | ⬜ pending |
-| TBD | TBD | — | TERM-01 | — | `HostRunner` Flatpak branch stubbed/unreachable in v1 | unit | `pytest tests/test_host_runner.py::test_flatpak_stub -x` | ❌ W0 | ⬜ pending |
-| TBD | TBD | — | TERM-01 | — | Spawn argv = `["zsh","-l","-i"]` + `TERM=xterm-256color` | unit | `pytest tests/test_spawn_argv.py -x` | ❌ W0 | ⬜ pending |
-| TBD | TBD | — | TERM-01 | — | Dracula palette → 16 `Gdk.RGBA` entries (valid `set_colors` size) | unit | `pytest tests/test_theme.py -x` | ❌ W0 | ⬜ pending |
+| 1-infra | 01 | 0 | TERM-01 | — | Test infra present | infra | `python3 -m pytest --version` | ✅ | ✅ green |
+| 1-exit | 01 | — | TERM-01 | — | `os.waitstatus_to_exitcode` decodes exit 0 / 42 / SIGINT → 0 / 42 / -2 | unit | `pytest tests/test_exit_decode.py` (3) | ✅ | ✅ green |
+| 1-hr-noop | 01 | — | TERM-01 | — | `HostRunner.wrap_argv`/`wrap_env` identity on native | unit | `pytest tests/test_host_runner.py -k native_noop` (2) | ✅ | ✅ green |
+| 1-hr-stub | 01 | — | TERM-01 | — | `HostRunner` Flatpak branch stubbed/unreachable in v1 | unit | `pytest tests/test_host_runner.py -k flatpak_stub` (2) | ✅ | ✅ green |
+| 1-argv | 01 | — | TERM-01 | — | Spawn argv = `["zsh","-l","-i"]` + `TERM=xterm-256color` | unit | `pytest tests/test_spawn_argv.py` + `test_host_runner.py` argv tests | ✅ | ✅ green |
+| 1-theme | 01 | — | TERM-01 | — | Dracula palette → 16 `Gdk.RGBA` entries (valid `set_colors` size) | unit | `pytest tests/test_theme.py` (3) | ✅ | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -55,13 +56,13 @@ created: 2026-06-08
 
 ## Wave 0 Requirements
 
-- [ ] Install GTK4 VTE binding: `sudo apt install gir1.2-vte-3.91 libvte-2.91-gtk4-0` (also unblocks running the app at all — currently only GTK3 `Vte-2.91` typelib present)
-- [ ] Install pytest: `apt install python3-pytest` or venv `pip install pytest`
-- [ ] `pyproject.toml` / `pytest.ini` — pytest config + test discovery path
-- [ ] `tests/test_exit_decode.py` — TERM-01 exit/signal decode
-- [ ] `tests/test_host_runner.py` — native no-op + Flatpak-stub
-- [ ] `tests/test_spawn_argv.py` — argv/env assembly (requires GTK-free argv helper)
-- [ ] `tests/test_theme.py` — Dracula palette → 16 RGBA
+- [x] Install GTK4 VTE binding (dev env: `/tmp/arduis-venv` with `--system-site-packages`)
+- [x] Install pytest (venv `/tmp/arduis-venv/bin/python -m pytest`)
+- [x] pytest config + test discovery path
+- [x] `tests/test_exit_decode.py` — TERM-01 exit/signal decode
+- [x] `tests/test_host_runner.py` — native no-op + Flatpak-stub
+- [x] `tests/test_spawn_argv.py` — argv/env assembly (requires GTK-free argv helper)
+- [x] `tests/test_theme.py` — Dracula palette → 16 RGBA
 
 ---
 
@@ -79,11 +80,29 @@ created: 2026-06-08
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 10s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references
+- [x] No watch-mode flags
+- [x] Feedback latency < 10s
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** validated 2026-06-15 (post-execution reconcile)
+
+---
+
+## Validation Audit 2026-06-15
+
+| Metric | Count |
+|--------|-------|
+| Gaps found | 0 (all referenced tests created during execution) |
+| Resolved | 6 task rows reconciled to ✅ green |
+| Escalated | 0 |
+
+All TERM-01 automatable behaviors are covered by green tests: exit/signal decode (3),
+HostRunner native no-op + Flatpak-stub (4), spawn argv `zsh -l -i` + `TERM` (multiple in
+`test_spawn_argv.py`/`test_host_runner.py`), Dracula palette 16-entry/hex (3). The five
+manual-only items (live VTE rendering, PATH/shim resolution, interactive Ctrl+C/Ctrl+Z+fg,
+no-orphan window-close teardown, real-Wayland launch on Ubuntu 0.76 + Arch 0.84) remain
+genuine human/hardware acceptance — tracked in 01-HUMAN-UAT.md. VALIDATION.md was a stale
+plan-time draft; reconciled to reflect the shipped green surface.
