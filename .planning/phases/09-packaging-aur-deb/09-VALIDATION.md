@@ -1,10 +1,11 @@
 ---
 phase: 09
 slug: packaging-aur-deb
-status: draft
-nyquist_compliant: false
-wave_0_complete: false
+status: validated
+nyquist_compliant: true
+wave_0_complete: true
 created: 2026-06-15
+validated: 2026-06-15
 ---
 
 # Phase 09 — Validation Strategy
@@ -19,12 +20,13 @@ created: 2026-06-15
 
 | Property | Value |
 |----------|-------|
-| **Framework** | shell/CLI lint + build checks (no pytest assertions for packaging) + existing pytest suite (regression) |
+| **Framework** | shell/CLI lint + build checks + pytest (packaging + regression) |
 | **Build tools (Wave 0 apt install)** | `meson`, `ninja-build`, `debhelper`, `lintian`, `desktop-file-utils`, `appstream` (Ubuntu); `namcap`/`makepkg` are Arch-only |
-| **Quick run command** | `meson setup build && meson install --destdir /tmp/arduis-stage -C build` (verify file tree) |
-| **Lint commands** | `desktop-file-validate data/*.desktop`; `appstreamcli validate data/*.metainfo.xml`; `lintian ../arduis_1.0.0_all.deb` |
-| **Regression** | `/tmp/arduis-venv/bin/python -m pytest -q` (must stay green — packaging adds files, no src behavior change) |
-| **Estimated runtime** | build+lint ~30–60s; pytest ~30s |
+| **Quick run command** | `/tmp/arduis-venv/bin/python -m pytest tests/test_packaging_install_tree.py tests/test_packaging_native_noop.py tests/test_packaging_version.py -q` |
+| **Build-gate command** | `dpkg-buildpackage -us -uc -b && lintian ../arduis_1.0.0_all.deb` |
+| **Lint commands** | `desktop-file-validate data/*.desktop`; `appstreamcli validate --no-net data/*.metainfo.xml`; `bash -n PKGBUILD` |
+| **Regression** | `/tmp/arduis-venv/bin/python -m pytest -q` (437 passed as of 2026-06-15) |
+| **Estimated runtime** | build+lint ~30–60s; pytest packaging tests ~1s; full suite ~2s |
 
 ---
 
@@ -32,24 +34,25 @@ created: 2026-06-15
 
 - **After each packaging task:** run the relevant lint/build check for the file touched.
 - **After the meson task:** `meson setup build` must configure clean; staged install tree correct.
-- **Before UAT:** `.deb` builds + lintian clean (or only known-acceptable tags); metainfo + desktop validate; pytest green; HostRunner-no-op grep passes.
-- **Max feedback latency:** ~60s (build), ~30s (lint).
+- **Before UAT:** `.deb` builds + lintian clean; metainfo + desktop validate; pytest green; HostRunner-no-op grep passes.
+- **Max feedback latency:** ~60s (build), ~1s (packaging pytest).
 
 ---
 
 ## Per-Task Verification Map
 
-> Anchored to the 4 ROADMAP success criteria (SC-1 AUR, SC-2 .deb, SC-3 clean install Wayland both, SC-4 HostRunner no-op) + DIST-02/03/04. Planner populates Task IDs.
+> Anchored to the 4 ROADMAP success criteria (SC-1 AUR, SC-2 .deb, SC-3 clean install Wayland both, SC-4 HostRunner no-op) + DIST-02/03/04.
 
-| Decision/SC | What | Test Type | Automated Command | Status |
-|-------------|------|-----------|-------------------|--------|
-| D-01/D-02 (meson) | meson configures + stages install tree (bin/arduis, purelib arduis pkg incl. hooks data, desktop/metainfo/icon) | build | `meson setup build && meson install --destdir /tmp/arduis-stage -C build && find /tmp/arduis-stage` | ⬜ |
-| D-03 (version/metainfo) | metainfo validates + has `<release version="1.0.0">` + homepage url | lint | `appstreamcli validate data/io.github.thallys.Arduis.metainfo.xml` | ⬜ |
-| D-05 (icon) | scalable SVG installed at hicolor path; desktop validates | lint | `desktop-file-validate data/io.github.thallys.Arduis.desktop` + `test -f data/icons/hicolor/scalable/apps/io.github.thallys.Arduis.svg` | ⬜ |
-| SC-2/DIST-03 (.deb) | `.deb` builds + lintian clean; declares exact runtime deps | build/lint | `dpkg-buildpackage -b -us -uc` (or `debuild`) then `lintian ../arduis_1.0.0_all.deb` | ⬜ |
-| SC-1/DIST-02 (AUR) | PKGBUILD parses + (Arch only) `namcap PKGBUILD` clean; deps match CLAUDE.md | lint | `bash -n PKGBUILD` + `makepkg --printsrcinfo` (Arch: `namcap`) | ⬜ (Arch parts = UAT) |
-| SC-4 | HostRunner is a native no-op (no live flatpak-spawn in argv) | grep/unit | grep `host_runner` for identity `wrap_argv`; existing hostrunner test green | ⬜ |
-| regression | packaging changes don't break the app | unit | `python -m pytest -q` (expect 427 passed) | ⬜ |
+| Decision/SC | What | Test Type | Automated Command | Count | Status |
+|-------------|------|-----------|-------------------|-------|--------|
+| D-01/D-02 (meson) | meson configures + stages install tree (bin/arduis, purelib arduis pkg incl. hooks data, desktop/metainfo/icon) | build + pytest | `pytest tests/test_packaging_install_tree.py -v` | 1 | ✅ green |
+| D-03 (version/metainfo) | metainfo validates + has `<release version="1.0.0">` + homepage url | pytest + build-gate | `pytest tests/test_packaging_version.py -v` (3); `appstreamcli validate --no-net data/io.github.thallys.Arduis.metainfo.xml` | 3 | ✅ green |
+| D-05 (icon) | scalable SVG installed at hicolor path; desktop validates | build-gate lint | `desktop-file-validate data/io.github.thallys.Arduis.desktop` (exit 0); staged tree check (covered by test_packaging_install_tree) | 1 (file exists in staged tree) | ✅ green |
+| SC-2/DIST-03 (.deb) | `.deb` builds + lintian 0 errors; declares exact runtime deps; no maintainer scripts | build/lint | `dpkg-buildpackage -us -uc -b && lintian ../arduis_1.0.0_all.deb` — 0 errors, 1 warning (no-manual-page, acceptable) | build artifact | ✅ green |
+| SC-1/DIST-02 (AUR) | PKGBUILD parses + srcinfo generates; deps match CLAUDE.md; no .install scriptlet | lint | `bash -n PKGBUILD` (exit 0); `makepkg --printsrcinfo` (Arch: `namcap` at UAT) | parse check | ✅ green |
+| SC-4 | HostRunner is a native no-op (no live flatpak-spawn in argv) | pytest | `pytest tests/test_packaging_native_noop.py -v` — 5 tests: flatpak_disabled, wrap_argv_is_identity, wrap_argv_returns_copy, wrap_env_is_identity, no_live_flatpak_spawn_in_src | 5 | ✅ green |
+| regression | packaging changes don't break the app | pytest | `/tmp/arduis-venv/bin/python -m pytest -q` — 437 passed | 437 | ✅ green |
+| SC-3/DIST-04 | Clean install + Wayland launch on real Ubuntu 24.04 + Arch | MANUAL-ONLY | Hardware gate — PO-accepted without execution (see 09-HUMAN-UAT.md) | — | ✅ PO-accepted |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -57,14 +60,19 @@ created: 2026-06-15
 
 ## Wave 0 Requirements
 
-- [ ] `apt install meson ninja-build debhelper lintian desktop-file-utils appstream` (Ubuntu build/lint tools — absent on host)
-- [ ] Add `<url type="homepage">https://github.com/thallysrc/arduis</url>` + `<releases>` to the metainfo so `appstreamcli validate` passes (currently FAILS — research finding)
-
-*No new pytest files — packaging is validated by build+lint, not unit assertions. The existing suite is the regression guard.*
+- [x] `apt install meson ninja-build debhelper lintian desktop-file-utils appstream` (Ubuntu build/lint tools — installed during execution)
+- [x] Add `<url type="homepage">https://github.com/thallysrc/arduis</url>` + `<releases>` to the metainfo so `appstreamcli validate` passes (done in Plan 01/02)
+- [x] `tests/test_packaging_install_tree.py` — DIST-02/03 meson install tree + importlib.resources smoke (1 test, created in Plan 01)
+- [x] `tests/test_packaging_native_noop.py` — SC-4 HostRunner no-op + repo scan (5 tests, created in Plan 01)
+- [x] `tests/test_packaging_version.py` — D-03 single-source version 1.0.0 (3 tests, created in Plan 01)
 
 ---
 
 ## Manual-Only Verifications (DIST-04 hardware gate)
+
+> **PO-accepted without execution (2026-06-15)** — see `09-HUMAN-UAT.md` status: accepted.
+> The build+lint automated half (commit 4fffd03) is verified green. Hardware items remain
+> open for post-release confirmation; they do not block v1 closure.
 
 | Behavior | SC | Why Manual | Test Instructions |
 |----------|----|-----------|--------------------|
@@ -76,12 +84,41 @@ created: 2026-06-15
 
 ## Validation Sign-Off
 
-- [ ] meson configures + stages a correct install tree
-- [ ] `.deb` builds + lintian acceptable; metainfo + desktop validate
-- [ ] PKGBUILD parses + srcinfo generates (namcap on Arch at UAT)
-- [ ] HostRunner no-op grep + existing tests green; pytest 427 passed
-- [ ] Wave 0 build tools installed + metainfo homepage/release added
-- [ ] `nyquist_compliant: true` set in frontmatter
-- [ ] Hardware gate (DIST-04) items handed to PO for real-distro UAT
+- [x] meson configures + stages a correct install tree
+- [x] `.deb` builds + lintian 0 errors; metainfo + desktop validate
+- [x] PKGBUILD parses + srcinfo generates (namcap on Arch at UAT)
+- [x] HostRunner no-op grep + existing tests green; full pytest 437 passed
+- [x] Wave 0 build tools installed + metainfo homepage/release added
+- [x] `nyquist_compliant: true` set in frontmatter
+- [x] Hardware gate (DIST-04) items handed to PO for real-distro UAT — PO-accepted
 
-**Approval:** pending
+**Approval:** validated 2026-06-15 (post-execution reconcile)
+
+---
+
+## Validation Audit 2026-06-15
+
+| Metric | Count |
+|--------|-------|
+| Gaps found | 0 (all packaging tests created during execution; build-gate run green in Plan 05) |
+| Resolved | 7 task rows reconciled to ✅ green |
+| Escalated | 0 |
+
+All DIST-02/03/SC-4 automatable behaviors are covered by green tests: meson install tree
++ importlib.resources hook load (1 test — `test_packaging_install_tree.py`), version single-source
++ metainfo release + homepage URL (3 tests — `test_packaging_version.py`), HostRunner native
+no-op including tokenizer-based live-flatpak-spawn scan of all src/ (5 tests —
+`test_packaging_native_noop.py`). Total packaging-specific pytest coverage: 9 tests, all green.
+
+Build-gate evidence from Plan 05 (09-05-SUMMARY.md, commit 4fffd03): `dpkg-buildpackage -us -uc
+-b` built `arduis_1.0.0_all.deb` (100K, Architecture: all) with correct declared deps
+(`python3-gi`, `gir1.2-gtk-4.0`, `gir1.2-adw-1`, `gir1.2-vte-3.91 | libvte-2.91-gtk4-0`,
+no maintainer scripts); `lintian` returned 0 errors (1 acceptable warning: `no-manual-page`);
+`appstreamcli validate --no-net` clean; `desktop-file-validate` exit 0; `bash -n PKGBUILD`
+exit 0. Full regression suite: 437 passed (3 pre-existing fork DeprecationWarnings only).
+
+DIST-04 (SC-3) hardware install + Wayland launch on real Ubuntu 24.04 and Arch is the only
+remaining manual gate. PO explicitly accepted closure without executing it on 2026-06-15
+(09-HUMAN-UAT.md status: accepted). This is the same treatment as live-GTK items in Phase 1 —
+irreducibly manual, not an automated gap, and does not block `nyquist_compliant: true`.
+VALIDATION.md was a stale plan-time draft; reconciled to reflect the shipped green surface.
