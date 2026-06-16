@@ -132,6 +132,24 @@ def test_close_every_terminal_empties_the_tree():
     assert model.root is None
 
 
+def test_close_last_leaf_clears_focus_and_mru():
+    # Finding #2: closing the LAST pane (single-leaf root) must run the SAME
+    # cleanup as the non-root path — drop the dead id from MRU and reset
+    # focused_id — not early-return and leave stale references behind.
+    model = LayoutModel()
+    model.root = LeafNode("solo")
+    model.focused_id = "solo"
+    model.touch("solo")
+    assert "solo" in model.mru_order()
+
+    model.close_leaf("solo")
+
+    assert model.root is None
+    assert model.focused_id is None
+    assert "solo" not in model.mru_order()
+    assert model.visible_ids() == []
+
+
 def test_layout_is_gtk_free():
     # the domain module must not import gi (mirror test_session pattern).
     with open(layout.__file__, encoding="utf-8") as fh:

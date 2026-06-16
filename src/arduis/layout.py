@@ -69,8 +69,10 @@ class LayoutModel:
         if isinstance(self.root, LeafNode):
             if self.root.session_id == session_id:
                 self.root = None
-            return
-        self.root = self._remove_from(self.root, session_id)
+            # Fall through to the shared cleanup so closing the LAST pane also
+            # drops the dead id from _mru and resets focused_id (no early return).
+        else:
+            self.root = self._remove_from(self.root, session_id)
         if self._mru and session_id in self._mru:
             self._mru.remove(session_id)
         if self.focused_id == session_id:
