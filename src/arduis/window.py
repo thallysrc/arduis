@@ -764,13 +764,19 @@ class ArduisWindow(Adw.ApplicationWindow):
                 self._css_provider,
                 Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
             )
-        for term in self._term_by_sid.values():
-            term.set_colors(
-                _rgba(theme.fg),
-                _rgba(theme.bg),
-                [_rgba(c) for c in theme.palette],
-            )
-            term.set_color_cursor(_rgba(theme.cursor))
+        # Re-color EVERY live terminal across ALL projects, not just the active
+        # bundle (Finding #3): a background project's unparented terminals would
+        # otherwise keep the old palette until switch-back. Same bug class as the
+        # active-only scoping fixed in _reconcile_orphans (quick task 260615-t37).
+        for proj in self._registry.all():
+            bundle = self._bundle_for(proj)
+            for term in bundle["term_by_sid"].values():
+                term.set_colors(
+                    _rgba(theme.fg),
+                    _rgba(theme.bg),
+                    [_rgba(c) for c in theme.palette],
+                )
+                term.set_color_cursor(_rgba(theme.cursor))
         self._current_theme = theme
 
     def _on_set_theme(self, _action, param) -> None:

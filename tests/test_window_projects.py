@@ -448,3 +448,59 @@ def test_reconcile_orphans_cross_project(monkeypatch):
     assert alpha not in toasts[0]          # the background project is NOT an orphan
     assert "unrelated-stack" not in toasts[0]
     assert "1 stack" in toasts[0]          # exactly one orphan reported
+
+
+# --- Finding #3: theme switch must re-color EVERY project's terminals --------
+
+class _StubTerm:
+    """A GTK-free stand-in for Vte.Terminal recording the recolor calls."""
+
+    def __init__(self):
+        self.colors_calls = 0
+        self.cursor_calls = 0
+
+    def set_colors(self, fg, bg, palette):  # noqa: D401 - mimic Vte signature
+        self.colors_calls += 1
+
+    def set_color_cursor(self, cursor):
+        self.cursor_calls += 1
+
+
+def test_apply_theme_recolors_terminals_in_all_projects():
+    """Finding #3: _apply_theme must recolor terminals across ALL registered
+    projects, not just the active bundle — a background project's live terminals
+    must NOT keep the old palette after a theme switch.
+
+    Headless: a bare window via __new__ with _display=None (skips the
+    add_provider_for_display call) and stub terminals (no Vte/display) registered
+    in two projects' bundles. The CssProvider build is pure (no display)."""
+    from arduis.themes import get_theme
+
+    win = W.ArduisWindow.__new__(W.ArduisWindow)
+    win._registry = ProjectRegistry()
+    win._bootstrap = Project(root="")
+    # No display: the provider-build runs (pure CSS string) but the
+    # add/remove_provider_for_display branches are skipped.
+    win._css_provider = None
+    win._display = None
+
+    # Two registered projects, ACTIVE + BACKGROUND, each with a live terminal.
+    active = Project(root="/proj/active", member_repos=["backend"])
+    background = Project(root="/proj/background", member_repos=["backend"])
+    win._registry.add(active)
+    win._registry.add(background)
+    win._registry.set_active("/proj/active")
+
+    active_term = _StubTerm()
+    bg_term = _StubTerm()
+    win._bundle_for(active)["term_by_sid"]["active:t0"] = active_term
+    win._bundle_for(background)["term_by_sid"]["bg:t0"] = bg_term
+
+    win._apply_theme(get_theme("nord"))
+
+    # BOTH projects' terminals were recolored — not just the active one.
+    assert active_term.colors_calls == 1
+    assert active_term.cursor_calls == 1
+    assert bg_term.colors_calls == 1, "background project's terminal was NOT recolored"
+    assert bg_term.cursor_calls == 1
+    assert win._current_theme.name == "nord"
