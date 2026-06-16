@@ -105,6 +105,7 @@ None yet.
 | 260615-t37 | Fix _reconcile_orphans cross-project scope (cosmetic false-positive orphan toast) | 2026-06-15 | c1751f4 | [260615-t37-fix-reconcile-orphans-cross-project-scop](./quick/260615-t37-fix-reconcile-orphans-cross-project-scop/) |
 | 260615-trz | Apply 3 high-confidence code-review fixes (git_service spawn guard, layout close_leaf, theme all-projects) | 2026-06-15 | 6c15306 | [260615-trz-apply-high-confidence-code-review-fixes-](./quick/260615-trz-apply-high-confidence-code-review-fixes-/) |
 | 260615-tzk | Fix orphan-on-close — synchronous SIGKILL sweep at app-exit (no-orphans criterion) | 2026-06-15 | 1b326ab | [260615-tzk-fix-orphan-on-close-synchronous-sigkill-](./quick/260615-tzk-fix-orphan-on-close-synchronous-sigkill-/) |
+| 260616-buk | Fix multi-project attention — surface background-project WAITING agents (notify + poll all projects; closes review #4 + #6) | 2026-06-16 | a6ff97f | [260616-buk-fix-multi-project-attention-surface-back](./quick/260616-buk-fix-multi-project-attention-surface-back/) |
 
 ### Validation Reconcile (2026-06-15)
 
@@ -118,6 +119,6 @@ DIST-04 (hardware launch) stays manual-only/PO-accepted. Commits: 3e9eb05, aa2dc
 
 ## Session Continuity
 
-Last session: 2026-06-15T23:30:17.674Z
-Stopped at: All phase validations nyquist-compliant; cosmetic _reconcile_orphans bug fixed (260615-t37). Remaining v1 debt is human/hardware-gated (live UATs, DIST-04) or PO-gated (v2 scope, milestone archival via /gsd-complete-milestone).
-Resume with: /gsd-complete-milestone (reconciles REQUIREMENTS.md traceability + archives v1.0 — needs PO to define v2 scope)
+Last session: 2026-06-16 (autonomous)
+Stopped at: All phase validations nyquist-compliant; autonomous code review (CODE-REVIEW-2026-06-15.md) findings #1–#6 all FIXED across quick tasks t37/trz/tzk/buk (#7 deferred — non-issue). Suite 437→448 (11 new regression tests). Remaining v1 debt is human/hardware-gated (8 live UATs, DIST-04 hardware launch) or PO-gated (v2 scope, milestone archival).
+Resume with: /gsd-complete-milestone (reconciles REQUIREMENTS.md traceability + archives v1.0 — needs PO to define v2 scope). Follow-up noted: project-aware _hibernate_task to enable background auto-suspend (260616-buk decision 1d).
