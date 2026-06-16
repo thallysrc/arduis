@@ -104,6 +104,7 @@ None yet.
 |---|-------------|------|--------|-----------|
 | 260615-t37 | Fix _reconcile_orphans cross-project scope (cosmetic false-positive orphan toast) | 2026-06-15 | c1751f4 | [260615-t37-fix-reconcile-orphans-cross-project-scop](./quick/260615-t37-fix-reconcile-orphans-cross-project-scop/) |
 | 260615-trz | Apply 3 high-confidence code-review fixes (git_service spawn guard, layout close_leaf, theme all-projects) | 2026-06-15 | 6c15306 | [260615-trz-apply-high-confidence-code-review-fixes-](./quick/260615-trz-apply-high-confidence-code-review-fixes-/) |
+| 260615-tzk | Fix orphan-on-close — synchronous SIGKILL sweep at app-exit (no-orphans criterion) | 2026-06-15 | 1b326ab | [260615-tzk-fix-orphan-on-close-synchronous-sigkill-](./quick/260615-tzk-fix-orphan-on-close-synchronous-sigkill-/) |
 
 ### Validation Reconcile (2026-06-15)
 
