@@ -224,6 +224,31 @@ headerbar {{
     font-size: 11px;
     opacity: 0.7;
 }}
+/* Adw.AlertDialog (libadwaita 1.5 floating sheet) themed like a card: the
+   visible surface is the `sheet` node; buttons live in `.response-area`
+   (`suggested`/`destructive` appearance classes); `dimming` is the backdrop. */
+dialog.alert sheet {{
+    background-color: {card};
+    color: {theme.fg};
+    border: 1px solid {border};
+    border-radius: 12px;
+}}
+dialog.alert sheet separator {{
+    background-color: {border};
+}}
+dialog.alert .response-area button {{
+    color: {theme.fg};
+    font-weight: 600;
+}}
+dialog.alert .response-area button.suggested {{
+    color: {theme.accent};
+}}
+dialog.alert .response-area button.destructive {{
+    color: {theme.palette[9]};
+}}
+dialog.alert dimming {{
+    background-color: alpha({canvas}, 0.55);
+}}
 .arduis-leaf.focus {{
     border-color: {theme.accent};
 }}
