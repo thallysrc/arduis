@@ -253,6 +253,18 @@ dialog.alert dimming {{
     border-color: {theme.accent};
     box-shadow: inset 0 0 0 1px {theme.accent};
 }}
+/* Attention beats focus (declared later, same specificity): a WAITING agent's
+   whole card rings in the attention color — visible from across the canvas. */
+.arduis-leaf.attention {{
+    border-color: {theme.dot_waiting};
+    box-shadow: inset 0 0 0 1px {theme.dot_waiting};
+}}
+.arduis-row-attention {{
+    background-color: alpha({theme.dot_waiting}, 0.14);
+}}
+.arduis-row-attention .arduis-row-branch {{
+    color: {theme.dot_waiting};
+}}
 .arduis-canvas {{
     border: none;
     background-color: {canvas};
@@ -457,11 +469,12 @@ class ArduisWindow(Adw.ApplicationWindow):
         # are project-namespaced on disk via project_term_id in Task 1c).
         self._status_monitor: Gio.FileMonitor | None = None
         # Main-workspace agent splits (task=None) have no TerminalRecord; their
-        # attention state is tracked window-globally: state-file path → pane-dot
-        # label (leaf widgets survive project switches unparented) and tid →
-        # path for cleanup on close. Keys are project-namespaced (_proj_term_id).
-        self._main_dot_by_state_file: dict[str, Gtk.Label] = {}
-        self._main_state_file_by_tid: dict[str, str] = {}
+        # attention state is tracked window-globally: state-file path → a small
+        # info dict {root, tid, dot, leaf, status}. Widget refs survive project
+        # switches (leaves are unparented, never destroyed); ``root`` scopes the
+        # sidebar main-row highlight to the OWNING project. Keys are
+        # project-namespaced state-file paths (_proj_term_id).
+        self._main_split_info: dict[str, dict] = {}
         # True in degraded mode (consent declined or settings unparseable) — Plan 04
         # surfaces the hint; here it is only the flag + marker logic. Window-global.
         self._degraded = False
@@ -1082,10 +1095,10 @@ class ArduisWindow(Adw.ApplicationWindow):
         bundle in the bootstrap/registry-empty case (degenerate launch, unchanged).
         """
         path = gfile.get_path()
-        # Main-workspace agent splits map straight to a pane dot (no record).
+        # Main-workspace agent splits map straight to their widgets (no record).
         # getattr guard: partially-constructed windows in unit tests route
         # events without running __init__.
-        main_map = getattr(self, "_main_dot_by_state_file", None)
+        main_map = getattr(self, "_main_split_info", None)
         if main_map is not None and path in main_map:
             self._apply_main_state_file(path)
             return
@@ -1134,15 +1147,16 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._maybe_notify(task, record, old, new.value, doc)
 
     def _apply_main_state_file(self, path: str) -> None:
-        """Flip a MAIN-workspace agent split's pane dot from its state file.
+        """Flip a MAIN-workspace agent split's widgets from its state file.
 
         These agents have no TerminalRecord (the main workspace has no store
-        Task), so liveness comes from the hook-written pid only and the status
-        drives the pane dot directly — there is no sidebar aggregate to update
-        (the pinned main row is not a task).
+        Task), so liveness comes from the hook-written pid only. The status
+        drives the pane dot, the card's attention ring, and — via
+        ``_refresh_main_row_attention`` — the pinned main row in the sidebar
+        (the user-visible alert while working inside another workspace).
         """
-        dot = self._main_dot_by_state_file.get(path)
-        if dot is None:
+        info = self._main_split_info.get(path)
+        if info is None:
             return
         doc = attention.read_state(path)
         if doc is None:
@@ -1159,8 +1173,46 @@ class ArduisWindow(Adw.ApplicationWindow):
         status = attention.effective_status(
             doc, time.time(), alive, self._att_config.idle_minutes * 60
         )
-        self._set_dot_class(dot, self._dot_css_for(status, True))
-        dot.set_visible(True)
+        info["status"] = status.value
+        dot = info.get("dot")
+        if dot is not None:
+            self._set_dot_class(dot, self._dot_css_for(status, True))
+            dot.set_visible(True)
+        leaf = info.get("leaf")
+        if leaf is not None:
+            if status == AgentStatus.WAITING:
+                leaf.add_css_class("attention")
+            else:
+                leaf.remove_css_class("attention")
+        self._refresh_main_row_attention()
+
+    def _refresh_main_row_attention(self) -> None:
+        """Light the pinned main row iff any ACTIVE-project main split WAITS.
+
+        The main workspace is not a store Task, so `_refresh_status_ui` never
+        touches its row — aggregate over `_main_split_info` instead, scoped to
+        the active project's root (a background project's waiting split must
+        not light the visible project's main row).
+        """
+        infos = getattr(self, "_main_split_info", None)
+        if infos is None:
+            return
+        root = self._project_root
+        waiting = any(
+            info.get("root") == root and info.get("status") == "waiting"
+            for info in infos.values()
+        )
+        row = getattr(self, "_row_by_sid", {}).get(_MAIN_SID)
+        if row is not None:
+            if waiting:
+                row.add_css_class("arduis-row-attention")
+            else:
+                row.remove_css_class("arduis-row-attention")
+        dot = self._dot_by_sid.get(_MAIN_SID)
+        if dot is not None:
+            self._set_dot_class(
+                dot, "arduis-dot-waiting" if waiting else "arduis-dot-active"
+            )
 
     def _pid_alive(self, record: TerminalRecord, doc) -> bool:
         """Liveness probe for the staleness sweep (Pitfall 5, T-04-17).
@@ -1202,20 +1254,35 @@ class ArduisWindow(Adw.ApplicationWindow):
         row_dot = self._dot_by_sid.get(task.task_id)
         if row_dot is not None:
             self._set_dot_class(row_dot, self._dot_css_for(aggregate, active))
+        # LOUD alert (user feedback 2026-07-01): a waiting aggregate highlights
+        # the whole sidebar row, not just the 8px dot. getattr guard: bare unit
+        # windows may not build a sidebar.
+        row = getattr(self, "_row_by_sid", {}).get(task.task_id)
+        if row is not None:
+            if active and aggregate == AgentStatus.WAITING:
+                row.add_css_class("arduis-row-attention")
+            else:
+                row.remove_css_class("arduis-row-attention")
 
-        # Each agent terminal's own pane-header dot reflects its individual status.
+        # Each agent terminal's own pane-header dot reflects its individual
+        # status; a WAITING agent additionally rings its whole card.
         for record in self._all_task_terminals(task):
             if record.kind != "agent":
-                continue
-            pane_dot = self._pane_dot_by_tid.get(record.term_id)
-            if pane_dot is None:
                 continue
             status = None
             if record.status is not None:
                 status = next(
                     (s for s in AgentStatus if s.value == record.status), None
                 )
-            self._set_dot_class(pane_dot, self._dot_css_for(status, active))
+            pane_dot = self._pane_dot_by_tid.get(record.term_id)
+            if pane_dot is not None:
+                self._set_dot_class(pane_dot, self._dot_css_for(status, active))
+            leaf = self._leaf_by_sid.get(record.term_id)
+            if leaf is not None:
+                if active and status == AgentStatus.WAITING:
+                    leaf.add_css_class("attention")
+                else:
+                    leaf.remove_css_class("attention")
 
     def _dot_css_for(self, status, active: bool) -> str:
         """Map (status, active) → the dot CSS class (plan_decisions D-06).
@@ -1540,10 +1607,15 @@ class ArduisWindow(Adw.ApplicationWindow):
         model.close_leaf(tid)
         self._leaf_by_sid.pop(tid, None)
         self._term_by_sid.pop(tid, None)
-        # Main-split attention tracking (no record): forget its state-file map.
-        main_state_file = self._main_state_file_by_tid.pop(tid, None)
-        if main_state_file is not None:
-            self._main_dot_by_state_file.pop(main_state_file, None)
+        # Main-split attention tracking (no record): forget its info entry and
+        # re-aggregate the main row (a closed waiting split must stop alerting).
+        stale = [
+            p for p, info in self._main_split_info.items() if info.get("tid") == tid
+        ]
+        for p in stale:
+            self._main_split_info.pop(p, None)
+        if stale:
+            self._refresh_main_row_attention()
 
         # Empty workspace -> fall back to main so the canvas isn't blank.
         if not model.visible_ids():
@@ -1764,9 +1836,11 @@ class ArduisWindow(Adw.ApplicationWindow):
                 self._listbox.select_row(row)
 
         # The dots were just recreated as plain active/hibernated — re-apply each
-        # task's live aggregate status so dots survive a rebuild (D-06).
+        # task's live aggregate status so dots survive a rebuild (D-06), and the
+        # main row's split-aggregate attention state likewise.
         for task in self._store.all():
             self._refresh_status_ui(task)
+        self._refresh_main_row_attention()
 
     def _make_row(self, sid: str, branch: str, subline: str, active: bool) -> Gtk.ListBoxRow:
         """One sidebar row: dot (8px) + branch (13/600) + RAM sub-line (11/400)."""
@@ -4361,9 +4435,15 @@ class ArduisWindow(Adw.ApplicationWindow):
                 if record is not None:
                     self._record_by_state_file[state_file] = (task, record)
             elif pane_dot is not None:
-                # Main-workspace agent split: no record — track the dot directly.
-                self._main_dot_by_state_file[state_file] = pane_dot
-                self._main_state_file_by_tid[term_id] = state_file
+                # Main-workspace agent split: no record — track the widgets
+                # directly, scoped to the owning (active-at-spawn) project.
+                self._main_split_info[state_file] = {
+                    "root": self._project_root,
+                    "tid": term_id,
+                    "dot": pane_dot,
+                    "leaf": self._leaf_by_sid.get(term_id),
+                    "status": None,
+                }
             # Degraded mode (D-13, hooks declined): the bell + contents-changed
             # signals are the ONLY status signal. Both are pre-0.76 (floor-safe). Do
             # NOT connect in primary mode — hooks are authoritative there and a BEL
