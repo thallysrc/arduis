@@ -153,15 +153,33 @@ def _build_css(theme: Theme) -> str:
     (was ``_FOCUS_RING`` — the focus ring + badge + hint-key), ``theme.branch`` (was
     ``_BRANCH_PINK``), and the 5 status-dot colors. The footer-count reuses
     ``theme.dot_active`` (it reused ``_DOT_ACTIVE`` before).
+
+    Card-style restyle (parallel-code look): every leaf is a rounded "island" with
+    a subtle 1px border that is ALWAYS present — focus only changes the border
+    COLOR, so focusing never reflows the layout. The optional Theme fields fall
+    back so the 4 legacy themes keep working: card→surface, border→surface,
+    canvas→bg.
     """
+    card = theme.card or theme.surface
+    border = theme.border or theme.surface
     return f"""
 .arduis-sidebar {{
     background-color: {theme.surface};
 }}
 .arduis-pane-header {{
-    background-color: {theme.surface};
+    background-color: transparent;
     min-height: {_PANE_HEADER_H}px;
-    padding: 0 16px;
+    padding: 0 12px;
+    border-bottom: 1px solid {border};
+}}
+.arduis-pane-header button {{
+    opacity: 0.55;
+    min-height: 22px;
+    min-width: 22px;
+    padding: 0 4px;
+}}
+.arduis-pane-header button:hover {{
+    opacity: 1;
 }}
 .arduis-branch {{
     color: {theme.branch};
@@ -172,8 +190,13 @@ def _build_css(theme: Theme) -> str:
     color: {theme.accent};
     font-size: 11px;
 }}
+.arduis-leaf {{
+    background-color: {card};
+    border: 1px solid {border};
+    border-radius: 10px;
+}}
 .arduis-leaf.focus {{
-    border: 1px solid {theme.accent};
+    border-color: {theme.accent};
 }}
 .arduis-chip-bar {{
     padding: 0 4px;
@@ -1264,25 +1287,29 @@ class ArduisWindow(Adw.ApplicationWindow):
         leaf = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         leaf.add_css_class("arduis-leaf")
         leaf.set_size_request(_MIN_PANE_W, _MIN_PANE_H)  # UI-SPEC min usable pane
+        # Card look: clip children to the CSS border-radius, otherwise the
+        # Vte.Terminal paints square corners over the rounded card.
+        leaf.set_overflow(Gtk.Overflow.HIDDEN)
 
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         header.add_css_class("arduis-pane-header")
 
-        # T-03-09: render the branch literally via set_text — never set_markup.
-        branch = Gtk.Label()
-        branch.set_text(branch_label)
-        branch.add_css_class("arduis-branch")
-        header.append(branch)
-
-        # Phase 4 (D-07): per-terminal status dot, before the badge. Hidden by
-        # default; _spawn_into makes it visible for task AGENT terminals only
-        # (shells / pinned main never write a state file).
+        # Phase 4 (D-07): per-terminal status dot, FIRST in the header (card
+        # order: dot · title · badge · spacer · actions). Hidden by default;
+        # _spawn_into makes it visible for task AGENT terminals only (shells /
+        # pinned main never write a state file).
         pane_dot = Gtk.Label(label="●")
         pane_dot.add_css_class("arduis-dot-active")
         pane_dot.set_valign(Gtk.Align.CENTER)
         pane_dot.set_visible(False)
         header.append(pane_dot)
         self._pane_dot_by_tid[sid] = pane_dot
+
+        # T-03-09: render the branch literally via set_text — never set_markup.
+        branch = Gtk.Label()
+        branch.set_text(branch_label)
+        branch.add_css_class("arduis-branch")
+        header.append(branch)
 
         badge = Gtk.Label()
         badge.set_text(badge_label)
