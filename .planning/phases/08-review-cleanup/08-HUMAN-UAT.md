@@ -1,19 +1,18 @@
 ---
-status: testing
+status: accepted
 phase: 08-review-cleanup
 source: [08-06-PLAN.md]
 started: 2026-06-15T08:42:17-03:00
-updated: 2026-07-01T09:07:18-03:00
+updated: 2026-07-01
 ---
 
 ## Current Test
 
-number: 1
-name: Read-only diff (REVIEW-01)
-expected: |
-  Botão direito numa task → "Ver diff ▸ <repo>" → abre um pane com `git diff`
-  colorido, READ-ONLY (não dá pra digitar nele). Por repo.
-awaiting: user response
+[User accepted closure 2026-07-01 WITHOUT running the live UAT — explicit risk acceptance
+("não quero testar, modo yolo"). All logic + destructive safety are proven headless
+(order/dirty-refusal/no-force/D-10 against real git; 448 tests green). Items 1-5 remain to
+confirm live whenever the app is used for real; reopen as gap closure if any fails.
+Same precedent as Phase 9 hardware UAT (PO risk acceptance, 09-HUMAN-UAT.md).]
 
 ## Tests
 
@@ -42,8 +41,8 @@ result: passed headless (live pendente) — provado em git real (remove sem --fo
 total: 5
 passed: 0
 issues: 0
-pending: 5
-skipped: 0
+pending: 0
+skipped: 5 (risk-accepted by user 2026-07-01 — yolo closure; confirm opportunistically in real use)
 blocked: 0
 
 (Note: toda a lógica + a segurança destrutiva estão provadas headless [order/dirty-refusal/no-force/D-10 contra git real]; falta só a confirmação visual no display + gh/PR reais. git 2.43 + gh 2.93 autenticado estão no host.)
