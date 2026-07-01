@@ -1,8 +1,8 @@
 ---
-status: investigating
+status: awaiting_human_verify
 trigger: "After splitting to 3 terminals the nested Gtk.Paned layout collapses to a ~6px sliver on the left; the other two terminals render nothing."
 created: 2026-06-10
-updated: 2026-06-10
+updated: 2026-07-01
 ---
 
 ## Current Focus
