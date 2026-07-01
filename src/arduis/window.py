@@ -160,8 +160,22 @@ def _build_css(theme: Theme) -> str:
     border = theme.border or theme.surface
     canvas = theme.canvas or theme.bg
     return f"""
+headerbar {{
+    background-color: {theme.surface};
+    box-shadow: none;
+}}
 .arduis-sidebar {{
     background-color: {theme.surface};
+}}
+.arduis-sidebar list {{
+    background: none;
+    background-color: transparent;
+}}
+.arduis-sidebar row {{
+    border-radius: 6px;
+}}
+.arduis-sidebar row:selected {{
+    background-color: {card};
 }}
 .arduis-pane-header {{
     background-color: transparent;
