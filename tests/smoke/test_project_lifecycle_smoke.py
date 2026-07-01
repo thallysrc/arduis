@@ -60,15 +60,19 @@ def _mk_repo(path, genv):
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def _tab_labels(chip_bar):
-    """Sorted text of every Gtk.ToggleButton (project tab) in the chip bar."""
+def _tab_labels(projects_box):
+    """Sorted project-name texts of the sidebar PROJECTS rows (restyle)."""
     from gi.repository import Gtk
     labels = []
-    child = chip_bar.get_first_child()
-    while child is not None:
-        if isinstance(child, Gtk.ToggleButton):
-            labels.append(child.get_child().get_text())
-        child = child.get_next_sibling()
+    row = projects_box.get_first_child()
+    while row is not None:
+        child = row.get_child().get_first_child()
+        while child is not None:
+            if isinstance(child, Gtk.Label) and child.get_text() != "●":
+                labels.append(child.get_text())
+                break
+            child = child.get_next_sibling()
+        row = row.get_next_sibling()
     return sorted(labels)
 
 
@@ -127,7 +131,7 @@ def main():
             win2._registry.get(root_b) is not None
         )
         check("a_both_projects_restored_after_restart", restored)
-        tabs_after_restart = _tab_labels(win2._chip_bar)
+        tabs_after_restart = _tab_labels(win2._projects_box)
         check("a_two_tabs_rendered_after_restart",
               tabs_after_restart == ["KarveLabs", "Livon-Saude"])
         win2.destroy()
@@ -144,7 +148,7 @@ def main():
             and win3._registry.get(ghost) is None
         )
         check("b_missing_root_skipped_real_loaded", only_real)
-        tabs_b = _tab_labels(win3._chip_bar)
+        tabs_b = _tab_labels(win3._projects_box)
         check("b_one_tab_only", tabs_b == ["Livon-Saude"])
         win3.destroy()
 
@@ -170,7 +174,7 @@ def main():
         roots_after_remove, _ = projects_store.load_projects(projects_json)
         check("c_silent_remove_rewrites_json_to_a_only",
               roots_after_remove == [root_a])
-        tabs_c = _tab_labels(win4._chip_bar)
+        tabs_c = _tab_labels(win4._projects_box)
         check("c_one_tab_after_remove", tabs_c == ["Livon-Saude"])
         win4.destroy()
 

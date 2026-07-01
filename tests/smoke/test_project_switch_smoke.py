@@ -2,11 +2,11 @@
 
 Proves, WITHOUT manual interaction:
   (a) constructing the window with two remembered project roots renders exactly two
-      project tabs + a "+ Abrir projeto" button (D-03);
+      sidebar PROJECTS rows + the "Abrir projeto" opener button (D-03, restyle);
   (b) after `win._switch_project(rootB)`, project A's `leaf_by_sid`/`term_by_sid`
       entries still exist and reference the SAME widget objects (NOT recreated/
       destroyed) — proving "both alive" (D-08);
-  (c) exactly one project tab carries `arduis-chip-active` at a time.
+  (c) exactly one PROJECTS row carries `arduis-project-active` at a time.
 
 Sandbox HOME + XDG_CONFIG_HOME; /tmp multi-repo git fixtures for TWO project roots;
 broadwayd on a free display. The broadwayd-absent path prints `SMOKE_SKIP` and
@@ -54,19 +54,26 @@ def _mk_repo(path, genv):
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def _tab_buttons(chip_bar):
-    """The chip-bar's children split into (toggle tabs, other buttons)."""
+def _project_rows(projects_box):
+    """The sidebar PROJECTS ListBox rows (restyle: rows replaced topbar chips)."""
+    rows = []
+    child = projects_box.get_first_child()
+    while child is not None:
+        rows.append(child)
+        child = child.get_next_sibling()
+    return rows
+
+
+def _row_name(row):
+    """The project-name label text of a PROJECTS row (dot · name · ✕)."""
     import gi  # noqa
     from gi.repository import Gtk
-    tabs, others = [], []
-    child = chip_bar.get_first_child()
+    child = row.get_child().get_first_child()
     while child is not None:
-        if isinstance(child, Gtk.ToggleButton):
-            tabs.append(child)
-        else:
-            others.append(child)
+        if isinstance(child, Gtk.Label) and child.get_text() != "●":
+            return child.get_text()
         child = child.get_next_sibling()
-    return tabs, others
+    return None
 
 
 def main():
@@ -105,12 +112,14 @@ def main():
         os.chdir(root_a)  # launch inside rootA
         win = ArduisWindow(application=a)
 
-        # (a) two tabs + a "+ Abrir projeto" button.
-        tabs, others = _tab_buttons(win._chip_bar)
-        labels = sorted(t.get_child().get_text() for t in tabs)
+        # (a) two project rows + the "Abrir projeto" opener next to the title.
+        rows = _project_rows(win._projects_box)
+        labels = sorted(_row_name(r) for r in rows)
         two_tabs = labels == ["KarveLabs", "Livon-Saude"]
-        has_open = any(
-            getattr(o, "get_label", lambda: None)() == "+ Abrir projeto" for o in others
+        open_btn = getattr(win, "_open_project_btn", None)
+        has_open = (
+            open_btn is not None
+            and open_btn.get_tooltip_text() == "Abrir projeto"
         )
         check("a_two_project_tabs", two_tabs)
         check("a_open_project_button_present", has_open)
@@ -121,11 +130,13 @@ def main():
         a_leaves_before = dict(a_maps["leaf_by_sid"])
         a_terms_before = dict(a_maps["term_by_sid"])
 
-        # (c-before) exactly one tab active == rootA.
-        active_before = [t for t in tabs if t.has_css_class("arduis-chip-active")]
+        # (c-before) exactly one row active == rootA.
+        active_before = [
+            r for r in rows if r.has_css_class("arduis-project-active")
+        ]
         active_is_a = (
             len(active_before) == 1
-            and active_before[0].get_child().get_text() == "Livon-Saude"
+            and _row_name(active_before[0]) == "Livon-Saude"
         )
         check("c_single_active_before_switch", active_is_a)
 
@@ -146,12 +157,14 @@ def main():
         check("b_projectA_terminals_alive_after_switch",
               had_state and leaves_alive and terms_alive)
 
-        # (c-after) exactly one tab active == rootB.
-        tabs2, _ = _tab_buttons(win._chip_bar)
-        active_after = [t for t in tabs2 if t.has_css_class("arduis-chip-active")]
+        # (c-after) exactly one row active == rootB.
+        rows2 = _project_rows(win._projects_box)
+        active_after = [
+            r for r in rows2 if r.has_css_class("arduis-project-active")
+        ]
         active_is_b = (
             len(active_after) == 1
-            and active_after[0].get_child().get_text() == "KarveLabs"
+            and _row_name(active_after[0]) == "KarveLabs"
         )
         check("c_single_active_after_switch", active_is_b)
 

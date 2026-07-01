@@ -119,10 +119,6 @@ _MAIN_SID = "main"
 
 _SIDEBAR_WIDTH = 264   # fixed-ish sidebar width (sectioned parallel-code layout)
 _PANE_HEADER_H = 32    # UI-SPEC: pane-header height
-# 03.3 D-05: topbar chip overflow threshold — show up to this many chips inline,
-# then fold the rest into a "+N" overflow Gtk.MenuButton (no horizontal scroll,
-# rejected as fiddly with VTE focus). Module constant so it is trivially tunable.
-_MAX_VISIBLE_CHIPS = 6
 _MIN_PANE_W = 240      # UI-SPEC: min usable terminal width
 _MIN_PANE_H = 120      # UI-SPEC: min usable terminal height
 
@@ -224,18 +220,12 @@ def _build_css(theme: Theme) -> str:
     padding: 6px 12px;
     font-weight: 600;
 }}
-.arduis-chip-bar {{
-    padding: 0 4px;
+.arduis-project-row {{
+    border-radius: 6px;
+    font-size: 13px;
 }}
-.arduis-chip {{
-    padding: 2px 8px;
-    border-radius: 12px;
-}}
-.arduis-chip-active {{
-    border: 1px solid {theme.accent};
-    background-color: {theme.surface};
-}}
-.arduis-tab-label-active {{
+.arduis-project-active {{
+    background-color: {card};
     font-weight: 600;
 }}
 .arduis-dot-active {{
@@ -459,15 +449,9 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._title_widget = Adw.WindowTitle(title="arduis")
         header.set_title_widget(self._title_widget)
 
-        # 03.4 (D-04): the per-repo chip bar is GONE (chips were the wrong level —
-        # the topbar holds PROJECTS, not repos). This horizontal Box stays as an
-        # empty placeholder at the same pack_start slot (order: +New | <slot> | …
-        # | menu); Plan 03 reuses this exact slot for the project tabs switcher.
-        self._chip_bar = Gtk.Box(
-            orientation=Gtk.Orientation.HORIZONTAL, spacing=6
-        )
-        self._chip_bar.add_css_class("arduis-chip-bar")
-        header.pack_start(self._chip_bar)
+        # Restyle (parallel-code layout): projects live in the sidebar PROJECTS
+        # section (see _build_sidebar/_build_project_tabs) — the headerbar keeps
+        # only the window title + the primary menu.
 
         # UI-02 (D-08): a primary menu (open-menu-symbolic) on pack_end with a "Tema"
         # submenu of one win.set_theme(slug) item per registered theme. The action is
@@ -1541,6 +1525,34 @@ class ArduisWindow(Adw.ApplicationWindow):
         box.add_css_class("arduis-sidebar")
         box.set_size_request(_SIDEBAR_WIDTH, -1)
 
+        # PROJECTS section (03.4 D-03 relocated): header row = title + a small
+        # "+" opener (same folder-picker handler), then one row per project in
+        # a short scrollable ListBox rendered by _build_project_tabs.
+        projects_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        title = self._section_title("PROJETOS")
+        title.set_hexpand(True)
+        projects_header.append(title)
+        open_btn = Gtk.Button()
+        open_btn.set_icon_name("list-add-symbolic")
+        open_btn.add_css_class("flat")
+        open_btn.set_tooltip_text("Abrir projeto")
+        open_btn.set_margin_end(8)
+        open_btn.set_valign(Gtk.Align.CENTER)
+        open_btn.connect("clicked", self._on_open_project_clicked)
+        projects_header.append(open_btn)
+        self._open_project_btn = open_btn  # exposed for smoke introspection
+        box.append(projects_header)
+
+        self._projects_box = Gtk.ListBox()
+        self._projects_box.set_selection_mode(Gtk.SelectionMode.NONE)
+        self._projects_box.add_css_class("arduis-projects")
+        projects_scroll = Gtk.ScrolledWindow()
+        projects_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        projects_scroll.set_propagate_natural_height(True)
+        projects_scroll.set_max_content_height(220)
+        projects_scroll.set_child(self._projects_box)
+        box.append(projects_scroll)
+
         # The "+ Nova task" button (D-02/D-03) — moved from the headerbar into
         # the sidebar (parallel-code layout). Same attribute + handler, so
         # _refresh_project_chrome keeps driving its sensitivity/tooltip.
@@ -2528,90 +2540,91 @@ class ArduisWindow(Adw.ApplicationWindow):
     # --- project-tab switcher (03.4 D-03, UI-SPEC) --------------------------
 
     def _build_project_tabs(self) -> None:
-        """Render one tab per open project + "+ Abrir projeto" in the _chip_bar slot.
+        """Render one row per open project in the sidebar PROJECTS section.
 
-        Reuses the (now-empty) ``_chip_bar`` Box at ``header.pack_start`` (D-03/D-04).
-        Each project is a flat ``Gtk.ToggleButton`` in a LINKED group (``set_group`` →
-        GTK enforces exactly-one-active) whose child is a single ``Gtk.Label`` set via
-        ``set_text`` ONLY (never ``set_markup`` — T-03.4-07 path-injection guard); the
-        tooltip is the full root path. The ACTIVE project's button gets the reused
-        ``.arduis-chip-active`` rule (accent border + surface fill, theme-sourced) and
-        a semibold (600) label. NO status dot on tabs (label-only, deferred). Beyond
-        ``_MAX_VISIBLE_CHIPS`` projects, the overflow folds into a ``+N`` MenuButton
-        whose ``Gio.Menu`` items target ``win.switch_project(root)`` (D-03). The
-        trailing "+ Abrir projeto" flat button triggers the folder picker.
+        (Name kept from the 03.4 topbar-chips era — tests monkeypatch it by name.)
+        Each project is a ``Gtk.ListBoxRow`` in ``self._projects_box``: status dot +
+        name label set via ``set_text`` ONLY (never ``set_markup`` — T-03.4-07
+        path-injection guard) + an inline ✕ that triggers the same
+        ``_remove_project`` flow as the context menu; the tooltip is the full root
+        path. The ACTIVE project's row gets ``.arduis-project-active`` (card fill +
+        semibold). Clicking a row switches via ``win.switch_project`` semantics
+        (no-op when already active). The list scrolls — no ``+N`` overflow needed.
+        The "+" opener next to the PROJETOS title triggers the folder picker.
         """
-        # Clear the slot.
-        child = self._chip_bar.get_first_child()
+        projects_box = getattr(self, "_projects_box", None)
+        if projects_box is None:
+            return  # sidebar not built yet (partial construction in unit tests)
+
+        # Clear the section.
+        child = projects_box.get_first_child()
         while child is not None:
             nxt = child.get_next_sibling()
-            self._chip_bar.remove(child)
+            projects_box.remove(child)
             child = nxt
 
         projects = self._registry.all()
         active = self._registry.active()
         active_root = active.root if active is not None else None
 
-        group: Gtk.ToggleButton | None = None
-        visible = projects[:_MAX_VISIBLE_CHIPS]
-        overflow = projects[_MAX_VISIBLE_CHIPS:]
+        for proj in projects:
+            row = Gtk.ListBoxRow()
+            row.add_css_class("arduis-project-row")
+            outer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            outer.set_margin_top(4)
+            outer.set_margin_bottom(4)
+            outer.set_margin_start(16)
+            outer.set_margin_end(8)
 
-        for proj in visible:
-            btn = Gtk.ToggleButton()
-            btn.add_css_class("flat")
-            btn.add_css_class("arduis-chip")
-            label = Gtk.Label()
-            label.set_text(proj.name)  # set_text ONLY (T-03.4-07)
-            btn.set_child(label)
-            btn.set_tooltip_text(proj.root)
-            if group is None:
-                group = btn
-            else:
-                btn.set_group(group)  # linked group → exactly-one-active
             is_active = proj.root == active_root
-            btn.set_active(is_active)
-            if is_active:
-                btn.add_css_class("arduis-chip-active")
-                label.add_css_class("arduis-tab-label-active")
-            # Switch on toggle-on (ignore the toggle-off of the previous active).
-            btn.connect(
-                "toggled",
-                self._make_tab_toggled_cb(proj.root),
+
+            dot = Gtk.Label(label="●")
+            dot.add_css_class(
+                "arduis-dot-active" if is_active else "arduis-dot-hibernated"
             )
-            # D-10: right-click context menu on the tab → "Remover projeto"
-            # (mirrors the sidebar row context-menu shape). The action target is
-            # the project root; teardown + confirm live in _remove_project.
+            dot.set_valign(Gtk.Align.CENTER)
+            outer.append(dot)
+
+            label = Gtk.Label(xalign=0)
+            label.set_text(proj.name)  # set_text ONLY (T-03.4-07)
+            label.set_hexpand(True)
+            label.set_ellipsize(Pango.EllipsizeMode.END)
+            outer.append(label)
+
+            # Inline ✕ (parallel-code style) → the SAME remove flow as the
+            # context menu (teardown + confirm live in _remove_project).
+            close = Gtk.Button(label="✕")
+            close.add_css_class("flat")
+            close.set_tooltip_text("Remover projeto")
+            close.set_valign(Gtk.Align.CENTER)
+            close.connect(
+                "clicked", lambda _b, root=proj.root: self._remove_project(root)
+            )
+            outer.append(close)
+
+            row.set_child(outer)
+            row.set_tooltip_text(proj.root)
+            if is_active:
+                row.add_css_class("arduis-project-active")
+
+            # Primary click on the row switches project (ignore clicks that land
+            # on the ✕ button — the button consumes them).
             gesture = Gtk.GestureClick()
-            gesture.set_button(Gdk.BUTTON_SECONDARY)
-            gesture.connect("pressed", self._make_tab_menu_cb(proj.root, btn))
-            btn.add_controller(gesture)
-            self._chip_bar.append(btn)
+            gesture.set_button(Gdk.BUTTON_PRIMARY)
+            gesture.connect("released", self._make_project_row_cb(proj.root))
+            row.add_controller(gesture)
 
-        if overflow:
-            menu = Gio.Menu()
-            for proj in overflow:
-                item = Gio.MenuItem.new(proj.name, None)
-                item.set_action_and_target_value(
-                    "win.switch_project", GLib.Variant.new_string(proj.root)
-                )
-                menu.append_item(item)
-            more = Gtk.MenuButton(label=f"+{len(overflow)}", menu_model=menu)
-            more.add_css_class("flat")
-            more.set_tooltip_text("Mais projetos")
-            self._chip_bar.append(more)
+            # D-10: right-click context menu → "Remover projeto" (kept).
+            menu_gesture = Gtk.GestureClick()
+            menu_gesture.set_button(Gdk.BUTTON_SECONDARY)
+            menu_gesture.connect("pressed", self._make_tab_menu_cb(proj.root, row))
+            row.add_controller(menu_gesture)
 
-        # Trailing "+ Abrir projeto" picker trigger (D-03).
-        open_btn = Gtk.Button(label="+ Abrir projeto")
-        open_btn.add_css_class("flat")
-        open_btn.set_tooltip_text("Abrir projeto")
-        open_btn.connect("clicked", self._on_open_project_clicked)
-        self._chip_bar.append(open_btn)
+            projects_box.append(row)
 
-    def _make_tab_toggled_cb(self, root: str):
-        """A ToggleButton 'toggled' handler that switches to ``root`` when toggled ON."""
-        def _cb(btn: Gtk.ToggleButton) -> None:
-            if not btn.get_active():
-                return  # ignore the auto-toggle-off of the previously active tab
+    def _make_project_row_cb(self, root: str):
+        """A primary-click handler that switches to ``root`` unless already active."""
+        def _cb(_gesture, _n_press, _x, _y) -> None:
             active = self._registry.active()
             if active is not None and active.root == root:
                 return  # already active — no-op (avoids re-entrant swap)
