@@ -147,3 +147,71 @@ def test_escalate_is_noop_when_already_waiting():
     ts_before = task.terminals[0].status_ts
     win._escalate_waiting(task, "alpha:t0", "/sf.json")
     assert task.terminals[0].status_ts == ts_before  # untouched — no churn
+
+
+# --- symmetric clear: dialog answered -> running (user feedback 2026-07-01) --
+
+from arduis.attention import next_scan_action  # noqa: E402
+
+
+def test_scan_action_escalates_on_dialog():
+    assert next_scan_action(False, True, "running") == "escalate"
+
+
+def test_scan_action_deescalates_when_answered():
+    # We SAW the dialog in this terminal and it vanished while still waiting:
+    # the user answered (approve/reject/Esc) — flip to running immediately.
+    assert next_scan_action(True, False, "waiting") == "deescalate"
+
+
+def test_scan_action_never_clears_waiting_it_never_saw():
+    # A hook-set waiting whose dialog never appeared in the tail (e.g. an
+    # elicitation question) must NOT be cleared by the scanner.
+    assert next_scan_action(False, False, "waiting") is None
+
+
+def test_scan_action_idle_when_no_dialog_and_not_waiting():
+    assert next_scan_action(False, False, "running") is None
+    assert next_scan_action(True, False, "running") is None
+
+
+def test_scan_action_noop_while_dialog_still_shown():
+    assert next_scan_action(True, True, "waiting") is None
+
+
+def test_deescalate_task_flips_waiting_to_running_and_clears_ui():
+    win = _win()
+    task = Task(task_id="alpha", branch="alpha", task_dir="/t", repos=[],
+                state=SessionState.ACTIVE,
+                terminals=[TerminalRecord("alpha:t0", "agent", status="waiting")])
+    win._leaf_by_sid["alpha:t0"].add_css_class("attention")
+    win._row_by_sid["alpha"].add_css_class("arduis-row-attention")
+    win._deescalate_running(task, "alpha:t0", "/sf.json")
+    assert task.terminals[0].status == "running"
+    assert not win._leaf_by_sid["alpha:t0"].has_css_class("attention")
+    assert not win._row_by_sid["alpha"].has_css_class("arduis-row-attention")
+
+
+def test_deescalate_main_split_clears_main_row():
+    win = _win()
+    dot, leaf = _FakeWidget(), _FakeWidget()
+    leaf.add_css_class("attention")
+    win._main_split_info["/sf.json"] = {
+        "root": "/projA", "tid": "main:t1", "dot": dot, "leaf": leaf,
+        "status": "waiting",
+    }
+    win._row_by_sid[W._MAIN_SID].add_css_class("arduis-row-attention")
+    win._deescalate_running(None, "main:t1", "/sf.json")
+    assert win._main_split_info["/sf.json"]["status"] == "running"
+    assert dot.has_css_class("arduis-dot-active")
+    assert not leaf.has_css_class("attention")
+    assert not win._row_by_sid[W._MAIN_SID].has_css_class("arduis-row-attention")
+
+
+def test_deescalate_noop_unless_waiting():
+    win = _win()
+    task = Task(task_id="alpha", branch="alpha", task_dir="/t", repos=[],
+                state=SessionState.ACTIVE,
+                terminals=[TerminalRecord("alpha:t0", "agent", status="ready")])
+    win._deescalate_running(task, "alpha:t0", "/sf.json")
+    assert task.terminals[0].status == "ready"  # untouched

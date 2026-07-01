@@ -1263,16 +1263,71 @@ class ArduisWindow(Adw.ApplicationWindow):
             leaf.add_css_class("attention")
         self._refresh_main_row_attention()
 
+    def _current_scan_status(self, task: Task | None, term_id: str, state_file: str) -> str | None:
+        """The terminal's current status string as the scanner sees it."""
+        if task is not None:
+            record = next(
+                (t for t in self._all_task_terminals(task) if t.term_id == term_id),
+                None,
+            )
+            return record.status if record is not None else None
+        info = getattr(self, "_main_split_info", {}).get(state_file)
+        return info.get("status") if info is not None else None
+
+    def _deescalate_running(self, task: Task | None, term_id: str, state_file: str) -> None:
+        """Flip a WAITING terminal back to RUNNING (dialog answered).
+
+        Symmetric counterpart of ``_escalate_waiting`` — only ever leaves
+        ``waiting`` (never touches ready/idle/ended), so the authoritative hook
+        events that follow are never fought, just anticipated.
+        """
+        if task is not None:
+            record = next(
+                (t for t in self._all_task_terminals(task) if t.term_id == term_id),
+                None,
+            )
+            if record is None or record.status != AgentStatus.WAITING.value:
+                return
+            record.status = AgentStatus.RUNNING.value
+            record.status_ts = time.time()
+            self._refresh_status_ui(task)
+            return
+        info = getattr(self, "_main_split_info", {}).get(state_file)
+        if info is None or info.get("status") != "waiting":
+            return
+        info["status"] = "running"
+        dot = info.get("dot")
+        if dot is not None:
+            self._set_dot_class(dot, "arduis-dot-active")
+        leaf = info.get("leaf")
+        if leaf is not None:
+            leaf.remove_css_class("attention")
+        self._refresh_main_row_attention()
+
     def _make_prompt_scan_cb(self, terminal, task: Task | None, term_id: str, state_file: str):
         """A leading-edge-debounced contents-changed handler scanning for the
-        approval dialog (300ms coalesce — the signal fires on every repaint)."""
+        approval dialog (300ms coalesce — the signal fires on every repaint).
+
+        Tracks whether THIS terminal showed the dialog (``saw_dialog``) so the
+        vanish-side transition (dialog answered → running) never clears a
+        waiting the scanner did not witness (attention.next_scan_action).
+        """
         pending = [False]
+        saw_dialog = [False]
 
         def _scan() -> bool:
             pending[0] = False
             text = self._terminal_tail_text(terminal)
-            if attention.looks_like_permission_prompt(text):
+            has_dialog = attention.looks_like_permission_prompt(text)
+            status = self._current_scan_status(task, term_id, state_file)
+            action = attention.next_scan_action(saw_dialog[0], has_dialog, status)
+            if has_dialog:
+                saw_dialog[0] = True
+            if action == "escalate":
                 self._escalate_waiting(task, term_id, state_file)
+            elif action == "deescalate":
+                saw_dialog[0] = False
+                self._deescalate_running(task, term_id, state_file)
             return GLib.SOURCE_REMOVE
 
         def _on_changed(_term) -> None:

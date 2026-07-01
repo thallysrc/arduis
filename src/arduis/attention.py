@@ -282,6 +282,26 @@ def looks_like_permission_prompt(text: str) -> bool:
     return any(marker in text for marker in _PROMPT_MARKERS)
 
 
+def next_scan_action(
+    saw_dialog: bool, has_dialog: bool, status: str | None
+) -> str | None:
+    """Decide the scanner's move: "escalate", "deescalate" or None.
+
+    - Dialog visible → "escalate" (idempotent while already waiting is handled
+      by the caller; re-affirming costs nothing).
+    - Dialog VANISHED after we saw it, while still waiting → the user answered
+      (approve/reject/Esc) → "deescalate" to running instantly; the authoritative
+      hook events that follow (PostToolUse/Stop) land on the right state anyway.
+    - A waiting whose dialog this terminal NEVER showed (e.g. an elicitation
+      question) is never cleared by the scanner — hooks own it.
+    """
+    if has_dialog:
+        return None if (saw_dialog and status == "waiting") else "escalate"
+    if saw_dialog and status == "waiting":
+        return "deescalate"
+    return None
+
+
 # --- Hook install: settings merge builder (Pattern 3, Pitfall 9, T-04-08) ------
 # The 7 events arduis subscribes to (Pattern 1 event->state map). Matcher events
 # carry a "matcher": "*" group; the other 5 omit the matcher key (Pitfall 9 /
