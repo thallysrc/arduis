@@ -166,6 +166,7 @@ headerbar {{
 }}
 .arduis-sidebar {{
     background-color: {theme.surface};
+    border-right: 1px solid {border};
 }}
 .arduis-sidebar list {{
     background: none;
@@ -205,6 +206,23 @@ headerbar {{
     background-color: {card};
     border: 1px solid {border};
     border-radius: 10px;
+}}
+.arduis-leaf vte-terminal {{
+    padding: 4px 8px;
+}}
+.arduis-row-close {{
+    opacity: 0.35;
+    font-size: 11px;
+    min-height: 20px;
+    min-width: 20px;
+    padding: 0 4px;
+}}
+.arduis-row-close:hover {{
+    opacity: 1;
+}}
+.arduis-degraded-hint {{
+    font-size: 11px;
+    opacity: 0.7;
 }}
 .arduis-leaf.focus {{
     border-color: {theme.accent};
@@ -1540,6 +1558,11 @@ class ArduisWindow(Adw.ApplicationWindow):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         box.add_css_class("arduis-sidebar")
         box.set_size_request(_SIDEBAR_WIDTH, -1)
+        # hexpand PROPAGATES up from descendants in GTK4 (row labels use it for
+        # ✕ right-alignment); explicitly pin the sidebar to non-expanding so the
+        # canvas takes ALL the extra width (set_hexpand also sets hexpand-set,
+        # which stops the child propagation).
+        box.set_hexpand(False)
 
         # PROJECTS section (03.4 D-03 relocated): header row = title + a small
         # "+" opener (same folder-picker handler), then one row per project in
@@ -1562,6 +1585,8 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._projects_box = Gtk.ListBox()
         self._projects_box.set_selection_mode(Gtk.SelectionMode.NONE)
         self._projects_box.add_css_class("arduis-projects")
+        self._projects_box.set_margin_start(8)
+        self._projects_box.set_margin_end(8)
         projects_scroll = Gtk.ScrolledWindow()
         projects_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         projects_scroll.set_propagate_natural_height(True)
@@ -1587,6 +1612,8 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._listbox = Gtk.ListBox()
         self._listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
         self._listbox.connect("row-activated", self._on_row_activated)
+        self._listbox.set_margin_start(8)
+        self._listbox.set_margin_end(8)
 
         tasks_scroll = Gtk.ScrolledWindow()
         tasks_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -1656,8 +1683,8 @@ class ArduisWindow(Adw.ApplicationWindow):
         outer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         outer.set_margin_top(8)
         outer.set_margin_bottom(8)
-        outer.set_margin_start(16)
-        outer.set_margin_end(16)
+        outer.set_margin_start(8)
+        outer.set_margin_end(8)
 
         dot = Gtk.Label(label="●")
         dot.add_css_class("arduis-dot-active" if active else "arduis-dot-hibernated")
@@ -2250,6 +2277,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         # revealed by _refresh_degraded_hint after setup.
         self._degraded_hint_btn = Gtk.Button(label="status limitado — instalar hooks?")
         self._degraded_hint_btn.add_css_class("flat")
+        self._degraded_hint_btn.add_css_class("arduis-degraded-hint")
         self._degraded_hint_btn.set_visible(False)
         self._degraded_hint_btn.connect("clicked", lambda *_: self._show_consent_dialog())
         bar.append(self._degraded_hint_btn)
@@ -2603,14 +2631,16 @@ class ArduisWindow(Adw.ApplicationWindow):
             outer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
             outer.set_margin_top(4)
             outer.set_margin_bottom(4)
-            outer.set_margin_start(16)
-            outer.set_margin_end(8)
+            outer.set_margin_start(8)
+            outer.set_margin_end(4)
 
             is_active = proj.root == active_root
 
             dot = Gtk.Label(label="●")
+            # idle (not hibernated) for inactive projects — hibernated grey is
+            # near-invisible on the surface; idle reads like pc's muted dots.
             dot.add_css_class(
-                "arduis-dot-active" if is_active else "arduis-dot-hibernated"
+                "arduis-dot-active" if is_active else "arduis-dot-idle"
             )
             dot.set_valign(Gtk.Align.CENTER)
             outer.append(dot)
@@ -2625,6 +2655,7 @@ class ArduisWindow(Adw.ApplicationWindow):
             # context menu (teardown + confirm live in _remove_project).
             close = Gtk.Button(label="✕")
             close.add_css_class("flat")
+            close.add_css_class("arduis-row-close")
             close.set_tooltip_text("Remover projeto")
             close.set_valign(Gtk.Align.CENTER)
             close.connect(
