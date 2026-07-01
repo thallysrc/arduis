@@ -265,6 +265,18 @@ dialog.alert dimming {{
 .arduis-row-attention .arduis-row-branch {{
     color: {theme.dot_waiting};
 }}
+/* End-of-turn: the agent finished and sits at its prompt — also "waiting for
+   you", rung in the READY color (orange stays exclusive to approvals). */
+.arduis-leaf.attention-ready {{
+    border-color: {theme.dot_ready};
+    box-shadow: inset 0 0 0 1px {theme.dot_ready};
+}}
+.arduis-row-attention-ready {{
+    background-color: alpha({theme.dot_ready}, 0.14);
+}}
+.arduis-row-attention-ready .arduis-row-branch {{
+    color: {theme.dot_ready};
+}}
 .arduis-canvas {{
     border: none;
     background-color: {canvas};
@@ -1184,6 +1196,10 @@ class ArduisWindow(Adw.ApplicationWindow):
                 leaf.add_css_class("attention")
             else:
                 leaf.remove_css_class("attention")
+            if status == AgentStatus.READY:
+                leaf.add_css_class("attention-ready")
+            else:
+                leaf.remove_css_class("attention-ready")
         self._refresh_main_row_attention()
 
     def _refresh_main_row_attention(self) -> None:
@@ -1198,21 +1214,31 @@ class ArduisWindow(Adw.ApplicationWindow):
         if infos is None:
             return
         root = self._project_root
-        waiting = any(
-            info.get("root") == root and info.get("status") == "waiting"
+        statuses = {
+            info.get("status")
             for info in infos.values()
-        )
+            if info.get("root") == root
+        }
+        waiting = "waiting" in statuses
+        ready = not waiting and "ready" in statuses
         row = getattr(self, "_row_by_sid", {}).get(_MAIN_SID)
         if row is not None:
             if waiting:
                 row.add_css_class("arduis-row-attention")
             else:
                 row.remove_css_class("arduis-row-attention")
+            if ready:
+                row.add_css_class("arduis-row-attention-ready")
+            else:
+                row.remove_css_class("arduis-row-attention-ready")
         dot = self._dot_by_sid.get(_MAIN_SID)
         if dot is not None:
-            self._set_dot_class(
-                dot, "arduis-dot-waiting" if waiting else "arduis-dot-active"
-            )
+            if waiting:
+                self._set_dot_class(dot, "arduis-dot-waiting")
+            elif ready:
+                self._set_dot_class(dot, "arduis-dot-ready")
+            else:
+                self._set_dot_class(dot, "arduis-dot-active")
 
     # --- instant-waiting accelerator (terminal-text scan, RESEARCH Pattern 5) --
     # Claude Code fires the permission Notification only ~6s after the dialog
@@ -1378,15 +1404,22 @@ class ArduisWindow(Adw.ApplicationWindow):
         row_dot = self._dot_by_sid.get(task.task_id)
         if row_dot is not None:
             self._set_dot_class(row_dot, self._dot_css_for(aggregate, active))
-        # LOUD alert (user feedback 2026-07-01): a waiting aggregate highlights
-        # the whole sidebar row, not just the 8px dot. getattr guard: bare unit
-        # windows may not build a sidebar.
+        # LOUD alert (user feedback 2026-07-01): a waiting OR ready aggregate
+        # highlights the whole sidebar row, not just the 8px dot — both mean
+        # "the agent waits for YOU" (approval vs end-of-turn). getattr guard:
+        # bare unit windows may not build a sidebar.
         row = getattr(self, "_row_by_sid", {}).get(task.task_id)
         if row is not None:
-            if active and aggregate == AgentStatus.WAITING:
+            waiting = active and aggregate == AgentStatus.WAITING
+            ready = active and aggregate == AgentStatus.READY
+            if waiting:
                 row.add_css_class("arduis-row-attention")
             else:
                 row.remove_css_class("arduis-row-attention")
+            if ready:
+                row.add_css_class("arduis-row-attention-ready")
+            else:
+                row.remove_css_class("arduis-row-attention-ready")
 
         # Each agent terminal's own pane-header dot reflects its individual
         # status; a WAITING agent additionally rings its whole card.
@@ -1407,6 +1440,10 @@ class ArduisWindow(Adw.ApplicationWindow):
                     leaf.add_css_class("attention")
                 else:
                     leaf.remove_css_class("attention")
+                if active and status == AgentStatus.READY:
+                    leaf.add_css_class("attention-ready")
+                else:
+                    leaf.remove_css_class("attention-ready")
 
     def _dot_css_for(self, status, active: bool) -> str:
         """Map (status, active) → the dot CSS class (plan_decisions D-06).

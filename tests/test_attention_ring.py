@@ -159,3 +159,60 @@ def test_background_project_main_split_does_not_light_active_main_row(tmp_path):
     win._apply_main_state_file(path)
     assert leaf.has_css_class("attention")  # its own card still rings
     assert not win._row_by_sid[W._MAIN_SID].has_css_class("arduis-row-attention")
+
+
+# --- end-of-turn (READY) is also "waiting for you" (user feedback 2026-07-01):
+# the agent finished and sits at its prompt — ring + row light in the READY
+# color (orange stays exclusive to approval-needed).
+
+def test_ready_agent_lights_ready_ring_and_row():
+    win = _win()
+    win._refresh_status_ui(_task("ready"))
+    assert win._leaf_by_sid["alpha:t0"].has_css_class("attention-ready")
+    assert not win._leaf_by_sid["alpha:t0"].has_css_class("attention")
+    assert win._row_by_sid["alpha"].has_css_class("arduis-row-attention-ready")
+    assert not win._row_by_sid["alpha"].has_css_class("arduis-row-attention")
+
+
+def test_running_clears_ready_ring_and_row():
+    win = _win()
+    win._leaf_by_sid["alpha:t0"].add_css_class("attention-ready")
+    win._row_by_sid["alpha"].add_css_class("arduis-row-attention-ready")
+    win._refresh_status_ui(_task("running"))
+    assert not win._leaf_by_sid["alpha:t0"].has_css_class("attention-ready")
+    assert not win._row_by_sid["alpha"].has_css_class("arduis-row-attention-ready")
+
+
+def test_waiting_beats_ready_no_double_class():
+    win = _win()
+    win._refresh_status_ui(_task("waiting"))
+    assert win._leaf_by_sid["alpha:t0"].has_css_class("attention")
+    assert not win._leaf_by_sid["alpha:t0"].has_css_class("attention-ready")
+
+
+def test_main_split_ready_lights_main_row_ready(tmp_path):
+    win, path, dot, leaf = _main_win(tmp_path, "ready")
+    win._apply_main_state_file(path)
+    assert dot.has_css_class("arduis-dot-ready")
+    assert leaf.has_css_class("attention-ready")
+    assert win._row_by_sid[W._MAIN_SID].has_css_class(
+        "arduis-row-attention-ready")
+    assert win._dot_by_sid[W._MAIN_SID].has_css_class("arduis-dot-ready")
+
+
+def test_main_row_waiting_beats_ready(tmp_path):
+    win, path, dot, leaf = _main_win(tmp_path, "waiting")
+    win._main_split_info["/other.json"] = {
+        "root": "/projA", "tid": "main:t2", "dot": _FakeWidget(),
+        "leaf": _FakeWidget(), "status": "ready",
+    }
+    win._apply_main_state_file(path)
+    assert win._row_by_sid[W._MAIN_SID].has_css_class("arduis-row-attention")
+    assert not win._row_by_sid[W._MAIN_SID].has_css_class(
+        "arduis-row-attention-ready")
+
+
+def test_css_declares_ready_ring():
+    css = W._build_css(PARALLEL_DARK)
+    assert ".arduis-leaf.attention-ready" in css
+    assert ".arduis-row-attention-ready" in css
