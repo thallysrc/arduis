@@ -1,36 +1,36 @@
 ---
 gsd_state_version: 1.0
 milestone: v1.0
-milestone_name: milestone
-status: executing
-stopped_at: Phase 9 automated gate green (5/5 plans, .deb builds+lints); awaiting hardware UAT on real Ubuntu+Arch (DIST-04)
-last_updated: "2026-06-15T23:44:05.696Z"
-last_activity: 2026-06-15
+milestone_name: MVP
+status: milestone_complete
+stopped_at: "v1.0 MVP SHIPPED & ARCHIVED 2026-07-01 (tag v1.0). Audit PASSED 33/33 reqs, 14/14 seams, 7/7 flows, 448 tests. Human UATs closed via explicit user risk acceptance (yolo); reopen contract in milestones/v1.0-MILESTONE-AUDIT.md. Next: /gsd-new-milestone (v1.1 candidates: publishing AUR/.deb/CI, PERSIST-01, STATUS-04, Flatpak)."
+last_updated: "2026-07-01T20:18:02.087Z"
+last_activity: 2026-07-01
 progress:
   total_phases: 13
-  completed_phases: 12
+  completed_phases: 13
   total_plans: 52
-  completed_plans: 51
-  percent: 98
+  completed_plans: 52
+  percent: 100
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-06-08)
+See: .planning/PROJECT.md (updated 2026-07-01)
 
 **Core value:** Tirar a ideia "quero começar uma branch nova" e ter um agente de IA rodando numa worktree isolada em segundos — gerenciando N agentes em paralelo e sempre sabendo qual deles te espera.
-**Current focus:** Phase 09 — packaging-aur-deb
+**Current focus:** Between milestones — v1.0 shipped; next: /gsd-new-milestone
 
 ## Current Position
 
-Phase: 09
-Plan: Not started
-Status: Executing Phase 09
-Last activity: 2026-06-15 - Completed quick task 260615-t37: fix _reconcile_orphans cross-project scope
+Phase: — (milestone v1.0 complete and archived)
+Plan: —
+Status: Milestone complete
+Last activity: 2026-07-01
 
-Progress: [██████░░░░] 60%
+Progress: [██████████] 100% (13/13 phases, 52/52 plans)
 
 ## Performance Metrics
 
