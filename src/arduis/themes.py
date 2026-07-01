@@ -111,11 +111,30 @@ GRUVBOX_DARK = Theme(
     dot_idle="#689d6a", dot_hibernated="#504945",
 )
 
+PARALLEL_DARK = Theme(
+    name="parallel-dark",
+    display_name="Parallel Dark",
+    # Sober near-black look modeled on parallel-code: terminal bg == card fill so
+    # the header/terminal seam inside a card is invisible.
+    bg="#16181d", fg="#d8dce3", cursor="#d8dce3",
+    palette=(
+        "#1c1f26", "#f47067", "#57ab5a", "#c69026",
+        "#539bf5", "#b083f0", "#39c5cf", "#d8dce3",
+        "#545d68", "#ff938a", "#6bc46d", "#daaa3f",
+        "#6cb6ff", "#dcbdfb", "#56d4dd", "#ffffff",
+    ),
+    surface="#111318", accent="#4d9fff", branch="#e6e9ef",
+    dot_active="#3fb950", dot_waiting="#d29922", dot_ready="#539bf5",
+    dot_idle="#6e7681", dot_hibernated="#444c56",
+    card="#16181d", border="#2a2d33", canvas="#0d0f12",
+)
+
 THEMES: dict[str, Theme] = {
     "dracula": DRACULA,
     "nord": NORD,
     "solarized-dark": SOLARIZED_DARK,
     "gruvbox-dark": GRUVBOX_DARK,
+    "parallel-dark": PARALLEL_DARK,
 }
 
 

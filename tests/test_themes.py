@@ -34,9 +34,11 @@ _COLOR_FIELDS = (
 )
 
 
-def test_registry_keys_are_exactly_the_four_slugs():
-    assert set(THEMES) == {"dracula", "nord", "solarized-dark", "gruvbox-dark"}
-    assert len(THEMES) == 4
+def test_registry_keys_are_exactly_the_five_slugs():
+    assert set(THEMES) == {
+        "dracula", "nord", "solarized-dark", "gruvbox-dark", "parallel-dark"
+    }
+    assert len(THEMES) == 5
 
 
 def test_get_theme_none_falls_back_to_dracula():
