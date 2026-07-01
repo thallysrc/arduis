@@ -2757,8 +2757,12 @@ class ArduisWindow(Adw.ApplicationWindow):
 
     # --- project removal + teardown (D-10) ----------------------------------
 
-    def _make_tab_menu_cb(self, root: str, btn: Gtk.ToggleButton):
-        """A secondary-click handler popping a 'Remover projeto' menu for ``root``."""
+    def _make_tab_menu_cb(self, root: str, btn: Gtk.Widget):
+        """A secondary-click handler popping a 'Remover projeto' menu for ``root``.
+
+        ``btn`` is the popover anchor — a sidebar PROJECTS row since the restyle
+        (it was a headerbar chip ToggleButton before).
+        """
         def _on_secondary(_gesture, _n_press, x, y) -> None:
             menu = Gio.Menu()
             item = Gio.MenuItem.new("Remover projeto", None)
