@@ -9,7 +9,7 @@ Requirements para o lançamento inicial (paralelismo simples). Cada um mapeia pa
 
 ### Terminal (TERM)
 
-- [ ] **TERM-01**: Usuário tem um terminal VTE embutido rodando o shell do host (zsh) dentro do app
+- [x] **TERM-01**: Usuário tem um terminal VTE embutido rodando o shell do host (zsh) dentro do app
 
 ### Worktree / Core Loop (WT)
 
@@ -19,13 +19,13 @@ Requirements para o lançamento inicial (paralelismo simples). Cada um mapeia pa
 
 ### Paralelismo + Sidebar (PAR)
 
-- [ ] **PAR-01**: Usuário mantém várias worktrees abertas ao mesmo tempo, cada uma com seu terminal
-- [ ] **PAR-02**: Uma sidebar lista todas as worktrees; selecionar uma foca nela
-- [ ] **PAR-03**: Usuário troca entre worktrees pela UI e por atalhos estilo tmux
+- [x] **PAR-01**: Usuário mantém várias worktrees abertas ao mesmo tempo, cada uma com seu terminal
+- [x] **PAR-02**: Uma sidebar lista todas as worktrees; selecionar uma foca nela
+- [x] **PAR-03**: Usuário troca entre worktrees pela UI e por atalhos estilo tmux
 
 ### Projetos (PROJ)
 
-- [ ] **PROJ-01**: Topbar lista múltiplos projetos multi-repo, alternáveis e persistidos entre execuções; trocar de projeto mantém os outros vivos ("both alive")
+- [x] **PROJ-01**: Topbar lista múltiplos projetos multi-repo, alternáveis e persistidos entre execuções; trocar de projeto mantém os outros vivos ("both alive")
 
 ### Status / Atenção (STATUS)
 
@@ -44,7 +44,7 @@ Requirements para o lançamento inicial (paralelismo simples). Cada um mapeia pa
 
 ### Layout (LAYOUT)
 
-- [ ] **LAYOUT-01**: Layout livre de panes — dividir/arrastar como no tmux (em vez de grade fixa)
+- [x] **LAYOUT-01**: Layout livre de panes — dividir/arrastar como no tmux (em vez de grade fixa)
 
 ### Ambiente / Config (ENV)
 
@@ -62,8 +62,8 @@ Requirements para o lançamento inicial (paralelismo simples). Cada um mapeia pa
 ### RAM / Recursos (RAM)
 
 - [x] **RAM-01**: Usuário hiberna uma worktree (mata agente + para containers, mantém o diretório) e retoma depois
-- [ ] **RAM-02**: Limite configurável de agentes/containers ativos simultaneamente
-- [ ] **RAM-03**: Visibilidade de uso de RAM por worktree na UI
+- [x] **RAM-02**: Limite configurável de agentes/containers ativos simultaneamente
+- [x] **RAM-03**: Visibilidade de uso de RAM por worktree na UI
 - [x] **RAM-04**: Suspender worktrees ociosas (ligado ao status idle)
 
 ### Review / Cleanup (REVIEW)
@@ -78,9 +78,9 @@ Requirements para o lançamento inicial (paralelismo simples). Cada um mapeia pa
 
 ### Distribuição (DIST)
 
-- [ ] **DIST-02**: Pacote nativo **AUR** (Arch), usando `vte4` do sistema — canal principal no Arch
-- [ ] **DIST-03**: Pacote nativo **`.deb`** (Ubuntu), usando `gir1.2-vte-3.91` do sistema — canal principal no Ubuntu
-- [ ] **DIST-04**: Roda em Ubuntu e Arch (GNOME, Wayland)
+- [x] **DIST-02**: Pacote nativo **AUR** (Arch), usando `vte4` do sistema — canal principal no Arch
+- [x] **DIST-03**: Pacote nativo **`.deb`** (Ubuntu), usando `gir1.2-vte-3.91` do sistema — canal principal no Ubuntu
+- [x] **DIST-04**: Roda em Ubuntu e Arch (GNOME, Wayland)
 
 > **DIST-01 (Flatpak) movido pro v2** (ver abaixo). O pivô pra distribuição nativa elimina o sandbox e a ponte `flatpak-spawn --host`; o VTE vem dos repos oficiais (Ubuntu 0.76 / Arch 0.84), sem bundle.
 

@@ -1,8 +1,9 @@
 ---
-status: awaiting_human_verify
+status: resolved
 trigger: "After splitting to 3 terminals the nested Gtk.Paned layout collapses to a ~6px sliver on the left; the other two terminals render nothing."
 created: 2026-06-10
 updated: 2026-07-01
+resolution_note: "Fix verified by headless broadway re-run (3 terminals all >100px, close/re-fill correct, zero layout GTK-CRITICAL). Live confirmation waived by user 2026-07-01 (yolo risk acceptance); reopen if the sliver reappears in real use."
 ---
 
 ## Current Focus
