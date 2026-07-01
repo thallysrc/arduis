@@ -456,6 +456,12 @@ class ArduisWindow(Adw.ApplicationWindow):
         # (window-global — one watcher covers every project's status files, which
         # are project-namespaced on disk via project_term_id in Task 1c).
         self._status_monitor: Gio.FileMonitor | None = None
+        # Main-workspace agent splits (task=None) have no TerminalRecord; their
+        # attention state is tracked window-globally: state-file path → pane-dot
+        # label (leaf widgets survive project switches unparented) and tid →
+        # path for cleanup on close. Keys are project-namespaced (_proj_term_id).
+        self._main_dot_by_state_file: dict[str, Gtk.Label] = {}
+        self._main_state_file_by_tid: dict[str, str] = {}
         # True in degraded mode (consent declined or settings unparseable) — Plan 04
         # surfaces the hint; here it is only the flag + marker logic. Window-global.
         self._degraded = False
@@ -1076,6 +1082,13 @@ class ArduisWindow(Adw.ApplicationWindow):
         bundle in the bootstrap/registry-empty case (degenerate launch, unchanged).
         """
         path = gfile.get_path()
+        # Main-workspace agent splits map straight to a pane dot (no record).
+        # getattr guard: partially-constructed windows in unit tests route
+        # events without running __init__.
+        main_map = getattr(self, "_main_dot_by_state_file", None)
+        if main_map is not None and path in main_map:
+            self._apply_main_state_file(path)
+            return
         registry = getattr(self, "_registry", None)
         projects = registry.all() if registry is not None else []
         if not projects:
@@ -1119,6 +1132,35 @@ class ArduisWindow(Adw.ApplicationWindow):
         record.status_ts = doc.ts
         self._refresh_status_ui(task)
         self._maybe_notify(task, record, old, new.value, doc)
+
+    def _apply_main_state_file(self, path: str) -> None:
+        """Flip a MAIN-workspace agent split's pane dot from its state file.
+
+        These agents have no TerminalRecord (the main workspace has no store
+        Task), so liveness comes from the hook-written pid only and the status
+        drives the pane dot directly — there is no sidebar aggregate to update
+        (the pinned main row is not a task).
+        """
+        dot = self._main_dot_by_state_file.get(path)
+        if dot is None:
+            return
+        doc = attention.read_state(path)
+        if doc is None:
+            return
+        alive = True
+        pid = getattr(doc, "pid", None)
+        if isinstance(pid, int):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                alive = False
+            except OSError:
+                pass  # EPERM etc. — process exists, just not ours to signal
+        status = attention.effective_status(
+            doc, time.time(), alive, self._att_config.idle_minutes * 60
+        )
+        self._set_dot_class(dot, self._dot_css_for(status, True))
+        dot.set_visible(True)
 
     def _pid_alive(self, record: TerminalRecord, doc) -> bool:
         """Liveness probe for the staleness sweep (Pitfall 5, T-04-17).
@@ -1498,6 +1540,10 @@ class ArduisWindow(Adw.ApplicationWindow):
         model.close_leaf(tid)
         self._leaf_by_sid.pop(tid, None)
         self._term_by_sid.pop(tid, None)
+        # Main-split attention tracking (no record): forget its state-file map.
+        main_state_file = self._main_state_file_by_tid.pop(tid, None)
+        if main_state_file is not None:
+            self._main_dot_by_state_file.pop(main_state_file, None)
 
         # Empty workspace -> fall back to main so the canvas isn't blank.
         if not model.visible_ids():
@@ -4277,15 +4323,17 @@ class ArduisWindow(Adw.ApplicationWindow):
         any per-repo ``task.repos[*].terminals``) by ``term_id``. A plain ``shell``
         terminal is NOT fed ``claude``.
 
-        Phase 4 (STATUS-01): an AGENT terminal of a real task gets the per-terminal
-        env pair ``ARDUIS_STATE_FILE`` (where the hook writes) + ``ARDUIS_SESSION_META``
-        (the term id) injected through the additive ``extra_env`` seam, and its
-        state-file path is registered in ``_record_by_state_file`` so the watcher can
-        flip the record's status. Shell terminals and the pinned main/scratch leaves
-        (no task) get NO extra env — the hook is then a guaranteed no-op (Pitfall 8).
+        Phase 4 (STATUS-01): EVERY agent terminal gets the per-terminal env pair
+        ``ARDUIS_STATE_FILE`` (where the hook writes) + ``ARDUIS_SESSION_META``
+        (the term id) injected through the additive ``extra_env`` seam. A real
+        task's agent registers in ``_record_by_state_file`` so the watcher flips
+        the record's status; a MAIN-workspace agent split (task=None — D-05 made
+        every split an agent) has no TerminalRecord, so its state file maps
+        straight to its pane dot via ``_main_dot_by_state_file``. Plain shell
+        terminals get NO extra env — the hook is then a no-op (Pitfall 8).
         """
         extra_env: list[str] | None = None
-        if task is not None and kind == "agent":
+        if kind == "agent":
             # A3: namespace the status-file path per project so two projects with a
             # same-named branch never share a status file. The hook writes to this
             # exact path and the watcher key below is the SAME path → consistent.
@@ -4296,16 +4344,26 @@ class ArduisWindow(Adw.ApplicationWindow):
                 f"ARDUIS_STATE_FILE={state_file}",
                 f"ARDUIS_SESSION_META={term_id}",
             ]
-            record = next(
-                (t for t in self._all_task_terminals(task) if t.term_id == term_id),
-                None,
-            )
-            if record is not None:
-                self._record_by_state_file[state_file] = (task, record)
             # Reveal the pane-header status dot for this agent terminal (D-07).
             pane_dot = self._pane_dot_by_tid.get(term_id)
             if pane_dot is not None:
                 pane_dot.set_visible(True)
+            record = None
+            if task is not None:
+                record = next(
+                    (
+                        t
+                        for t in self._all_task_terminals(task)
+                        if t.term_id == term_id
+                    ),
+                    None,
+                )
+                if record is not None:
+                    self._record_by_state_file[state_file] = (task, record)
+            elif pane_dot is not None:
+                # Main-workspace agent split: no record — track the dot directly.
+                self._main_dot_by_state_file[state_file] = pane_dot
+                self._main_state_file_by_tid[term_id] = state_file
             # Degraded mode (D-13, hooks declined): the bell + contents-changed
             # signals are the ONLY status signal. Both are pre-0.76 (floor-safe). Do
             # NOT connect in primary mode — hooks are authoritative there and a BEL
