@@ -1,14 +1,19 @@
 ---
-status: partial
+status: testing
 phase: 08-review-cleanup
 source: [08-06-PLAN.md]
 started: 2026-06-15T08:42:17-03:00
-updated: 2026-06-15T08:42:17-03:00
+updated: 2026-07-01T09:07:18-03:00
 ---
 
 ## Current Test
 
-[awaiting human testing on a real display + real git/gh]
+number: 1
+name: Read-only diff (REVIEW-01)
+expected: |
+  Botão direito numa task → "Ver diff ▸ <repo>" → abre um pane com `git diff`
+  colorido, READ-ONLY (não dá pra digitar nele). Por repo.
+awaiting: user response
 
 ## Tests
 
