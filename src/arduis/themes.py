@@ -42,6 +42,11 @@ class Theme:
     dot_ready: str            # _DOT_READY (cyan)
     dot_idle: str             # _DOT_IDLE (muted grey-green)
     dot_hibernated: str       # _DOT_HIBERNATED (grey / ended)
+    # Card-style restyle fields (optional so the 4 legacy themes stay untouched;
+    # _build_css resolves the fallbacks: card→surface, border→surface, canvas→bg).
+    card: str | None = None    # card/leaf background (the "island" fill)
+    border: str | None = None  # subtle 1px border of cards/sections
+    canvas: str | None = None  # canvas background (the gap between cards)
 
 
 DRACULA = Theme(
