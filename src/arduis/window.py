@@ -254,14 +254,14 @@ def _build_css(theme: Theme) -> str:
 .arduis-row-hibernated {{
     opacity: 0.5;
 }}
-.arduis-hintbar {{
-    background-color: {theme.surface};
-    padding: 4px 16px;
+.arduis-sidebar-footer {{
     font-size: 11px;
+    border-top: 1px solid {border};
 }}
 .arduis-hint-key {{
     color: {theme.accent};
     font-weight: 600;
+    font-size: 11px;
 }}
 .arduis-footer-count {{
     color: {theme.dot_active};
@@ -497,7 +497,6 @@ class ArduisWindow(Adw.ApplicationWindow):
         body.append(self._canvas_slot)
 
         outer.append(body)
-        outer.append(self._build_hint_bar())
 
         view.set_content(outer)
         # D-10: wrap the whole ToolbarView in an Adw.ToastOverlay so container
@@ -835,6 +834,9 @@ class ArduisWindow(Adw.ApplicationWindow):
                 )
                 term.set_color_cursor(_rgba(theme.cursor))
         self._current_theme = theme
+        # The footer count color is Pango markup (not CSS) — re-render it so the
+        # theme switch takes effect immediately, not on the next RAM poll.
+        self._update_footer()
 
     def _on_set_theme(self, _action, param) -> None:
         """win.set_theme(slug): switch the theme + persist the CANONICAL name (D-08/D-09).
@@ -1578,6 +1580,8 @@ class ArduisWindow(Adw.ApplicationWindow):
         tasks_scroll.set_child(self._listbox)
         box.append(tasks_scroll)
 
+        box.append(self._build_sidebar_footer())
+
         self._rebuild_sidebar()
         return box
 
@@ -2191,36 +2195,45 @@ class ArduisWindow(Adw.ApplicationWindow):
 
     # --- bottom tmux-hint bar (UI-SPEC Copywriting) -------------------------
 
-    def _build_hint_bar(self) -> Gtk.Widget:
-        """The literal tmux hint bar + the live ``N agentes ativos`` footer."""
-        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=16)
-        bar.add_css_class("arduis-hintbar")
+    def _build_sidebar_footer(self) -> Gtk.Widget:
+        """The sidebar footer: DICAS (tmux hints) + degraded re-invite + the live
+        ``N agentes ativos`` footer. Replaces the old full-width bottom hint bar
+        (parallel-code puts tips/stats at the sidebar's bottom).
+        """
+        bar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        bar.add_css_class("arduis-sidebar-footer")
 
-        # Literal contract copy with purple C-Space glyphs (UI-SPEC).
-        hints = Gtk.Label()
-        hints.set_xalign(0)
-        hints.set_use_markup(True)
-        key = _FOCUS_RING
+        bar.append(self._section_title("DICAS"))
+
         # Only advertise keys that the keymap actually dispatches: hjkl move focus
         # between the workspace's terminals; n/p (and a number) switch worktree.
         # ``z`` zoom stays a per-pane button (not in the keymap), so it is not shown
         # here as a C-Space chord (UAT: the hint must match real behavior).
-        hints.set_markup(
-            f'<span foreground="{key}" weight="bold">C-Space hjkl</span> mover painel · '
-            f'<span foreground="{key}" weight="bold">C-Space n/p</span> trocar worktree · '
-            f'<span foreground="{key}" weight="bold">C-Space 1-9</span> ir para'
-        )
-        bar.append(hints)
-
-        spacer = Gtk.Box()
-        spacer.set_hexpand(True)
-        bar.append(spacer)
+        # Key glyphs use the theme-sourced .arduis-hint-key CSS class (the old bar
+        # hardcoded the Dracula _FOCUS_RING hex in Pango markup — a theme-switch bug).
+        for key_text, desc in (
+            ("C-Space hjkl", "mover painel"),
+            ("C-Space n/p", "trocar worktree"),
+            ("C-Space 1-9", "ir para"),
+        ):
+            line = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            line.set_margin_start(16)
+            line.set_margin_end(16)
+            key_label = Gtk.Label(xalign=0)
+            key_label.set_text(key_text)
+            key_label.add_css_class("arduis-hint-key")
+            line.append(key_label)
+            desc_label = Gtk.Label(xalign=0)
+            desc_label.set_text(desc)
+            desc_label.add_css_class("arduis-row-subline")
+            line.append(desc_label)
+            bar.append(line)
 
         # Degraded-mode re-invite (D-02/D-13): a subtle flat button shown ONLY when
         # hooks were declined/unavailable. Clicking re-presents the consent dialog
         # (NOT the full _setup_attention — that would create a duplicate FileMonitor).
         # Built hidden here (this runs before _setup_attention sets _degraded);
-        # revealed by _refresh_degraded_hint after setup. Sits left of the footer.
+        # revealed by _refresh_degraded_hint after setup.
         self._degraded_hint_btn = Gtk.Button(label="status limitado — instalar hooks?")
         self._degraded_hint_btn.add_css_class("flat")
         self._degraded_hint_btn.set_visible(False)
@@ -2228,9 +2241,12 @@ class ArduisWindow(Adw.ApplicationWindow):
         bar.append(self._degraded_hint_btn)
 
         # Aggregate footer: "N agentes ativos · <total> RAM" (count in green).
-        self._footer_label = Gtk.Label()
-        self._footer_label.set_xalign(1)
+        self._footer_label = Gtk.Label(xalign=0)
         self._footer_label.set_use_markup(True)
+        self._footer_label.set_margin_start(16)
+        self._footer_label.set_margin_end(16)
+        self._footer_label.set_margin_top(6)
+        self._footer_label.set_margin_bottom(10)
         self._update_footer()
         bar.append(self._footer_label)
         return bar
@@ -4468,7 +4484,9 @@ class ArduisWindow(Adw.ApplicationWindow):
 
     def _update_footer(self) -> None:
         """Render ``N agentes ativos · <total> RAM`` (active count in green)."""
-        if self._footer_label is None:
+        # getattr guard: partially-constructed windows in unit tests call
+        # _apply_theme before the sidebar footer exists.
+        if getattr(self, "_footer_label", None) is None:
             return
         tasks = self._store.all()
         n = caps.active_count(tasks)
@@ -4482,8 +4500,10 @@ class ArduisWindow(Adw.ApplicationWindow):
             if t.rss_kb is not None
         )
         total_str = resource_monitor.format_ram_kb(total if total else None)
+        # Theme-sourced count color (the old markup hardcoded the Dracula green).
+        count_color = self._current_theme.dot_active
         self._footer_label.set_markup(
-            f'<span foreground="{_DOT_ACTIVE}" weight="bold">{n} agentes ativos</span>'
+            f'<span foreground="{count_color}" weight="bold">{n} agentes ativos</span>'
             f" · {total_str} RAM"
         )
 
