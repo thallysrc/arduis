@@ -259,6 +259,29 @@ def aggregate_task(records) -> AgentStatus | None:
     return None
 
 
+# --- Instant-waiting accelerator: terminal-text prompt detection ---------------
+# Claude Code fires the permission Notification only ~6s AFTER the prompt renders
+# (measured 2026-07-01; no bell, no config to shorten it). The visible terminal
+# text is the only instant signal. This is the sanctioned SECONDARY channel
+# (RESEARCH Pattern 5): escalate-only — hook events stay authoritative and
+# overwrite whatever this detects. A marker alone is not enough (claude may echo
+# the phrase in prose); the real dialog always renders a numbered option list.
+_PROMPT_MARKERS = (
+    "Do you want to proceed?",
+    "Do you trust the files in this folder?",
+)
+_PROMPT_OPTION_SIGNATURE = "1. Yes"
+
+
+def looks_like_permission_prompt(text: str) -> bool:
+    """True iff ``text`` (a terminal tail snapshot) shows a live approval dialog."""
+    if not text:
+        return False
+    if _PROMPT_OPTION_SIGNATURE not in text:
+        return False
+    return any(marker in text for marker in _PROMPT_MARKERS)
+
+
 # --- Hook install: settings merge builder (Pattern 3, Pitfall 9, T-04-08) ------
 # The 7 events arduis subscribes to (Pattern 1 event->state map). Matcher events
 # carry a "matcher": "*" group; the other 5 omit the matcher key (Pitfall 9 /

@@ -1214,6 +1214,75 @@ class ArduisWindow(Adw.ApplicationWindow):
                 dot, "arduis-dot-waiting" if waiting else "arduis-dot-active"
             )
 
+    # --- instant-waiting accelerator (terminal-text scan, RESEARCH Pattern 5) --
+    # Claude Code fires the permission Notification only ~6s after the dialog
+    # renders (measured 2026-07-01; no bell, not configurable). The terminal
+    # text is the only instant signal: on (debounced) contents-changed, scan the
+    # tail for the approval dialog and ESCALATE-ONLY to waiting — every hook
+    # event that follows stays authoritative and overwrites this opinion.
+
+    def _terminal_tail_text(self, terminal) -> str:
+        """The last ~20 rows of ``terminal`` up to the cursor (best-effort).
+
+        Uses ``get_text_range_format`` (VTE 0.72+, within the 0.76 floor) — the
+        legacy ``get_text_range``/``get_text`` return empty on this VTE build
+        (verified empirically on the system 0.76/0.84 packages).
+        """
+        try:
+            _col, row = terminal.get_cursor_position()
+            start = max(0, row - 20)
+            res = terminal.get_text_range_format(Vte.Format.TEXT, start, 0, row + 1, 0)
+            text = res[0] if isinstance(res, tuple) else res
+            return text or ""
+        except Exception:  # noqa: BLE001 — scan is best-effort, never crash UI
+            return ""
+
+    def _escalate_waiting(self, task: Task | None, term_id: str, state_file: str) -> None:
+        """Flip ``term_id`` to WAITING now (escalate-only; hooks overwrite later)."""
+        if task is not None:
+            record = next(
+                (t for t in self._all_task_terminals(task) if t.term_id == term_id),
+                None,
+            )
+            if record is None or record.status == AgentStatus.WAITING.value:
+                return
+            record.status = AgentStatus.WAITING.value
+            record.status_ts = time.time()
+            self._refresh_status_ui(task)
+            return
+        info = getattr(self, "_main_split_info", {}).get(state_file)
+        if info is None or info.get("status") == "waiting":
+            return
+        info["status"] = "waiting"
+        dot = info.get("dot")
+        if dot is not None:
+            self._set_dot_class(dot, "arduis-dot-waiting")
+            dot.set_visible(True)
+        leaf = info.get("leaf")
+        if leaf is not None:
+            leaf.add_css_class("attention")
+        self._refresh_main_row_attention()
+
+    def _make_prompt_scan_cb(self, terminal, task: Task | None, term_id: str, state_file: str):
+        """A leading-edge-debounced contents-changed handler scanning for the
+        approval dialog (300ms coalesce — the signal fires on every repaint)."""
+        pending = [False]
+
+        def _scan() -> bool:
+            pending[0] = False
+            text = self._terminal_tail_text(terminal)
+            if attention.looks_like_permission_prompt(text):
+                self._escalate_waiting(task, term_id, state_file)
+            return GLib.SOURCE_REMOVE
+
+        def _on_changed(_term) -> None:
+            if pending[0]:
+                return
+            pending[0] = True
+            GLib.timeout_add(300, _scan)
+
+        return _on_changed
+
     def _pid_alive(self, record: TerminalRecord, doc) -> bool:
         """Liveness probe for the staleness sweep (Pitfall 5, T-04-17).
 
@@ -4453,6 +4522,13 @@ class ArduisWindow(Adw.ApplicationWindow):
                 terminal.connect(
                     "contents-changed", self._make_activity_cb(task, record)
                 )
+            # Instant-waiting accelerator (ALL modes): scan the terminal tail for
+            # the approval dialog on contents-changed — escalate-only, so it never
+            # fights the authoritative hook events (they overwrite it).
+            terminal.connect(
+                "contents-changed",
+                self._make_prompt_scan_cb(terminal, task, term_id, state_file),
+            )
         argv, envv = build_worktree_spawn(self._runner, extra_env)
         terminal.spawn_async(
             Vte.PtyFlags.DEFAULT,
