@@ -251,6 +251,7 @@ dialog.alert dimming {{
 }}
 .arduis-leaf.focus {{
     border-color: {theme.accent};
+    box-shadow: inset 0 0 0 1px {theme.accent};
 }}
 .arduis-canvas {{
     border: none;
@@ -1408,8 +1409,27 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         terminal.set_hexpand(True)
         terminal.set_vexpand(True)
+        # Focus ring follows REAL keyboard focus: a mouse click on a terminal
+        # grabs GTK focus without going through the C-Space keymap, so sync the
+        # layout model + CSS ring from the widget's focus-enter event.
+        focus_ctrl = Gtk.EventControllerFocus()
+        focus_ctrl.connect("enter", self._make_focus_sync_cb(sid))
+        terminal.add_controller(focus_ctrl)
         leaf.append(terminal)
         return leaf
+
+    def _make_focus_sync_cb(self, sid: str):
+        """Sync model.focused_id + the focus ring when ``sid`` gains GTK focus."""
+        def _on_enter(_ctrl) -> None:
+            model = self._active_layout()
+            if model is None or model.focused_id == sid:
+                return
+            if not model.is_visible(sid):
+                return  # stale event for a leaf outside the active workspace
+            model.focused_id = sid
+            model.touch(sid)
+            self._refresh_focus_ring(sid)
+        return _on_enter
 
     def _make_split_pane_cb(self, sid: str):
         def _split(_btn) -> None:
