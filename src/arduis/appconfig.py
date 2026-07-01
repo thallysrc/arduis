@@ -13,13 +13,13 @@ import os
 import tempfile
 import tomllib
 
-_DEFAULT_THEME = "dracula"
+_DEFAULT_THEME = "parallel-dark"
 # Deterministic top-level table order (others appended after, sorted, for stability).
 _SECTION_ORDER = ("attention", "agent", "keys", "theme")
 
 
 def load_theme_name(path: str) -> str:
-    """Read ``[theme] name`` (UI-02); non-str/empty/missing/garbage -> ``"dracula"``.
+    """Read ``[theme] name`` (UI-02); non-str/empty/missing/garbage -> ``"parallel-dark"``.
 
     Tolerant read mirroring attention.load_config. window.py passes the result to
     themes.get_theme, which re-whitelists, so a bogus-but-non-empty name is harmless.

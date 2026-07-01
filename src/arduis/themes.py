@@ -5,13 +5,14 @@ colors) AND the UI colors window._CSS hardcodes (surface/accent/branch + 5 statu
 dots). window.py (Plan 03) converts these hex strings to Gdk.RGBA at apply time, so
 this module imports NO gi/Gdk and the whole suite runs without GTK/Vte.
 
-Ship 4 DARK themes (so libadwaita FORCE_DARK stays consistent): dracula (default,
-palette imported verbatim from theme.py), nord, solarized-dark, gruvbox-dark. The
-non-Dracula hex tables come from 05-RESEARCH §DESIGN (a wrong shade is cosmetic —
-Pitfall 6's parse guard + the valid-hex unit test prevent a crash).
+Ship 5 DARK themes (so libadwaita FORCE_DARK stays consistent): parallel-dark
+(default, parallel-code-inspired near-black), dracula (palette imported verbatim
+from theme.py), nord, solarized-dark, gruvbox-dark. The non-Dracula hex tables come
+from 05-RESEARCH §DESIGN (a wrong shade is cosmetic — Pitfall 6's parse guard + the
+valid-hex unit test prevent a crash).
 
-get_theme(name) is a dict WHITELIST returning DRACULA for any unknown/None/empty
-name (T-05-03: the name is never used as a filesystem path).
+get_theme(name) is a dict WHITELIST returning PARALLEL_DARK for any unknown/None/
+empty name (T-05-03: the name is never used as a filesystem path).
 """
 from __future__ import annotations
 
@@ -139,9 +140,10 @@ THEMES: dict[str, Theme] = {
 
 
 def get_theme(name: str | None) -> Theme:
-    """Return the Theme for ``name`` (slug), or DRACULA for any unknown/None/empty.
+    """Return the Theme for ``name`` (slug), or PARALLEL_DARK for unknown/None/empty.
 
     A dict whitelist — the name is NEVER used to build a filesystem path (T-05-03).
-    Case-insensitive on the slug.
+    Case-insensitive on the slug. Users who explicitly persisted another slug via
+    ``write_theme`` keep their choice; only the no-config default changed.
     """
-    return THEMES.get((name or "dracula").lower(), DRACULA)
+    return THEMES.get((name or "parallel-dark").lower(), PARALLEL_DARK)

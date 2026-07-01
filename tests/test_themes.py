@@ -14,7 +14,7 @@ import re
 import pytest
 
 from arduis import theme
-from arduis.themes import DRACULA, THEMES, Theme, get_theme
+from arduis.themes import DRACULA, PARALLEL_DARK, THEMES, Theme, get_theme
 
 _HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 
@@ -41,16 +41,16 @@ def test_registry_keys_are_exactly_the_five_slugs():
     assert len(THEMES) == 5
 
 
-def test_get_theme_none_falls_back_to_dracula():
-    assert get_theme(None) is DRACULA
+def test_get_theme_none_falls_back_to_parallel_dark():
+    assert get_theme(None) is PARALLEL_DARK
 
 
-def test_get_theme_empty_falls_back_to_dracula():
-    assert get_theme("") is DRACULA
+def test_get_theme_empty_falls_back_to_parallel_dark():
+    assert get_theme("") is PARALLEL_DARK
 
 
-def test_get_theme_unknown_falls_back_to_dracula():
-    assert get_theme("nope") is DRACULA
+def test_get_theme_unknown_falls_back_to_parallel_dark():
+    assert get_theme("nope") is PARALLEL_DARK
 
 
 def test_get_theme_is_case_insensitive_on_the_slug():

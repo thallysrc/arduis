@@ -1,6 +1,6 @@
 """Contract tests for the GTK-free [theme] config (``arduis.appconfig``).
 
-Pins UI-02 (D-09): tolerant ``[theme] name`` read with a "dracula" default, and an
+Pins UI-02 (D-09): tolerant ``[theme] name`` read with a "parallel-dark" default, and an
 atomic section-preserving ``write_theme`` (tmp + os.replace, no tomli-w dependency)
 that never corrupts arduis.toml or drops another section (T-05-04).
 """
@@ -21,7 +21,7 @@ def _write(tmp_path, text, name="arduis.toml"):
 
 # --- load_theme_name -----------------------------------------------------------
 def test_load_missing_default(tmp_path):
-    assert load_theme_name(str(tmp_path / "nope.toml")) == "dracula"
+    assert load_theme_name(str(tmp_path / "nope.toml")) == "parallel-dark"
 
 
 def test_load_name(tmp_path):
@@ -31,22 +31,22 @@ def test_load_name(tmp_path):
 
 def test_load_non_str_default(tmp_path):
     p = _write(tmp_path, "[theme]\nname = 123\n")
-    assert load_theme_name(p) == "dracula"
+    assert load_theme_name(p) == "parallel-dark"
 
 
 def test_load_empty_default(tmp_path):
     p = _write(tmp_path, '[theme]\nname = ""\n')
-    assert load_theme_name(p) == "dracula"
+    assert load_theme_name(p) == "parallel-dark"
 
 
 def test_load_invalid_toml_default(tmp_path):
     p = _write(tmp_path, "[theme]\nname = not valid =")
-    assert load_theme_name(p) == "dracula"
+    assert load_theme_name(p) == "parallel-dark"
 
 
 def test_load_missing_section_default(tmp_path):
     p = _write(tmp_path, "[attention]\nidle_minutes = 5\n")
-    assert load_theme_name(p) == "dracula"
+    assert load_theme_name(p) == "parallel-dark"
 
 
 # --- write_theme round-trip ----------------------------------------------------
