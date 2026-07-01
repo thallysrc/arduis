@@ -162,6 +162,7 @@ def _build_css(theme: Theme) -> str:
     """
     card = theme.card or theme.surface
     border = theme.border or theme.surface
+    canvas = theme.canvas or theme.bg
     return f"""
 .arduis-sidebar {{
     background-color: {theme.surface};
@@ -197,6 +198,18 @@ def _build_css(theme: Theme) -> str:
 }}
 .arduis-leaf.focus {{
     border-color: {theme.accent};
+}}
+.arduis-canvas {{
+    border: none;
+    background-color: {canvas};
+    padding: 12px;
+}}
+.arduis-split > separator {{
+    background: none;
+    background-color: transparent;
+    border: none;
+    min-width: 12px;
+    min-height: 12px;
 }}
 .arduis-chip-bar {{
     padding: 0 4px;
@@ -487,7 +500,10 @@ class ArduisWindow(Adw.ApplicationWindow):
         body.append(self._sidebar)
 
         # Canvas slot: a single-child frame whose child is the reflected pane tree.
+        # Styled as the card canvas: near-black background + 12px padding so the
+        # rounded cards float with a gap all around (parallel-code look).
         self._canvas_slot = Gtk.Frame()
+        self._canvas_slot.add_css_class("arduis-canvas")
         self._canvas_slot.set_hexpand(True)
         self._canvas_slot.set_vexpand(True)
         body.append(self._canvas_slot)
@@ -4467,7 +4483,10 @@ class ArduisWindow(Adw.ApplicationWindow):
                 else Gtk.Orientation.VERTICAL
             )
             paned = Gtk.Paned(orientation=orient)
-            paned.set_wide_handle(True)            # visible draggable gutter
+            paned.set_wide_handle(True)            # wide hit-area for the gap gutter
+            # Card gaps: the separator is styled fully transparent (12px) so the
+            # canvas background reads as a gap between cards; it stays draggable.
+            paned.add_css_class("arduis-split")
             # Both children resize and CAN shrink: with shrink=False a nested
             # Paned whose children each demand a min-size collapses to a single
             # narrow column on first allocation (the position handle is never
