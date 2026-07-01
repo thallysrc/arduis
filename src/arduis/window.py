@@ -117,7 +117,7 @@ _NO_REPO_HINT = "Launch arduis inside a git repo to create worktrees"
 # The pinned $HOME scratch shell is a layout leaf but NOT a store session (D-07).
 _MAIN_SID = "main"
 
-_SIDEBAR_WIDTH = 248   # UI-SPEC: fixed-ish sidebar width
+_SIDEBAR_WIDTH = 264   # fixed-ish sidebar width (sectioned parallel-code layout)
 _PANE_HEADER_H = 32    # UI-SPEC: pane-header height
 # 03.3 D-05: topbar chip overflow threshold — show up to this many chips inline,
 # then fold the rest into a "+N" overflow Gtk.MenuButton (no horizontal scroll,
@@ -210,6 +210,19 @@ def _build_css(theme: Theme) -> str:
     border: none;
     min-width: 12px;
     min-height: 12px;
+}}
+.arduis-section-title {{
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    opacity: 0.55;
+}}
+.arduis-new-task-btn {{
+    background-color: {card};
+    border: 1px solid {border};
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-weight: 600;
 }}
 .arduis-chip-bar {{
     padding: 0 4px;
@@ -445,15 +458,6 @@ class ArduisWindow(Adw.ApplicationWindow):
         # resolution succeeds. Keep a reference so `_resolve_project` can update it.
         self._title_widget = Adw.WindowTitle(title="arduis")
         header.set_title_widget(self._title_widget)
-
-        # The "+New task" button lives in the header (D-02/D-03). Disabled
-        # until project resolution succeeds.
-        self._new_btn = Gtk.Button()
-        self._new_btn.set_icon_name("list-add-symbolic")
-        self._new_btn.set_tooltip_text("Nova task")
-        self._new_btn.set_sensitive(False)  # enabled once the project resolves
-        self._new_btn.connect("clicked", self._on_new_worktree_clicked)
-        header.pack_start(self._new_btn)
 
         # 03.4 (D-04): the per-repo chip bar is GONE (chips were the wrong level —
         # the topbar holds PROJECTS, not repos). This horizontal Box stays as an
@@ -1516,16 +1520,51 @@ class ArduisWindow(Adw.ApplicationWindow):
 
     # --- sidebar (PAR-02, D-05/D-06/D-07/D-08) ------------------------------
 
+    @staticmethod
+    def _section_title(text: str) -> Gtk.Label:
+        """A small all-caps section header label (parallel-code sidebar style)."""
+        label = Gtk.Label(xalign=0)
+        label.set_text(text)
+        label.add_css_class("arduis-section-title")
+        label.set_margin_start(16)
+        label.set_margin_end(16)
+        label.set_margin_top(12)
+        label.set_margin_bottom(4)
+        return label
+
     def _build_sidebar(self) -> Gtk.Widget:
-        """The left sidebar: a ListBox of the pinned main row + worktree rows."""
+        """The left sidebar, sectioned parallel-code style (top to bottom):
+        "+ Nova task" button, TASKS section title, then the scrollable ListBox of
+        the pinned main row + worktree rows.
+        """
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         box.add_css_class("arduis-sidebar")
         box.set_size_request(_SIDEBAR_WIDTH, -1)
 
+        # The "+ Nova task" button (D-02/D-03) — moved from the headerbar into
+        # the sidebar (parallel-code layout). Same attribute + handler, so
+        # _refresh_project_chrome keeps driving its sensitivity/tooltip.
+        self._new_btn = Gtk.Button(label="+ Nova task")
+        self._new_btn.add_css_class("arduis-new-task-btn")
+        self._new_btn.set_tooltip_text("Nova task")
+        self._new_btn.set_sensitive(False)  # enabled once the project resolves
+        self._new_btn.connect("clicked", self._on_new_worktree_clicked)
+        self._new_btn.set_margin_start(12)
+        self._new_btn.set_margin_end(12)
+        self._new_btn.set_margin_top(12)
+        box.append(self._new_btn)
+
+        box.append(self._section_title("TASKS"))
+
         self._listbox = Gtk.ListBox()
         self._listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
         self._listbox.connect("row-activated", self._on_row_activated)
-        box.append(self._listbox)
+
+        tasks_scroll = Gtk.ScrolledWindow()
+        tasks_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        tasks_scroll.set_vexpand(True)
+        tasks_scroll.set_child(self._listbox)
+        box.append(tasks_scroll)
 
         self._rebuild_sidebar()
         return box
