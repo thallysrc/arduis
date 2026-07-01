@@ -24,7 +24,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 6: Per-Worktree Setup via `.arduis.toml`** - Repo config with sensible defaults; setup commands run on worktree creation via the login shell (completed 2026-06-13)
 - [x] **Phase 7: Opt-in Isolated Containers** - Per-worktree docker-compose isolation with stable project name, auto port offset + probing, port badges, guaranteed teardown (completed 2026-06-14)
 - [x] **Phase 8: Review + Cleanup** - Read-only diff, branch/PR status via git/gh, "conclude worktree" with correct teardown order (completed 2026-06-15)
-- [ ] **Phase 9: Packaging (AUR + .deb)** - Team-installable on Ubuntu + Arch under real Wayland as native packages using the system VTE; Flatpak deferred to v2
+- [x] **Phase 9: Packaging (AUR + .deb)** - Team-installable on Ubuntu + Arch under real Wayland as native packages using the system VTE; Flatpak deferred to v2 (completed 2026-06-15 — hardware UAT PO-accepted as open risk per 09-HUMAN-UAT.md)
 
 ## Phase Details
 
