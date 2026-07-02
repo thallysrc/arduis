@@ -71,3 +71,46 @@ def _collect(node, out: list[str]) -> None:
     elif isinstance(node, SplitNode):
         _collect(node.start, out)
         _collect(node.end, out)
+
+
+def save_layouts(path: str, snapshot: dict) -> None:
+    """Atomically persist the layouts snapshot (best-effort, mirrors save_projects).
+
+    A mid-write failure unlinks the temp and leaves the original intact; an
+    uncreatable parent / read-only dir is swallowed.
+    """
+    try:
+        d = os.path.dirname(path) or "."
+        os.makedirs(d, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=d, prefix=".arduis-layouts-")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(snapshot, fh, indent=2)
+            os.replace(tmp, path)  # atomic
+        except (OSError, ValueError, TypeError):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    except OSError:
+        pass  # best-effort persistence (mirrors projects_store.save_projects)
+
+
+def load_layouts(path: str) -> dict:
+    """Tolerant load; always returns a dict with a ``projects`` dict.
+
+    Bad json / not-a-dict / missing file -> ``{"version": 1, "projects": {}}``.
+    """
+    empty = {"version": _VERSION, "projects": {}}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return empty
+    if not isinstance(data, dict):
+        return empty
+    projects = data.get("projects")
+    if not isinstance(projects, dict):
+        data["projects"] = {}
+    data.setdefault("version", _VERSION)
+    return data
