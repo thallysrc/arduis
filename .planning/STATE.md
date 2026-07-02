@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-07-01)
 Phase: — (milestone v1.0 complete and archived)
 Plan: —
 Status: Milestone complete
-Last activity: 2026-07-01
+Last activity: 2026-07-02 - Completed quick task 260702-kzo: Empty state com botão + centrado quando todos os panes do workspace são fechados — inicia novo terminal com claude
 
 Progress: [██████████] 100% (13/13 phases, 52/52 plans)
 
@@ -106,6 +106,7 @@ None yet.
 | 260615-trz | Apply 3 high-confidence code-review fixes (git_service spawn guard, layout close_leaf, theme all-projects) | 2026-06-15 | 6c15306 | [260615-trz-apply-high-confidence-code-review-fixes-](./quick/260615-trz-apply-high-confidence-code-review-fixes-/) |
 | 260615-tzk | Fix orphan-on-close — synchronous SIGKILL sweep at app-exit (no-orphans criterion) | 2026-06-15 | 1b326ab | [260615-tzk-fix-orphan-on-close-synchronous-sigkill-](./quick/260615-tzk-fix-orphan-on-close-synchronous-sigkill-/) |
 | 260616-buk | Fix multi-project attention — surface background-project WAITING agents (notify + poll all projects; closes review #4 + #6) | 2026-06-16 | a6ff97f | [260616-buk-fix-multi-project-attention-surface-back](./quick/260616-buk-fix-multi-project-attention-surface-back/) |
+| 260702-kzo | Empty state com botão "+ Novo terminal" quando todos os panes fecham — cria pane novo com claude (código não commitado — hunks tagged `quick 260702-kzo` em window.py, ver SUMMARY) | 2026-07-02 | pending | [260702-kzo-empty-state-com-bot-o-centrado-quando-to](./quick/260702-kzo-empty-state-com-bot-o-centrado-quando-to/) |
 
 ### Validation Reconcile (2026-06-15)
 
