@@ -2010,6 +2010,10 @@ class ArduisWindow(Adw.ApplicationWindow):
                 workspace.terminals.append(TerminalRecord(tid, desc["kind"]))
             pending.append((terminal, tid, desc))
         self._reflect_layout()
+        # Called by both the boot main-restore and worktree-resume paths, neither of
+        # which goes through _swap_workspace — sync the highlight directly rather
+        # than relying on a caller's later _rebuild_sidebar() call.
+        self._sync_sidebar_selection()
         for terminal, tid, desc in pending:
             self._spawn_into(
                 terminal, desc["cwd"], workspace, tid,
@@ -2654,9 +2658,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         # Keep the sidebar selection in sync with the visible workspace so the
         # C-Space n/p/number cycle always steps relative to what is on screen
         # (Failure 3: a stale selection made the prefix jumps unpredictable).
-        row = self._row_by_sid.get(sid)
-        if row is not None and self._listbox.get_selected_row() is not row:
-            self._listbox.select_row(row)
+        self._sync_sidebar_selection()
         # Focus the swapped-in workspace's focused terminal.
         model = self._workspace_layout(sid)
         term = self._term_by_sid.get(model.focused_id)
@@ -2714,9 +2716,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._canvas_slot.set_child(box)
 
         # Keep the sidebar selection in sync, same as _swap_workspace.
-        row = self._row_by_sid.get(workspace.workspace_id)
-        if row is not None and self._listbox.get_selected_row() is not row:
-            self._listbox.select_row(row)
+        self._sync_sidebar_selection()
 
     def _all_workspaces(self) -> list[Workspace]:
         """The UNION of every OPEN project's workspaces (D-09 global cap).
@@ -3887,6 +3887,12 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._layouts[workspace.workspace_id] = model
         self._active_workspace_sid = workspace.workspace_id
         self._reflect_layout()
+        # This helper (shared by _create_workspace's finalize and _resume_workspace)
+        # switches the canvas WITHOUT going through _swap_workspace — sync the
+        # highlight here directly rather than relying on the caller's later
+        # _rebuild_sidebar() call (a caller that skips/reorders that call would
+        # silently reintroduce the sidebar-highlight-wrong-item bug).
+        self._sync_sidebar_selection()
         return model
 
     def _make_workspace_leaf(self, tid: str, branch: str, badge: str) -> None:
