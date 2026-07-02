@@ -88,9 +88,9 @@ from arduis.session import (  # noqa: E402
     RepoCheckout,
     SessionState,
     SessionStore,
-    Task,
+    Workspace,
     TerminalRecord,
-    default_task_terminals,
+    default_workspace_terminals,
     hibernate_fields,
 )
 from arduis import agentconfig, appconfig, keyconfig, repoconfig, trust  # noqa: E402
@@ -295,7 +295,7 @@ dialog.alert dimming {{
     letter-spacing: 0.08em;
     opacity: 0.55;
 }}
-.arduis-new-task-btn {{
+.arduis-new-workspace-btn {{
     background-color: {card};
     border: 1px solid {border};
     border-radius: 8px;
@@ -413,17 +413,17 @@ class ArduisWindow(Adw.ApplicationWindow):
         )
         # Docker-on-PATH is a MACHINE fact, not per-project — kept a plain field.
         self._docker_available = False
-        # task_ids with an in-flight compose op (toggle disabled + spinner shown).
+        # workspace_ids with an in-flight compose op (toggle disabled + spinner shown).
         self._compose_busy: set[str] = set()
 
         # --- Phase 8 (REVIEW-02/GIT-01, D-03): branch+PR status throttle --------
-        # The TTL cache (gh payload keyed by task_id) + an in-flight debounce set
+        # The TTL cache (gh payload keyed by workspace_id) + an in-flight debounce set
         # mirroring _compose_busy. Reads are manual-refresh + auto-on-create/activate
         # + TTL + debounce — NEVER a poll (gh is network/rate-limited, T-08-10).
         self._review_cache = ReviewCache()
         self._pr_busy: set[str] = set()
         # Pending enable data (project + port_map) stashed between the async
-        # config-step and the up-step, keyed by task_id.
+        # config-step and the up-step, keyed by workspace_id.
         self._compose_pending: dict[str, dict] = {}
 
         # The $HOME scratch shell is the pinned "main" leaf (D-07), not a session.
@@ -478,9 +478,9 @@ class ArduisWindow(Adw.ApplicationWindow):
         attention.clear_status_dir(self._status_dir)
         # The status-dir Gio.FileMonitor; cancelled in _on_close_request
         # (window-global — one watcher covers every project's status files, which
-        # are project-namespaced on disk via project_term_id in Task 1c).
+        # are project-namespaced on disk via project_term_id in Workspace 1c).
         self._status_monitor: Gio.FileMonitor | None = None
-        # Main-workspace agent splits (task=None) have no TerminalRecord; their
+        # Main-workspace agent splits (workspace=None) have no TerminalRecord; their
         # attention state is tracked window-globally: state-file path → a small
         # info dict {root, tid, dot, leaf, status}. Widget refs survive project
         # switches (leaves are unparented, never destroyed); ``root`` scopes the
@@ -511,7 +511,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._agent_config = agentconfig.load_agent_config(self._config_path)
         # UI-01 (D-04/D-05): the configurable prefix tuple + the resolved keymap
         # merged over the defaults through a closed action set. Their USE is wired
-        # in _on_key/_run_action (Task 2); loaded here so __init__ has one region.
+        # in _on_key/_run_action (Workspace 2); loaded here so __init__ has one region.
         _keys = _read_keys_section(self._config_path)
         self._prefix = keyconfig.resolve_prefix(_keys.get("prefix"))
         self._keymap = keyconfig.resolve_keymap(_keys.get("bindings"))
@@ -612,17 +612,17 @@ class ArduisWindow(Adw.ApplicationWindow):
         self.connect("close-request", self._on_close_request)
 
         # 03.4 (D-05/D-06/D-07): restore the remembered projects, auto-register the
-        # launch cwd, select the active project, and rediscover EACH project's tasks
-        # (D-11: disk is the source of truth; tasks are HIBERNATED and DO NOT spawn —
+        # launch cwd, select the active project, and rediscover EACH project's workspaces
+        # (D-11: disk is the source of truth; workspaces are HIBERNATED and DO NOT spawn —
         # resume relaunches on demand, Pitfall 6). This replaces the single
-        # _resolve_project + _scan_tasks startup pair; it renders the active
+        # _resolve_project + _scan_workspaces startup pair; it renders the active
         # project's sidebar + project tabs and persists the (possibly newly-added)
         # cwd root. Runs before the attention watcher + the RAM-poll seed.
         self._init_projects()
 
         # Phase 4 attention infra (STATUS-01): refresh the installed hook script,
         # offer the consent dialog once, and start the status-dir watcher. Runs
-        # after the task scan (records exist) and before the shell leaf so the
+        # after the workspace scan (records exist) and before the shell leaf so the
         # monitor is live before any terminal can spawn (D-02/D-05).
         self._setup_attention()
         # Reveal the degraded-mode re-invite hint iff consent was declined/unparseable
@@ -645,7 +645,7 @@ class ArduisWindow(Adw.ApplicationWindow):
     # unchanged and `main` stays launchable. The setters write onto the active
     # Project if one exists, else the bootstrap — preserving direct assignment
     # (e.g. the conclude test's `win._store = <stub>` and _resolve_project's
-    # transitional writes before the registry is seeded in Task 2).
+    # transitional writes before the registry is seeded in Workspace 2).
 
     def _active_or_bootstrap(self) -> Project:
         """The active Project, or the bootstrap fallback when none is selected."""
@@ -819,7 +819,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         """Namespace ``term_id`` with the ACTIVE project's root discriminator (A3).
 
         ``term_id`` is branch-derived (``feat:t0``) so two projects with a
-        same-named task would otherwise collide on the GLOBAL attention status-file
+        same-named workspace would otherwise collide on the GLOBAL attention status-file
         path. Prefixing the active project's ``project_term_id`` discriminator makes
         every status-file path project-unique. CRITICAL CONSISTENCY: this is applied
         at ALL status-file derive sites (the env path the hook writes to, the
@@ -829,7 +829,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         spawned/read/cleared within its OWNING project; at spawn time the owning
         project is the active one (switching never tears down — D-08), so the active
         root is the right and stable discriminator for the write key. The read/clear
-        sites that touch BACKGROUND tasks (260616-buk, finding #6) pass the owning
+        sites that touch BACKGROUND workspaces (260616-buk, finding #6) pass the owning
         root explicitly via :meth:`_proj_term_id_for`. Falls back to the bare
         ``term_id`` only when no project is active (degenerate launch — single
         status namespace, unchanged).
@@ -840,7 +840,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         """``_proj_term_id`` logic parameterized on an EXPLICIT owning root (260616-buk).
 
         Multi-project attention surfacing (finding #4) and the teardown clear path
-        (finding #6) must derive a BACKGROUND task's status-file path with ITS OWN
+        (finding #6) must derive a BACKGROUND workspace's status-file path with ITS OWN
         project's root, not the active one — otherwise the path read/cleared differs
         from the path the hook writes to (registered at spawn under the owning root).
         Falsy ``root`` → the bare ``term_id`` (degenerate launch, unchanged).
@@ -849,20 +849,20 @@ class ArduisWindow(Adw.ApplicationWindow):
             return term_id
         return project_term_id(root, term_id)
 
-    def _project_for_task(self, task: "Task") -> "Project | None":
-        """The registered Project that OWNS ``task`` (its store holds it), else None.
+    def _project_for_workspace(self, workspace: "Workspace") -> "Project | None":
+        """The registered Project that OWNS ``workspace`` (its store holds it), else None.
 
         Used by the cross-project attention path (260616-buk): a status event or RAM
-        tick for a BACKGROUND task must resolve that task's owning project so the
+        tick for a BACKGROUND workspace must resolve that workspace's owning project so the
         correct bundle (notif dedup store, ``record_by_state_file``) and the correct
-        root-namespaced status-file path are used. Identity is ``store.get(task_id)``
-        being the SAME object (records are kept per-project, keyed by task_id).
+        root-namespaced status-file path are used. Identity is ``store.get(workspace_id)``
+        being the SAME object (records are kept per-project, keyed by workspace_id).
         """
         registry = getattr(self, "_registry", None)
         if registry is None:
             return None
         for proj in registry.all():
-            if proj.store.get(task.task_id) is task:
+            if proj.store.get(workspace.workspace_id) is workspace:
                 return proj
         return None
 
@@ -912,7 +912,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         # Re-color EVERY live terminal across ALL projects, not just the active
         # bundle (Finding #3): a background project's unparented terminals would
         # otherwise keep the old palette until switch-back. Same bug class as the
-        # active-only scoping fixed in _reconcile_orphans (quick task 260615-t37).
+        # active-only scoping fixed in _reconcile_orphans (quick workspace 260615-t37).
         for proj in self._registry.all():
             bundle = self._bundle_for(proj)
             for term in bundle["term_by_sid"].values():
@@ -1095,12 +1095,12 @@ class ArduisWindow(Adw.ApplicationWindow):
     def _on_status_event(self, _monitor, gfile, _other, _event_type) -> None:
         """A status file changed → flip the matching record's status (D-05).
 
-        O(1) dict lookup from the touched path back to (task, record); unknown
+        O(1) dict lookup from the touched path back to (workspace, record); unknown
         files (mkstemp leftovers, foreign files) are ignored (T-04-15).
 
         260616-buk (finding #4): the watcher is GLOBAL (one status dir for ALL
         projects), so a BACKGROUND project's agent entering WAITING fires here too —
-        but its (task, record) lives in the OWNING project's bundle, not the active
+        but its (workspace, record) lives in the OWNING project's bundle, not the active
         one. Search every registered project's ``record_by_state_file`` for the
         touched path so a background project's WAITING agent is surfaced (notify +
         status flip) exactly like the active project's. Falls back to the active
@@ -1121,18 +1121,18 @@ class ArduisWindow(Adw.ApplicationWindow):
             entry = self._record_by_state_file.get(path)
             if entry is None:
                 return
-            task, record = entry
-            self._apply_state_file(task, record, path)
+            workspace, record = entry
+            self._apply_state_file(workspace, record, path)
             return
         for proj in projects:
             bundle = self._bundle_for(proj)
             entry = bundle["record_by_state_file"].get(path)
             if entry is not None:
-                task, record = entry
-                self._apply_state_file(task, record, path)
+                workspace, record = entry
+                self._apply_state_file(workspace, record, path)
                 return
 
-    def _apply_state_file(self, task: Task, record: TerminalRecord, path: str) -> None:
+    def _apply_state_file(self, workspace: Workspace, record: TerminalRecord, path: str) -> None:
         """Read one state file → recompute the record's effective status (D-05).
 
         Reads the (tolerant) parsed doc; computes pid liveness from the record's
@@ -1155,14 +1155,14 @@ class ArduisWindow(Adw.ApplicationWindow):
         )
         record.status = new.value
         record.status_ts = doc.ts
-        self._refresh_status_ui(task)
-        self._maybe_notify(task, record, old, new.value, doc)
+        self._refresh_status_ui(workspace)
+        self._maybe_notify(workspace, record, old, new.value, doc)
 
     def _apply_main_state_file(self, path: str) -> None:
         """Flip a MAIN-workspace agent split's widgets from its state file.
 
         These agents have no TerminalRecord (the main workspace has no store
-        Task), so liveness comes from the hook-written pid only. The status
+        Workspace), so liveness comes from the hook-written pid only. The status
         drives the pane dot, the card's attention ring, and — via
         ``_refresh_main_row_attention`` — the pinned main row in the sidebar
         (the user-visible alert while working inside another workspace).
@@ -1205,7 +1205,7 @@ class ArduisWindow(Adw.ApplicationWindow):
     def _refresh_main_row_attention(self) -> None:
         """Light the pinned main row iff any ACTIVE-project main split WAITS.
 
-        The main workspace is not a store Task, so `_refresh_status_ui` never
+        The main workspace is not a store Workspace, so `_refresh_status_ui` never
         touches its row — aggregate over `_main_split_info` instead, scoped to
         the active project's root (a background project's waiting split must
         not light the visible project's main row).
@@ -1263,18 +1263,18 @@ class ArduisWindow(Adw.ApplicationWindow):
         except Exception:  # noqa: BLE001 — scan is best-effort, never crash UI
             return ""
 
-    def _escalate_waiting(self, task: Task | None, term_id: str, state_file: str) -> None:
+    def _escalate_waiting(self, workspace: Workspace | None, term_id: str, state_file: str) -> None:
         """Flip ``term_id`` to WAITING now (escalate-only; hooks overwrite later)."""
-        if task is not None:
+        if workspace is not None:
             record = next(
-                (t for t in self._all_task_terminals(task) if t.term_id == term_id),
+                (t for t in self._all_workspace_terminals(workspace) if t.term_id == term_id),
                 None,
             )
             if record is None or record.status == AgentStatus.WAITING.value:
                 return
             record.status = AgentStatus.WAITING.value
             record.status_ts = time.time()
-            self._refresh_status_ui(task)
+            self._refresh_status_ui(workspace)
             return
         info = getattr(self, "_main_split_info", {}).get(state_file)
         if info is None or info.get("status") == "waiting":
@@ -1289,34 +1289,34 @@ class ArduisWindow(Adw.ApplicationWindow):
             leaf.add_css_class("attention")
         self._refresh_main_row_attention()
 
-    def _current_scan_status(self, task: Task | None, term_id: str, state_file: str) -> str | None:
+    def _current_scan_status(self, workspace: Workspace | None, term_id: str, state_file: str) -> str | None:
         """The terminal's current status string as the scanner sees it."""
-        if task is not None:
+        if workspace is not None:
             record = next(
-                (t for t in self._all_task_terminals(task) if t.term_id == term_id),
+                (t for t in self._all_workspace_terminals(workspace) if t.term_id == term_id),
                 None,
             )
             return record.status if record is not None else None
         info = getattr(self, "_main_split_info", {}).get(state_file)
         return info.get("status") if info is not None else None
 
-    def _deescalate_running(self, task: Task | None, term_id: str, state_file: str) -> None:
+    def _deescalate_running(self, workspace: Workspace | None, term_id: str, state_file: str) -> None:
         """Flip a WAITING terminal back to RUNNING (dialog answered).
 
         Symmetric counterpart of ``_escalate_waiting`` — only ever leaves
         ``waiting`` (never touches ready/idle/ended), so the authoritative hook
         events that follow are never fought, just anticipated.
         """
-        if task is not None:
+        if workspace is not None:
             record = next(
-                (t for t in self._all_task_terminals(task) if t.term_id == term_id),
+                (t for t in self._all_workspace_terminals(workspace) if t.term_id == term_id),
                 None,
             )
             if record is None or record.status != AgentStatus.WAITING.value:
                 return
             record.status = AgentStatus.RUNNING.value
             record.status_ts = time.time()
-            self._refresh_status_ui(task)
+            self._refresh_status_ui(workspace)
             return
         info = getattr(self, "_main_split_info", {}).get(state_file)
         if info is None or info.get("status") != "waiting":
@@ -1330,7 +1330,7 @@ class ArduisWindow(Adw.ApplicationWindow):
             leaf.remove_css_class("attention")
         self._refresh_main_row_attention()
 
-    def _make_prompt_scan_cb(self, terminal, task: Task | None, term_id: str, state_file: str):
+    def _make_prompt_scan_cb(self, terminal, workspace: Workspace | None, term_id: str, state_file: str):
         """A leading-edge-debounced contents-changed handler scanning for the
         approval dialog (300ms coalesce — the signal fires on every repaint).
 
@@ -1345,15 +1345,15 @@ class ArduisWindow(Adw.ApplicationWindow):
             pending[0] = False
             text = self._terminal_tail_text(terminal)
             has_dialog = attention.looks_like_permission_prompt(text)
-            status = self._current_scan_status(task, term_id, state_file)
+            status = self._current_scan_status(workspace, term_id, state_file)
             action = attention.next_scan_action(saw_dialog[0], has_dialog, status)
             if has_dialog:
                 saw_dialog[0] = True
             if action == "escalate":
-                self._escalate_waiting(task, term_id, state_file)
+                self._escalate_waiting(workspace, term_id, state_file)
             elif action == "deescalate":
                 saw_dialog[0] = False
-                self._deescalate_running(task, term_id, state_file)
+                self._deescalate_running(workspace, term_id, state_file)
             return GLib.SOURCE_REMOVE
 
         def _on_changed(_term) -> None:
@@ -1391,24 +1391,24 @@ class ArduisWindow(Adw.ApplicationWindow):
                 return True
         return True
 
-    def _refresh_status_ui(self, task: Task) -> None:
+    def _refresh_status_ui(self, workspace: Workspace) -> None:
         """Flip the sidebar aggregate dot + each agent's pane dot in place (D-06/D-07).
 
-        Sidebar row dot = the task AGGREGATE over its agent terminals (the
-        Plan-02 ``aggregate_task``); per-terminal pane dots reflect each agent
-        record's own status. Active state gates the row: a hibernated/ended task
+        Sidebar row dot = the workspace AGGREGATE over its agent terminals (the
+        Plan-02 ``aggregate_workspace``); per-terminal pane dots reflect each agent
+        record's own status. Active state gates the row: a hibernated/ended workspace
         keeps the grey dot regardless of any opinion.
         """
-        active = task.state == SessionState.ACTIVE
-        aggregate = attention.aggregate_task(self._all_task_terminals(task))
-        row_dot = self._dot_by_sid.get(task.task_id)
+        active = workspace.state == SessionState.ACTIVE
+        aggregate = attention.aggregate_workspace(self._all_workspace_terminals(workspace))
+        row_dot = self._dot_by_sid.get(workspace.workspace_id)
         if row_dot is not None:
             self._set_dot_class(row_dot, self._dot_css_for(aggregate, active))
         # LOUD alert (user feedback 2026-07-01): a waiting OR ready aggregate
         # highlights the whole sidebar row, not just the 8px dot — both mean
         # "the agent waits for YOU" (approval vs end-of-turn). getattr guard:
         # bare unit windows may not build a sidebar.
-        row = getattr(self, "_row_by_sid", {}).get(task.task_id)
+        row = getattr(self, "_row_by_sid", {}).get(workspace.workspace_id)
         if row is not None:
             waiting = active and aggregate == AgentStatus.WAITING
             ready = active and aggregate == AgentStatus.READY
@@ -1423,7 +1423,7 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         # Each agent terminal's own pane-header dot reflects its individual
         # status; a WAITING agent additionally rings its whole card.
-        for record in self._all_task_terminals(task):
+        for record in self._all_workspace_terminals(workspace):
             if record.kind != "agent":
                 continue
             status = None
@@ -1464,7 +1464,7 @@ class ArduisWindow(Adw.ApplicationWindow):
             return "arduis-dot-idle"
         if status == AgentStatus.ENDED:
             return "arduis-dot-hibernated"
-        return "arduis-dot-active"  # None — opinion-less active task
+        return "arduis-dot-active"  # None — opinion-less active workspace
 
     def _set_dot_class(self, label: Gtk.Label, css_class: str) -> None:
         """Apply exactly one ``arduis-dot-*`` class to ``label`` (remove the rest)."""
@@ -1479,7 +1479,7 @@ class ArduisWindow(Adw.ApplicationWindow):
                 label.remove_css_class(klass)
         label.add_css_class(css_class)
 
-    def _maybe_notify(self, task, record, old, new, doc) -> None:
+    def _maybe_notify(self, workspace, record, old, new, doc) -> None:
         """Fire a libnotify notification on a →waiting transition while unfocused (D-08/D-09).
 
         Gated by the Plan-02 ``should_notify`` (transition INTO waiting, window
@@ -1497,17 +1497,17 @@ class ArduisWindow(Adw.ApplicationWindow):
         ):
             return
 
-        title = f"{task.branch} aguarda você"
+        title = f"{workspace.branch} aguarda você"
         body = GLib.markup_escape_text(
             getattr(doc, "message", "") or "Aprovação pendente"
         )
         icon = "dialog-information"
         # 260616-buk (finding #4): dedup the ONE Notification per terminal (D-09) in
-        # the task's OWNING bundle, so a BACKGROUND project's WAITING agent reuses its
+        # the workspace's OWNING bundle, so a BACKGROUND project's WAITING agent reuses its
         # OWN handle (the active bundle's notif store is the wrong one for it). The
-        # gating (should_notify) is unchanged — background tasks notify exactly like
+        # gating (should_notify) is unchanged — background workspaces notify exactly like
         # active ones (window unfocused → notify).
-        proj = self._project_for_task(task)
+        proj = self._project_for_workspace(workspace)
         notif_by_tid = (
             self._bundle_for(proj)["notif_by_tid"] if proj is not None
             else self._notif_by_tid
@@ -1630,7 +1630,7 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         # Phase 4 (D-07): per-terminal status dot, FIRST in the header (card
         # order: dot · title · badge · spacer · actions). Hidden by default;
-        # _spawn_into makes it visible for task AGENT terminals only (shells /
+        # _spawn_into makes it visible for workspace AGENT terminals only (shells /
         # pinned main never write a state file).
         pane_dot = Gtk.Label(label="●")
         pane_dot.add_css_class("arduis-dot-active")
@@ -1742,19 +1742,19 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         # Kill the closed terminal's process group (no orphan) and forget its
         # TerminalRecord so RAM/teardown no longer track it. Under the UX pivot the
-        # record lives in task.terminals (default pair + splits); a per-repo split
+        # record lives in workspace.terminals (default pair + splits); a per-repo split
         # could also exist — search both.
-        task = self._store.get(sid)
-        if task is not None:
+        workspace = self._store.get(sid)
+        if workspace is not None:
             record = next(
-                (t for t in task.terminals if t.term_id == tid), None
+                (t for t in workspace.terminals if t.term_id == tid), None
             )
             if record is not None:
                 if record.pid:
                     self._teardown_pgid(record.pid)
-                task.terminals.remove(record)
+                workspace.terminals.remove(record)
             else:
-                for repo in task.repos:
+                for repo in workspace.repos:
                     record = next(
                         (t for t in repo.terminals if t.term_id == tid), None
                     )
@@ -1876,7 +1876,7 @@ class ArduisWindow(Adw.ApplicationWindow):
 
     def _build_sidebar(self) -> Gtk.Widget:
         """The left sidebar, sectioned parallel-code style (top to bottom):
-        "+ Nova task" button, TASKS section title, then the scrollable ListBox of
+        "+ Novo workspace" button, WORKSPACES section title, then the scrollable ListBox of
         the pinned main row + worktree rows.
         """
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -1918,12 +1918,12 @@ class ArduisWindow(Adw.ApplicationWindow):
         projects_scroll.set_child(self._projects_box)
         box.append(projects_scroll)
 
-        # The "+ Nova task" button (D-02/D-03) — moved from the headerbar into
+        # The "+ Novo workspace" button (D-02/D-03) — moved from the headerbar into
         # the sidebar (parallel-code layout). Same attribute + handler, so
         # _refresh_project_chrome keeps driving its sensitivity/tooltip.
-        self._new_btn = Gtk.Button(label="+ Nova task")
-        self._new_btn.add_css_class("arduis-new-task-btn")
-        self._new_btn.set_tooltip_text("Nova task")
+        self._new_btn = Gtk.Button(label="+ Novo workspace")
+        self._new_btn.add_css_class("arduis-new-workspace-btn")
+        self._new_btn.set_tooltip_text("Novo workspace")
         self._new_btn.set_sensitive(False)  # enabled once the project resolves
         self._new_btn.connect("clicked", self._on_new_worktree_clicked)
         self._new_btn.set_margin_start(12)
@@ -1931,7 +1931,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._new_btn.set_margin_top(12)
         box.append(self._new_btn)
 
-        box.append(self._section_title("TASKS"))
+        box.append(self._section_title("WORKSPACES"))
 
         self._listbox = Gtk.ListBox()
         self._listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
@@ -1939,11 +1939,11 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._listbox.set_margin_start(8)
         self._listbox.set_margin_end(8)
 
-        tasks_scroll = Gtk.ScrolledWindow()
-        tasks_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        tasks_scroll.set_vexpand(True)
-        tasks_scroll.set_child(self._listbox)
-        box.append(tasks_scroll)
+        workspaces_scroll = Gtk.ScrolledWindow()
+        workspaces_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        workspaces_scroll.set_vexpand(True)
+        workspaces_scroll.set_child(self._listbox)
+        box.append(workspaces_scroll)
 
         box.append(self._build_sidebar_footer())
 
@@ -1966,7 +1966,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         # post-rebuild status refresh re-binds to the fresh labels (D-06).
         self._dot_by_sid.clear()
 
-        # Pinned project row (D-12): ONE terminal at the project root, not a task.
+        # Pinned project row (D-12): ONE terminal at the project root, not a workspace.
         # Title = the project name; subline = "<project> · zsh".
         main_title = self._project_name or "main"
         self._listbox.append(
@@ -1975,18 +1975,18 @@ class ArduisWindow(Adw.ApplicationWindow):
             )
         )
 
-        # One row per Task (a branch across N repos). The row sid is the task_id.
-        # D-12: an AUTO-suspended task is visually distinct — subline "claude ·
-        # suspensa" (vs the normal "claude · —" hibernated subline) so the user can
+        # One row per Workspace (a branch across N repos). The row sid is the workspace_id.
+        # D-12: an AUTO-suspended workspace is visually distinct — subline "claude ·
+        # suspenso" (vs the normal "claude · —" hibernated subline) so the user can
         # tell arduis suspended it for inactivity (not a manual hibernate).
-        for task in self._store.all():
-            active = task.state == SessionState.ACTIVE
-            if not active and task.auto_suspended:
-                subline = "claude · suspensa"
+        for workspace in self._store.all():
+            active = workspace.state == SessionState.ACTIVE
+            if not active and workspace.auto_suspended:
+                subline = "claude · suspenso"
             else:
                 subline = "claude · —"
             self._listbox.append(
-                self._make_row(task.task_id, task.branch, subline, active=active)
+                self._make_row(workspace.workspace_id, workspace.branch, subline, active=active)
             )
 
         # Rebuilding discards the old selection; restore it to the visible
@@ -1997,10 +1997,10 @@ class ArduisWindow(Adw.ApplicationWindow):
                 self._listbox.select_row(row)
 
         # The dots were just recreated as plain active/hibernated — re-apply each
-        # task's live aggregate status so dots survive a rebuild (D-06), and the
+        # workspace's live aggregate status so dots survive a rebuild (D-06), and the
         # main row's split-aggregate attention state likewise.
-        for task in self._store.all():
-            self._refresh_status_ui(task)
+        for workspace in self._store.all():
+            self._refresh_status_ui(workspace)
         self._refresh_main_row_attention()
 
     def _make_row(self, sid: str, branch: str, subline: str, active: bool) -> Gtk.ListBoxRow:
@@ -2016,7 +2016,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         dot.add_css_class("arduis-dot-active" if active else "arduis-dot-hibernated")
         dot.set_valign(Gtk.Align.CENTER)
         outer.append(dot)
-        # Keep a handle so state-file events can flip the task-aggregate dot in
+        # Keep a handle so state-file events can flip the workspace-aggregate dot in
         # place (D-06) without rebuilding the row.
         self._dot_by_sid[sid] = dot
 
@@ -2034,7 +2034,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         # Keep a handle so the ~2s RAM poll can refresh the sub-line in place.
         self._subline_by_sid[sid] = sub
 
-        # Phase 7 (CONT-04, D-10): when this task has isolated containers enabled,
+        # Phase 7 (CONT-04, D-10): when this workspace has isolated containers enabled,
         # render the resolved host ports as `<service>:<host>` badges under the
         # sub-line (read from the in-memory/persisted ContainerState — NOT a live
         # docker query). While a compose op is in flight show a spinner instead.
@@ -2087,7 +2087,7 @@ class ArduisWindow(Adw.ApplicationWindow):
             menu = Gio.Menu()
             if session is not None and session.state == SessionState.ACTIVE:
                 menu.append("Hibernar", "win.hibernate")  # D-08
-                # D-10: close-a-repository — only meaningful for a multi-repo task
+                # D-10: close-a-repository — only meaningful for a multi-repo workspace
                 # (closing the sole repo == hibernate). One entry per repo; the
                 # action target is the repo_name. NEVER deletes from disk.
                 if len(session.repos) > 1:
@@ -2105,22 +2105,22 @@ class ArduisWindow(Adw.ApplicationWindow):
                     menu.append_submenu("Fechar repositório", repo_menu)
             else:
                 menu.append("Retomar", "win.resume")
-            # Phase 7 (CONT-01, D-11): the per-task isolation toggle is appended
+            # Phase 7 (CONT-01, D-11): the per-workspace isolation toggle is appended
             # ONLY when the feature is available (root compose + docker on PATH).
             # Default OFF; the label flips with the persisted ContainerState. While
-            # a compose op is in flight for this task the entry is omitted (busy).
+            # a compose op is in flight for this workspace the entry is omitted (busy).
             self._append_isolation_menu_item(menu, sid)
             # Phase 8 (D-02/D-03/D-05): Ver diff ▸ / Atualizar status / Abrir PR.
-            # Appended for BOTH active and hibernated tasks — a hibernated task
+            # Appended for BOTH active and hibernated workspaces — a hibernated workspace
             # still has worktrees on disk (diff) and an on-disk branch/PR (status).
             if session is not None:
                 self._append_review_menu_items(menu, session)
-            # Phase 8 (REVIEW-03, D-04): the LOAD-BEARING "Concluir task" — the safe
-            # ordered teardown. Appended for BOTH ACTIVE and HIBERNATED tasks (a
-            # hibernated task still has worktrees on disk; an ACTIVE task's step (a)
+            # Phase 8 (REVIEW-03, D-04): the LOAD-BEARING "Concluir workspace" — the safe
+            # ordered teardown. Appended for BOTH ACTIVE and HIBERNATED workspaces (a
+            # hibernated workspace still has worktrees on disk; an ACTIVE workspace's step (a)
             # kills the live agents first). No target — uses _menu_target_sid.
             if session is not None:
-                menu.append("Concluir task", "win.conclude")
+                menu.append("Concluir workspace", "win.conclude")
             popover = Gtk.PopoverMenu.new_from_model(menu)
             popover.set_parent(row)
             rect = Gdk.Rectangle()
@@ -2132,11 +2132,11 @@ class ArduisWindow(Adw.ApplicationWindow):
             popover.popup()
         return _on_secondary
 
-    def _append_review_menu_items(self, menu: Gio.Menu, session: Task) -> None:
-        """Append the Phase 8 review entries to a task's row menu (D-02/D-03/D-05).
+    def _append_review_menu_items(self, menu: Gio.Menu, session: Workspace) -> None:
+        """Append the Phase 8 review entries to a workspace's row menu (D-02/D-03/D-05).
 
         - "Ver diff ▸ <repo>" (REVIEW-01, D-02): a submenu with one item per repo
-          for a multi-repo task; a single "Ver diff" item for a 1-repo task. String
+          for a multi-repo workspace; a single "Ver diff" item for a 1-repo workspace. String
           target = repo_name (mirrors win.close_repo).
         - "Atualizar status" (D-03): forces a TTL-bypassing status re-read.
         - "Abrir PR (web)" (D-05/REVIEW-02): the ONE allowed write, appended ONLY
@@ -2167,19 +2167,19 @@ class ArduisWindow(Adw.ApplicationWindow):
         if gh.gh_available():
             menu.append("Abrir PR (web)", "win.open_pr")
 
-    # --- Phase 7: per-task container isolation (CONT-01..05) -----------------
+    # --- Phase 7: per-workspace container isolation (CONT-01..05) -----------------
 
     def _isolation_available(self) -> bool:
         """True iff the project has a root compose AND docker is on PATH (CONT-01)."""
         return self._compose_path is not None and self._docker_available
 
     def _append_isolation_menu_item(self, menu: Gio.Menu, sid: str) -> None:
-        """Append the "Isolar/Desligar containers" entry to a task's row menu (D-11).
+        """Append the "Isolar/Desligar containers" entry to a workspace's row menu (D-11).
 
         Gio.Menu has no native checkbox; we mirror the existing label-flip pattern —
         "Isolar containers" when OFF, "Desligar containers" when ON. Omitted entirely
         when the feature is unavailable (no root compose / no docker) or while a
-        compose op is in flight for this task (busy → an insensitive informational
+        compose op is in flight for this workspace (busy → an insensitive informational
         line so the user sees WHY it is unavailable rather than a silent gap).
         """
         if not self._isolation_available():
@@ -2199,29 +2199,29 @@ class ArduisWindow(Adw.ApplicationWindow):
         menu.append_item(item)
 
     def _on_toggle_isolation_action(self, _action, param) -> None:
-        """win.toggle_isolation(task_id) → dispatch enable vs disable (D-11)."""
+        """win.toggle_isolation(workspace_id) → dispatch enable vs disable (D-11)."""
         if param is None:
             return
         self._on_toggle_isolation(param.get_string())
 
-    def _on_toggle_isolation(self, task_id: str) -> None:
-        """Resolve the task and flip its isolation based on the persisted state.
+    def _on_toggle_isolation(self, workspace_id: str) -> None:
+        """Resolve the workspace and flip its isolation based on the persisted state.
 
         OFF (or no state) → enable; ON → disable. Guards live in the enable/disable
-        bodies (feature available, not busy). Implemented fully in Task 2.
+        bodies (feature available, not busy). Implemented fully in Workspace 2.
         """
         if not self._isolation_available():
             return
-        task = self._store.get(task_id)
-        if task is None:
+        workspace = self._store.get(workspace_id)
+        if workspace is None:
             return
-        state = self._container_state.get(task_id)
+        state = self._container_state.get(workspace_id)
         if state is not None and state.enabled:
-            self._disable_isolation(task)
+            self._disable_isolation(workspace)
         else:
-            self._enable_isolation(task)
+            self._enable_isolation(workspace)
 
-    def _enable_isolation(self, task: Task) -> None:
+    def _enable_isolation(self, workspace: Workspace) -> None:
         """Async opt-in chain: config → assign → write override → up → persist.
 
         CONT-02/03, criterion 2/3 (Pitfall 3/5). Every docker call routes through
@@ -2232,79 +2232,79 @@ class ArduisWindow(Adw.ApplicationWindow):
         (Pitfall 5), leave the toggle OFF, and persist enabled=False. The on_done
         callbacks fire on the GLib main loop → safe to mutate widgets + the store.
         """
-        task_id = task.task_id
+        workspace_id = workspace.workspace_id
         if not self._isolation_available():
             return
-        if task_id in self._compose_busy:
+        if workspace_id in self._compose_busy:
             return
-        state = self._container_state.get(task_id)
+        state = self._container_state.get(workspace_id)
         if state is not None and state.enabled:
             return  # already isolated
 
-        self._compose_busy.add(task_id)
+        self._compose_busy.add(workspace_id)
         self._rebuild_sidebar()  # spinner shows; toggle entry omitted while busy
 
-        project = compose.sanitize_project_name(task.branch)
+        project = compose.sanitize_project_name(workspace.branch)
         offset = containerstate.read_port_offset(self._config_path)
-        task_dir = task.task_dir
+        workspace_dir = workspace.workspace_dir
 
         def _on_config(rc: int, out: str, err: str) -> None:
             if rc != 0:
-                self._finish_isolation_error(task, "config falhou", err)
+                self._finish_isolation_error(workspace, "config falhou", err)
                 return
             try:
                 model = json.loads(out)
             except (ValueError, TypeError) as exc:  # T-07-11: never crash the loop
-                self._finish_isolation_error(task, "config inválido", str(exc))
+                self._finish_isolation_error(workspace, "config inválido", str(exc))
                 return
             published = compose.parse_published_ports(model)
             try:
                 port_map = compose.assign_ports(published, offset)
             except compose.PortAssignmentError as exc:
-                self._finish_isolation_error(task, "sem portas livres", str(exc))
+                self._finish_isolation_error(workspace, "sem portas livres", str(exc))
                 return
             # ALWAYS write an override (D-05): override_bytes({}) emits a minimal
             # empty-services override so the `-f override` path always resolves.
-            override_path = os.path.join(task_dir, "docker-compose.override.yml")
+            override_path = os.path.join(workspace_dir, "docker-compose.override.yml")
             try:
                 self._write_override(override_path, compose.override_bytes(port_map))
             except OSError as exc:
-                self._finish_isolation_error(task, "override falhou", str(exc))
+                self._finish_isolation_error(workspace, "override falhou", str(exc))
                 return
-            self._compose_pending[task_id] = {
+            self._compose_pending[workspace_id] = {
                 "project": project,
                 "port_map": port_map,
             }
             docker_service.run_compose_async(
-                compose.up_argv(project, task_dir), _on_up, runner=self._runner
+                compose.up_argv(project, workspace_dir), _on_up, runner=self._runner
             )
 
         def _on_up(rc: int, out: str, err: str) -> None:
-            pending = self._compose_pending.pop(task_id, None)
+            pending = self._compose_pending.pop(workspace_id, None)
             port_map = pending["port_map"] if pending else {}
             if rc != 0:
                 # Clean the partial stack best-effort (Pitfall 5), then surface.
                 docker_service.run_compose_async(
-                    compose.down_argv(project, task_dir),
+                    compose.down_argv(project, workspace_dir),
                     lambda _rc, _o, _e: None,
                     runner=self._runner,
                 )
-                self._finish_isolation_error(task, "up falhou", err)
+                self._finish_isolation_error(workspace, "up falhou", err)
                 return
             new_state = containerstate.ContainerState(
                 project_name=project, enabled=True, ports=port_map
             )
-            containerstate.write_container_state(task_dir, new_state)
-            self._container_state[task_id] = new_state
-            self._compose_busy.discard(task_id)
+            containerstate.write_container_state(workspace_dir, new_state)
+            self._container_state[workspace_id] = new_state
+            self._compose_busy.discard(workspace_id)
             self._toast(f"Containers no ar: {self._ports_summary(port_map)}")
             self._rebuild_sidebar()  # badges show
 
         docker_service.run_compose_async(
-            compose.config_argv(task_dir), _on_config, runner=self._runner
+            compose.config_argv(workspace_dir), _on_config, runner=self._runner
         )
 
-    def _disable_isolation(self, task: Task) -> None:
+    def _disable_isolation(self, workspace: Workspace) -> None:
         """Async opt-out: ``down --remove-orphans --volumes``, KEEP the port map.
 
         CONT-04, criterion 3. Flips enabled=False but PRESERVES ``state.ports`` so a
@@ -2312,31 +2312,31 @@ class ArduisWindow(Adw.ApplicationWindow):
         Down failures are surfaced but the state still flips OFF (the user asked to
         stop; a stuck stack should not pin the toggle ON).
         """
-        task_id = task.task_id
+        workspace_id = workspace.workspace_id
         if not self._isolation_available():
             return
-        if task_id in self._compose_busy:
+        if workspace_id in self._compose_busy:
             return
 
-        state = self._container_state.get(task_id)
+        state = self._container_state.get(workspace_id)
         project = (
             state.project_name
             if state and state.project_name
-            else compose.sanitize_project_name(task.branch)
+            else compose.sanitize_project_name(workspace.branch)
         )
-        task_dir = task.task_dir
+        workspace_dir = workspace.workspace_dir
 
-        self._compose_busy.add(task_id)
+        self._compose_busy.add(workspace_id)
         self._rebuild_sidebar()  # spinner shows
 
         def _on_down(rc: int, out: str, err: str) -> None:
-            cur = self._container_state.get(task_id) or containerstate.ContainerState(
+            cur = self._container_state.get(workspace_id) or containerstate.ContainerState(
                 project_name=project
             )
             cur.enabled = False  # KEEP cur.ports (stable re-enable, criterion 3)
-            containerstate.write_container_state(task_dir, cur)
-            self._container_state[task_id] = cur
-            self._compose_busy.discard(task_id)
+            containerstate.write_container_state(workspace_dir, cur)
+            self._container_state[workspace_id] = cur
+            self._compose_busy.discard(workspace_id)
             if rc == 0:
                 self._toast("Containers desligados")
             else:
@@ -2344,29 +2344,29 @@ class ArduisWindow(Adw.ApplicationWindow):
             self._rebuild_sidebar()  # badges clear (enabled=False)
 
         docker_service.run_compose_async(
-            compose.down_argv(project, task_dir), _on_down, runner=self._runner
+            compose.down_argv(project, workspace_dir), _on_down, runner=self._runner
         )
 
-    def _finish_isolation_error(self, task: Task, summary: str, detail: str) -> None:
+    def _finish_isolation_error(self, workspace: Workspace, summary: str, detail: str) -> None:
         """Common failure tail: clear busy, persist enabled=False, surface, rebuild.
 
         Never raises (called from on_done on the GLib loop). The detailed stderr
         goes to a toast; the port map (if any was persisted) is kept for stability.
         """
-        task_id = task.task_id
-        self._compose_pending.pop(task_id, None)
-        self._compose_busy.discard(task_id)
-        cur = self._container_state.get(task_id)
+        workspace_id = workspace.workspace_id
+        self._compose_pending.pop(workspace_id, None)
+        self._compose_busy.discard(workspace_id)
+        cur = self._container_state.get(workspace_id)
         if cur is None:
             cur = containerstate.ContainerState(
-                project_name=compose.sanitize_project_name(task.branch)
+                project_name=compose.sanitize_project_name(workspace.branch)
             )
         cur.enabled = False
         try:
-            containerstate.write_container_state(task.task_dir, cur)
+            containerstate.write_container_state(workspace.workspace_dir, cur)
         except OSError:
             pass  # best-effort; the in-memory flip below still holds
-        self._container_state[task_id] = cur
+        self._container_state[workspace_id] = cur
         self._rebuild_sidebar()
         body = (detail or "").strip()
         self._toast(f"Isolamento: {summary}" + (f" — {body}" if body else ""))
@@ -2400,24 +2400,24 @@ class ArduisWindow(Adw.ApplicationWindow):
                     parts.append(f"{service}:{host}")
         return " ".join(parts) if parts else "sem portas publicadas"
 
-    def _container_down(self, task: Task) -> None:
+    def _container_down(self, workspace: Workspace) -> None:
         """Async container teardown — a SEPARATE channel from killpg (Pitfall 7, D-12).
 
         Containers are docker-DAEMON-owned, NOT members of arduis's process group, so
         ``_teardown_session_terminals`` (the killpg path) does nothing for them. This
-        runs ``docker compose down --remove-orphans --volumes`` for a task whose
+        runs ``docker compose down --remove-orphans --volumes`` for a workspace whose
         ContainerState is enabled, fire-and-forget on the GLib loop. NEVER call this
         from inside ``_teardown_session_terminals`` — the two channels stay separate
         (T-07-13). Used by the hibernate path (async, non-blocking).
         """
         if not self._isolation_available():
             return
-        state = self._container_state.get(task.task_id)
+        state = self._container_state.get(workspace.workspace_id)
         if state is None or not state.enabled:
             return
-        project = state.project_name or compose.sanitize_project_name(task.branch)
+        project = state.project_name or compose.sanitize_project_name(workspace.branch)
         docker_service.run_compose_async(
-            compose.down_argv(project, task.task_dir),
+            compose.down_argv(project, workspace.workspace_dir),
             lambda _rc, _o, _e: None,  # fire-and-forget; orphan-free is the bar
             runner=self._runner,
         )
@@ -2426,7 +2426,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         """Startup reconcile: surface orphaned ``arduis-*`` stacks (D-13, criterion 4).
 
         Conservative — runs ``docker compose ls --all --filter name=arduis`` and
-        TOASTS any ``arduis-*`` project with no matching live task. Does NOT auto
+        TOASTS any ``arduis-*`` project with no matching live workspace. Does NOT auto
         ``down -v`` (volume deletion is destructive; a running stack the user wants
         might match). Malformed JSON is swallowed (T-07-11). Only runs when docker
         is on PATH.
@@ -2491,34 +2491,34 @@ class ArduisWindow(Adw.ApplicationWindow):
     def _on_row_activated(self, _listbox, row: Gtk.ListBoxRow) -> None:
         """Row activation swaps the entire workspace to that worktree (D-04/D-07).
 
-        A HIBERNATED task has no layout/terminals — swapping to it would show a
+        A HIBERNATED workspace has no layout/terminals — swapping to it would show a
         blank canvas. Activating its row therefore NAVIGATES to a placeholder
-        with an explicit "Retomar task" button (user decision: browsing the
+        with an explicit "Retomar workspace" button (user decision: browsing the
         sidebar must never spawn agents; only a deliberate resume activates).
-        The pinned main row and active tasks swap directly as before.
+        The pinned main row and active workspaces swap directly as before.
         """
         sid = self._sid_by_row.get(row)
         if sid is None:
             return
-        task = self._store.get(sid)
-        if task is not None and task.state == SessionState.HIBERNATED:
-            self._show_hibernated_placeholder(task)
+        workspace = self._store.get(sid)
+        if workspace is not None and workspace.state == SessionState.HIBERNATED:
+            self._show_hibernated_placeholder(workspace)
             return
         self._swap_workspace(sid)
-        # Phase 8 (D-03): auto-read status ONCE on activation of an ACTIVE task. The
+        # Phase 8 (D-03): auto-read status ONCE on activation of an ACTIVE workspace. The
         # TTL cache makes rapid row-switching a no-op for gh (no spam, no poll).
-        if task is not None and task.state == SessionState.ACTIVE:
-            self._refresh_task_status(task)
+        if workspace is not None and workspace.state == SessionState.ACTIVE:
+            self._refresh_workspace_status(workspace)
 
-    def _show_hibernated_placeholder(self, task: Task) -> None:
-        """Show a HIBERNATED task's workspace as a centered explicit-resume card.
+    def _show_hibernated_placeholder(self, workspace: Workspace) -> None:
+        """Show a HIBERNATED workspace's workspace as a centered explicit-resume card.
 
         Pure navigation: nothing is spawned and no LayoutModel is created (so
         ``_layouts`` is not polluted with empty models). Detaches the current
         leaves exactly like ``_reflect_layout`` (GTK4 single-parent rule,
         Pitfall 1) before hanging the placeholder.
         """
-        self._active_workspace_sid = task.task_id
+        self._active_workspace_sid = workspace.workspace_id
         if self._canvas_slot.get_child() is not None:
             self._canvas_slot.set_child(None)
         for leaf in self._leaf_by_sid.values():
@@ -2528,23 +2528,23 @@ class ArduisWindow(Adw.ApplicationWindow):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         box.set_valign(Gtk.Align.CENTER)
         box.set_halign(Gtk.Align.CENTER)
-        label = Gtk.Label(label=f"{task.branch} está hibernada")
+        label = Gtk.Label(label=f"{workspace.branch} está hibernado")
         label.add_css_class("dim-label")
-        button = Gtk.Button(label="Retomar task")
+        button = Gtk.Button(label="Retomar workspace")
         button.add_css_class("suggested-action")
         button.add_css_class("pill")
-        button.connect("clicked", lambda *_: self._resume_gated(task))
+        button.connect("clicked", lambda *_: self._resume_gated(workspace))
         box.append(label)
         box.append(button)
         self._canvas_slot.set_child(box)
 
         # Keep the sidebar selection in sync, same as _swap_workspace.
-        row = self._row_by_sid.get(task.task_id)
+        row = self._row_by_sid.get(workspace.workspace_id)
         if row is not None and self._listbox.get_selected_row() is not row:
             self._listbox.select_row(row)
 
-    def _all_tasks(self) -> list[Task]:
-        """The UNION of every OPEN project's tasks (D-09 global cap).
+    def _all_workspaces(self) -> list[Workspace]:
+        """The UNION of every OPEN project's workspaces (D-09 global cap).
 
         RAM is a machine-global resource, so the active-agent cap must count agents
         across ALL open projects, not just the active store (RESEARCH Pitfall 4).
@@ -2553,12 +2553,12 @@ class ArduisWindow(Adw.ApplicationWindow):
         """
         return [t for p in self._registry.all() for t in p.store.all()]
 
-    def _resume_gated(self, task: Task) -> None:
-        """Resume ``task`` through the active-task cap gate (RAM-02/D-14)."""
-        if caps.at_cap(self._all_tasks()):
-            self._prompt_hibernate_then(lambda: self._resume_task(task))
+    def _resume_gated(self, workspace: Workspace) -> None:
+        """Resume ``workspace`` through the active-workspace cap gate (RAM-02/D-14)."""
+        if caps.at_cap(self._all_workspaces()):
+            self._prompt_hibernate_then(lambda: self._resume_workspace(workspace))
             return
-        self._resume_task(task)
+        self._resume_workspace(workspace)
 
     # --- bottom tmux-hint bar (UI-SPEC Copywriting) -------------------------
 
@@ -2840,8 +2840,8 @@ class ArduisWindow(Adw.ApplicationWindow):
         main_row = self._row_by_sid.get(_MAIN_SID)
         if main_row is not None:
             rows.append(main_row)
-        for task in self._store.all():
-            row = self._row_by_sid.get(task.task_id)
+        for workspace in self._store.all():
+            row = self._row_by_sid.get(workspace.workspace_id)
             if row is not None:
                 rows.append(row)
         return rows
@@ -2886,7 +2886,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         1-repo project, e.g. a plain ``~/Projects/foo`` checkout) has no such
         subdir, so report its own basename as the sole member. This mirrors
         ``_resolve_cwd_project`` so a project OPENED via the picker behaves like a
-        LAUNCHED one: its New-task dialog lists the repo (D-12) and its pinned main
+        LAUNCHED one: its New-workspace dialog lists the repo (D-12) and its pinned main
         scratch shell can seed. ``_open_project``/``_init_projects`` route every
         root through here so remembered single-repo projects survive a relaunch.
         """
@@ -2917,7 +2917,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         """Sync the +New button + window title to the ACTIVE project (D-03/D-06)."""
         enabled = self._project_root is not None
         self._new_btn.set_sensitive(enabled)
-        self._new_btn.set_tooltip_text("Nova task" if enabled else _NO_REPO_HINT)
+        self._new_btn.set_tooltip_text("Novo workspace" if enabled else _NO_REPO_HINT)
         if getattr(self, "_title_widget", None) is not None:
             self._title_widget.set_title(self._project_name or "arduis")
 
@@ -3041,14 +3041,14 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         Picker validation that the dir is a plausible project root is skipped per
         CONTEXT discretion — a no-git dir registers as a degenerate project (its
-        own ``_resolve``/scan simply finds no members/tasks). Never tears anything
+        own ``_resolve``/scan simply finds no members/workspaces). Never tears anything
         down (D-08). Idempotent: re-opening an already-open project just switches.
         """
         existing = self._registry.get(root)
         if existing is None:
             proj = ensure_project(self._registry, root, self._resolve_members(root))
             proj.compose_path = self._detect_compose_path(root)
-            self._scan_tasks(project=proj)
+            self._scan_workspaces(project=proj)
             projects_store.save_projects(
                 self._projects_json,
                 [p.root for p in self._registry.all()],
@@ -3061,7 +3061,7 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         The project switch is the workspace-swap one level up (RESEARCH Pattern 3):
         remember the OUTGOING project's visible workspace into its
-        ``last_active_task`` (so switch-back restores it), re-point ``set_active``,
+        ``last_active_workspace`` (so switch-back restores it), re-point ``set_active``,
         rebuild the sidebar from the NEW active project's store, run the existing
         ``_swap_workspace`` (which re-grabs terminal focus — Pitfall 2), restyle the
         tabs, and persist ``last_active_project``. CRITICAL (D-08): NO teardown — the
@@ -3074,7 +3074,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         if outgoing is not None:
             cur_sid = self._active_workspace_sid
             if cur_sid is not None:
-                outgoing.last_active_task = cur_sid
+                outgoing.last_active_workspace = cur_sid
 
         self._registry.set_active(root)
         active = self._registry.active()
@@ -3092,7 +3092,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         # Render the new active project: chrome + sidebar + workspace.
         self._refresh_project_chrome()
         self._rebuild_sidebar()
-        target = (active.last_active_task if active is not None else None) or _MAIN_SID
+        target = (active.last_active_workspace if active is not None else None) or _MAIN_SID
         # If the remembered workspace no longer exists in this project, fall back to
         # the pinned main leaf (always present, D-07).
         if target != _MAIN_SID and active is not None and active.store.get(target) is None:
@@ -3154,25 +3154,25 @@ class ArduisWindow(Adw.ApplicationWindow):
         return proj.compose_path is not None and self._docker_available
 
     def _teardown_project_containers(self, proj) -> None:
-        """Brief-sync ``compose down -v`` for each enabled task of ``proj`` (D-10/D-11).
+        """Brief-sync ``compose down -v`` for each enabled workspace of ``proj`` (D-10/D-11).
 
         Uses THIS project's OWN compose identity (``proj.container_state`` +
-        per-task ``project_name``/``task_dir``) — never the active project's — so two
+        per-workspace ``project_name``/``workspace_dir``) — never the active project's — so two
         projects produce two DISTINCT compose-down argv. argv is built as a LIST via
         ``compose.down_argv`` + ``HostRunner.wrap_argv`` (never a shell string), so a
         crafted project/branch name cannot inject (T-03.4-11). Best-effort, capped.
         """
         if not self._project_isolation_available(proj):
             return
-        for task in proj.store.all():
-            state = proj.container_state.get(task.task_id)
+        for workspace in proj.store.all():
+            state = proj.container_state.get(workspace.workspace_id)
             if state is None or not state.enabled:
                 continue
             project_name = state.project_name or compose.sanitize_project_name(
-                task.branch
+                workspace.branch
             )
             argv = self._runner.wrap_argv(
-                compose.down_argv(project_name, task.task_dir)
+                compose.down_argv(project_name, workspace.workspace_dir)
             )
             try:
                 subprocess.run(argv, capture_output=True, timeout=10, check=False)
@@ -3182,7 +3182,7 @@ class ArduisWindow(Adw.ApplicationWindow):
     def _drop_project(self, root: str) -> None:
         """Drop ``root`` from the registry + projects.json; reselect active if needed.
 
-        NEVER deletes worktrees/task dirs on disk (D-10 hard rule). Only mutates the
+        NEVER deletes worktrees/workspace dirs on disk (D-10 hard rule). Only mutates the
         in-memory registry + the persisted roots list. If the removed project was the
         active one, pick the first remaining project (or None) and switch to it so the
         sidebar/workspace never points at the dropped project.
@@ -3210,15 +3210,15 @@ class ArduisWindow(Adw.ApplicationWindow):
         )
 
     def _remove_project(self, root: str) -> None:
-        """Remove a project from the topbar, tearing down its live tasks (D-10).
+        """Remove a project from the topbar, tearing down its live workspaces (D-10).
 
-        If the project has NO live (ACTIVE) tasks: drop silently (no dialog) — there
-        is nothing to tear down. If it has live tasks: present a DESTRUCTIVE
-        ``Adw.AlertDialog`` (UI-SPEC copy); on confirm, tear down each live task
+        If the project has NO live (ACTIVE) workspaces: drop silently (no dialog) — there
+        is nothing to tear down. If it has live workspaces: present a DESTRUCTIVE
+        ``Adw.AlertDialog`` (UI-SPEC copy); on confirm, tear down each live workspace
         (kill agent pgids via ``_teardown_session_terminals`` + clear its state files)
-        and ``compose down -v`` for each isolated task using THIS project's OWN compose
+        and ``compose down -v`` for each isolated workspace using THIS project's OWN compose
         identity, THEN drop it from the registry + projects.json. The teardown is kill
-        pgids + compose down -v ONLY — arduis NEVER deletes worktrees/task dirs on
+        pgids + compose down -v ONLY — arduis NEVER deletes worktrees/workspace dirs on
         disk (D-10 hard rule; no ``git worktree remove`` / ``rm`` anywhere here).
         """
         proj = self._registry.get(root)
@@ -3231,9 +3231,9 @@ class ArduisWindow(Adw.ApplicationWindow):
             return
 
         dialog = Adw.AlertDialog(
-            heading=f"Remover {proj.name} e encerrar suas tasks?",
+            heading=f"Remover {proj.name} e encerrar seus workspaces?",
             body=(
-                "Isto encerra os agentes e containers das tasks ativas deste "
+                "Isto encerra os agentes e containers dos workspaces ativos deste "
                 "projeto. As worktrees e pastas no disco são preservadas."
             ),
         )
@@ -3248,14 +3248,14 @@ class ArduisWindow(Adw.ApplicationWindow):
         def _on_response(_dlg, response):
             if response != "remove":
                 return  # cancel — leave the project running, never silent-remove
-            # Kill every live task's terminal groups (agent + shell + splits) +
+            # Kill every live workspace's terminal groups (agent + shell + splits) +
             # clear its state files. Containers are a SEPARATE channel (daemon-owned,
             # not in our pgid) — torn down ALONGSIDE via the per-project compose loop.
-            for task in live:
-                self._teardown_session_terminals(task)
-                self._clear_task_state_files(task)
+            for workspace in live:
+                self._teardown_session_terminals(workspace)
+                self._clear_workspace_state_files(workspace)
             self._teardown_project_containers(proj)
-            # NEVER delete worktrees/task dirs on disk — drop from list + JSON only.
+            # NEVER delete worktrees/workspace dirs on disk — drop from list + JSON only.
             self._drop_project(root)
 
         dialog.connect("response", _on_response)
@@ -3284,7 +3284,7 @@ class ArduisWindow(Adw.ApplicationWindow):
           a. ``load_projects`` the remembered roots (+ last_active); missing roots
              are already skipped (D-06).
           b. For EACH remembered root: detect its members, ``ensure_project`` it,
-             compute its compose_path, and ``_scan_tasks(project=...)`` so its tasks
+             compute its compose_path, and ``_scan_workspaces(project=...)`` so its workspaces
              are rediscovered into ITS own store (D-02) — a background project is
              fully populated even before it is ever selected.
           c. Resolve the cwd project; if its root is not already registered,
@@ -3301,14 +3301,14 @@ class ArduisWindow(Adw.ApplicationWindow):
         for r in roots:
             proj = ensure_project(self._registry, r, self._resolve_members(r))
             proj.compose_path = self._detect_compose_path(r)
-            self._scan_tasks(project=proj)
+            self._scan_workspaces(project=proj)
 
         # c: auto-register the cwd project (D-07) if absent.
         cwd_root, cwd_members = self._resolve_cwd_project()
         if cwd_root and self._registry.get(cwd_root) is None:
             proj = ensure_project(self._registry, cwd_root, cwd_members)
             proj.compose_path = self._detect_compose_path(cwd_root)
-            self._scan_tasks(project=proj)
+            self._scan_workspaces(project=proj)
 
         # d: choose the active project (D-07). Launching INSIDE a project always
         # lands you in it — the cwd project wins when it resolved (whether it was
@@ -3335,13 +3335,13 @@ class ArduisWindow(Adw.ApplicationWindow):
         # Initial render: chrome + sidebar + workspace from the active project.
         self._refresh_project_chrome()
         self._rebuild_sidebar()
-        # The project-tab switcher is rendered by Task 3; tolerate its absence so
-        # this task alone keeps `main` launchable.
+        # The project-tab switcher is rendered by Workspace 3; tolerate its absence so
+        # this workspace alone keeps `main` launchable.
         build_tabs = getattr(self, "_build_project_tabs", None)
         if build_tabs is not None:
             build_tabs()
         # Phase 7 (D-13): conservative startup reconcile of orphaned `arduis-*`
-        # compose projects (was the tail of the legacy single-project _scan_tasks).
+        # compose projects (was the tail of the legacy single-project _scan_workspaces).
         # Async + surface-only; no-op without docker.
         self._reconcile_orphans()
 
@@ -3361,18 +3361,18 @@ class ArduisWindow(Adw.ApplicationWindow):
             return root
         return os.path.join(root, name)
 
-    # --- startup task scan (D-11: disk is the source of truth) ---------------
+    # --- startup workspace scan (D-11: disk is the source of truth) ---------------
 
-    def _scan_tasks(self, project: Project | None = None) -> None:
-        """Rediscover past tasks from ``../<root>-tasks/`` as HIBERNATED (D-11).
+    def _scan_workspaces(self, project: Project | None = None) -> None:
+        """Rediscover past workspaces from ``../<root>-tasks/`` as HIBERNATED (D-11).
 
         Disk is the source of truth — there is NO persisted app-state file. At
-        startup we scan the grouped sibling tasks root and, for each direct subdir
-        that is a VALID task (``_dir_is_task`` — ≥1 child whose ``.git`` is a FILE,
-        a real worktree pointer; A5), build a HIBERNATED ``Task`` whose repos are
+        startup we scan the grouped sibling workspaces root and, for each direct subdir
+        that is a VALID workspace (``_dir_is_workspace`` — ≥1 child whose ``.git`` is a FILE,
+        a real worktree pointer; A5), build a HIBERNATED ``Workspace`` whose repos are
         inferred from its worktree subdirs. CRITICAL (Pitfall 6): this NEVER spawns
         a terminal — every terminal's pid/pgid stays ``None`` and rows render
-        dimmed; ``_on_resume`` (Task 1) spawns the default layout on demand.
+        dimmed; ``_on_resume`` (Workspace 1) spawns the default layout on demand.
 
         03.4 (D-02): when ``project`` is given, scan THAT project's root and write
         into ITS store / container_state (used by ``_init_projects`` to seed each
@@ -3392,23 +3392,23 @@ class ArduisWindow(Adw.ApplicationWindow):
         if not root:
             return  # no project resolved → nothing to scan
 
-        # The tasks root is the parent of any task_dir: derive it from a throwaway
+        # The workspaces root is the parent of any workspace_dir: derive it from a throwaway
         # branch so the convention (``<parent>/<base>-tasks``) lives in one place.
-        tasks_root = os.path.dirname(task_dir_for(root, "x"))
-        if not os.path.isdir(tasks_root):
-            return  # no tasks ever created → nothing to rediscover
+        workspaces_root = os.path.dirname(workspace_dir_for(root, "x"))
+        if not os.path.isdir(workspaces_root):
+            return  # no workspaces ever created → nothing to rediscover
 
         try:
-            entries = sorted(os.scandir(tasks_root), key=lambda e: e.name)
+            entries = sorted(os.scandir(workspaces_root), key=lambda e: e.name)
         except OSError:
             return
 
         for entry in entries:
             if not entry.is_dir(follow_symlinks=False):
                 continue
-            if not self._dir_is_task(entry.path):
-                continue  # stray / symlink-only dir → not a task (A5/T-03.2-13)
-            task_id = entry.name
+            if not self._dir_is_workspace(entry.path):
+                continue  # stray / symlink-only dir → not a workspace (A5/T-03.2-13)
+            workspace_id = entry.name
             repos: list[RepoCheckout] = []
             try:
                 children = sorted(os.scandir(entry.path), key=lambda e: e.name)
@@ -3421,32 +3421,32 @@ class ArduisWindow(Adw.ApplicationWindow):
                 if not os.path.isfile(os.path.join(child.path, ".git")):
                     continue
                 # UX pivot: a RepoCheckout is worktree METADATA only — terminals
-                # live at task level, NOT per repo.
+                # live at workspace level, NOT per repo.
                 repos.append(
                     RepoCheckout(
                         repo_name=child.name,
                         worktree_dir=child.path,
-                        branch=task_id,
+                        branch=workspace_id,
                     )
                 )
             if not repos:
                 continue  # validated but no worktree children → skip
             store.add(
-                Task(
-                    task_id=task_id,
-                    branch=task_id,
-                    task_dir=entry.path,
+                Workspace(
+                    workspace_id=workspace_id,
+                    branch=workspace_id,
+                    workspace_dir=entry.path,
                     repos=repos,
                     state=SessionState.HIBERNATED,
-                    # HIBERNATED: the default task-level pair's records exist but
+                    # HIBERNATED: the default workspace-level pair's records exist but
                     # carry NO pid/pgid (Pitfall 6 — do NOT spawn). Resume re-spawns.
-                    terminals=default_task_terminals(task_id),
+                    terminals=default_workspace_terminals(workspace_id),
                 )
             )
             # Phase 7 (CONT-04, D-07/D-13): load the durable container state so port
-            # badges render at startup for tasks isolated before this restart. A
-            # task with no arduis.container.toml yields the no-op default (OFF).
-            container_state[task_id] = containerstate.load_container_state(
+            # badges render at startup for workspaces isolated before this restart. A
+            # workspace with no arduis.container.toml yields the no-op default (OFF).
+            container_state[workspace_id] = containerstate.load_container_state(
                 entry.path
             )
 
@@ -3454,22 +3454,22 @@ class ArduisWindow(Adw.ApplicationWindow):
             return  # seeding a background project: no active-project UI work here
 
         # The sidebar was built (from an empty store) before this scan runs, so
-        # reflect the rediscovered tasks now — otherwise they only appear after
-        # the next unrelated _rebuild_sidebar (e.g. creating a new task).
+        # reflect the rediscovered workspaces now — otherwise they only appear after
+        # the next unrelated _rebuild_sidebar (e.g. creating a new workspace).
         self._rebuild_sidebar()
 
         # Phase 7 (D-13, criterion 4): conservative startup reconcile — surface any
-        # orphaned `arduis-*` compose projects with no live task (e.g. after a
+        # orphaned `arduis-*` compose projects with no live workspace (e.g. after a
         # crash). Async + surface-only (never auto down -v). No-op without docker.
         self._reconcile_orphans()
 
-    def _dir_is_task(self, path: str) -> bool:
+    def _dir_is_workspace(self, path: str) -> bool:
         """True iff ``path`` holds ≥1 real git worktree (a child with a ``.git`` FILE).
 
         A git worktree stores ``.git`` as a POINTER FILE (``gitdir: ...``), not a
         dir; a symlink-only / plain dir is NOT a worktree. Requiring a real pointer
         file means a stray or symlink-only dir under ``<root>-tasks/`` is never
-        listed as a task (A5 / T-03.2-13 spoofing mitigation).
+        listed as a workspace (A5 / T-03.2-13 spoofing mitigation).
         """
         try:
             with os.scandir(path) as it:
@@ -3482,7 +3482,7 @@ class ArduisWindow(Adw.ApplicationWindow):
             return False
         return False
 
-    # --- + New-task dialog (D-06) -------------------------------------------
+    # --- + New-workspace dialog (D-06) -------------------------------------------
 
     def _on_new_worktree_clicked(self, _button) -> None:
         """Cap-gate (RAM-02/D-16), then fetch branches + present the dialog (D-06)."""
@@ -3490,14 +3490,14 @@ class ArduisWindow(Adw.ApplicationWindow):
             return  # button should be insensitive, but guard anyway
 
         # RAM-02/D-15/D-16: BLOCK at the active-agent cap and force a hibernate
-        # BEFORE any task is created/spawned — never silent-allow, never
-        # create-hibernated. Proceed only once a task is freed.
-        if caps.at_cap(self._all_tasks()):
-            self._prompt_hibernate_then(self._begin_new_task)
+        # BEFORE any workspace is created/spawned — never silent-allow, never
+        # create-hibernated. Proceed only once a workspace is freed.
+        if caps.at_cap(self._all_workspaces()):
+            self._prompt_hibernate_then(self._begin_new_workspace)
             return
-        self._begin_new_task()
+        self._begin_new_workspace()
 
-    def _begin_new_task(self) -> None:
+    def _begin_new_workspace(self) -> None:
         """Fetch local branches from the project's PRIMARY repo, then show dialog.
 
         The type-or-pick branch list is read from the first member repo's path
@@ -3511,7 +3511,7 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         def _branches_done(status, out, _err):
             existing = parse_local_branches(out) if status == 0 else []
-            self._present_new_task_dialog(existing)
+            self._present_new_workspace_dialog(existing)
 
         run_git_async(argv_list_local_branches(primary_path), _branches_done, self._runner)
 
@@ -3530,9 +3530,9 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         # D-09: the COUNT in the heading is the GLOBAL union across all open
         # projects (RAM is machine-wide). The chooser LIST stays scoped to the
-        # ACTIVE project's active tasks — cross-project hibernation in the chooser
+        # ACTIVE project's active workspaces — cross-project hibernation in the chooser
         # is a documented deferral (RESEARCH Open Q2), not a D-09 correctness gap.
-        n = caps.active_count(self._all_tasks())
+        n = caps.active_count(self._all_workspaces())
         dialog = Adw.AlertDialog(
             heading=f"Você está com {n} agentes ativos",
             body="Hiberne uma worktree para liberar RAM antes de abrir outra.",
@@ -3562,17 +3562,17 @@ class ArduisWindow(Adw.ApplicationWindow):
         dialog.connect("response", _on_response)
         dialog.present(self)
 
-    def _present_new_task_dialog(self, existing: list[str]) -> None:
-        """New-task dialog: branch type-or-pick + a per-member-repo multi-pick (D-06).
+    def _present_new_workspace_dialog(self, existing: list[str]) -> None:
+        """New-workspace dialog: branch type-or-pick + a per-member-repo multi-pick (D-06).
 
-        A task is one branch across 1+ chosen member repos. The branch
+        A workspace is one branch across 1+ chosen member repos. The branch
         ``Gtk.ComboBoxText`` is type-or-pick (typing a new name = a new branch).
         Each member repo gets a ``Gtk.CheckButton`` (checked by default). A
         degenerate 1-repo project still renders its single check (no
         ``len == 1`` special-case in the materialization path — criterion 5).
         """
         dialog = Adw.AlertDialog(
-            heading="Nova task",
+            heading="Novo workspace",
             body="Digite o nome de uma nova branch ou escolha uma existente, "
             "e selecione as repos.",
         )
@@ -3587,7 +3587,7 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         # 03.4 (D-12): every member repo is checked by default. Chips are gone, so
         # the dialog seeds straight from the active project's member set — all on,
-        # still user-overridable per task. (Pre-03.3 behavior, restored.)
+        # still user-overridable per workspace. (Pre-03.3 behavior, restored.)
         default = set(self._member_repos)
         repo_checks: dict[str, Gtk.CheckButton] = {}
         repos_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
@@ -3614,20 +3614,20 @@ class ArduisWindow(Adw.ApplicationWindow):
             chosen = [name for name, c in repo_checks.items() if c.get_active()]
             if not chosen:
                 return  # require at least one repo
-            self._create_task(branch, chosen, existing)
+            self._create_workspace(branch, chosen, existing)
 
         dialog.connect("response", _on_response)
         dialog.present(self)
 
     # --- create flow: per-repo chained sequence (D-01/D-02/D-08/D-09/D-13) --
 
-    def _create_task(
+    def _create_workspace(
         self, branch: str, chosen_repos: list[str], existing_in_primary: list[str]
     ) -> None:
-        """Materialize the task folder, kick the per-repo chain, then open the PAIR.
+        """Materialize the workspace folder, kick the per-repo chain, then open the PAIR.
 
-        D-08/D-09: a task is one branch across N chosen member repos. We FIRST
-        create the task folder and materialize the relative symlinks (so relative
+        D-08/D-09: a workspace is one branch across N chosen member repos. We FIRST
+        create the workspace folder and materialize the relative symlinks (so relative
         compose build-contexts/bind-mounts resolve before any worktree add —
         Pitfall 4), then run a per-repo CHAINED ``run_git_async`` sequence (RESEARCH
         Pattern 2 — never threads/asyncio). Best-effort: a repo that aborts is
@@ -3635,66 +3635,66 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         UX pivot (2026-06-11, supersedes D-01/D-02): the workspace is NOT a column
         per repo. It is the DEFAULT 2-terminal pair (agent over shell) rooted at the
-        task folder, built+spawned ONCE in ``_finalize_task_creation`` after the
-        chain finishes with ≥1 success — terminals must NOT spawn before the task
+        workspace folder, built+spawned ONCE in ``_finalize_workspace_creation`` after the
+        chain finishes with ≥1 success — terminals must NOT spawn before the workspace
         folder + worktrees are materialized.
         """
         root = self._project_root
         if not root:
             return
-        task_dir = task_dir_for(root, branch)
-        os.makedirs(task_dir, exist_ok=True)
+        workspace_dir = workspace_dir_for(root, branch)
+        os.makedirs(workspace_dir, exist_ok=True)
 
         # Materialize the mirror symlinks FIRST (D-09, before worktree add so
         # relative build contexts resolve — Pitfall 4). Best-effort: collect
         # failures and surface them at the end; one bad symlink never aborts the
-        # whole task (D-10/OQ2). Targets are RELATIVE (relocatable, T-03.2-05).
+        # whole workspace (D-10/OQ2). Targets are RELATIVE (relocatable, T-03.2-05).
         symlink_errors: list[str] = []
-        for src, dst in symlink_plan(root, task_dir, set(chosen_repos)):
+        for src, dst in symlink_plan(root, workspace_dir, set(chosen_repos)):
             if os.path.lexists(dst):
                 continue
             try:
-                os.symlink(os.path.relpath(src, task_dir), dst)
+                os.symlink(os.path.relpath(src, workspace_dir), dst)
             except OSError as exc:
                 symlink_errors.append(f"{os.path.basename(dst)}: {exc}")
 
-        # Register the Task NOW (so the sidebar row appears); repos get appended as
+        # Register the Workspace NOW (so the sidebar row appears); repos get appended as
         # each succeeds (best-effort partial creation, OQ2). Its DEFAULT workspace is
-        # the task-level 2-terminal pair (agent+shell), built+spawned once the chain
+        # the workspace-level 2-terminal pair (agent+shell), built+spawned once the chain
         # finishes — NOT before the folder is materialized (UX pivot).
-        task = Task(
-            task_id=branch,
+        workspace = Workspace(
+            workspace_id=branch,
             branch=branch,
-            task_dir=task_dir,
+            workspace_dir=workspace_dir,
             repos=[],
-            terminals=default_task_terminals(branch),
+            terminals=default_workspace_terminals(branch),
         )
-        self._store.add(task)
+        self._store.add(workspace)
         self._rebuild_sidebar()  # show the row immediately; workspace opens on finalize
 
         # Per-repo errors accumulate across the chain; surfaced once at the end.
         repo_errors: list[str] = list(symlink_errors)
 
         # Kick the per-repo chain (one repo at a time, fully async — Pattern 2).
-        self._add_repo(task, chosen_repos, 0, branch, repo_errors)
+        self._add_repo(workspace, chosen_repos, 0, branch, repo_errors)
 
-    def _build_task_workspace(self, task: Task, repos: list[str]) -> LayoutModel:
-        """Build the DEFAULT 2-terminal workspace for ``task`` (UX pivot 2026-06-11).
+    def _build_workspace_terminals(self, workspace: Workspace, repos: list[str]) -> LayoutModel:
+        """Build the DEFAULT 2-terminal workspace for ``workspace`` (UX pivot 2026-06-11).
 
         SUPERSEDES the one-column-per-repo 2×N layout of D-01/D-02 (a real 6-repo
         project produced an unusable 2×6 grid of tiny panes). Shared by
-        ``_create_task`` and ``_resume_task``: build a fresh ``LayoutModel`` with
-        EXACTLY TWO task-level leaves — agent ``{task}:t0`` over shell ``{task}:t1``
-        (vertical split, the 03.1 default) — regardless of how many repos the task
-        spans. Both terminals open at ``task.task_dir`` (the task folder mirrors the
-        project root) so one agent works across all the task's repos; the user grows
+        ``_create_workspace`` and ``_resume_workspace``: build a fresh ``LayoutModel`` with
+        EXACTLY TWO workspace-level leaves — agent ``{workspace}:t0`` over shell ``{workspace}:t1``
+        (vertical split, the 03.1 default) — regardless of how many repos the workspace
+        spans. Both terminals open at ``workspace.workspace_dir`` (the workspace folder mirrors the
+        project root) so one agent works across all the workspace's repos; the user grows
         the workspace via the split machinery (no auto per-repo columns). ``repos``
         is accepted for signature compatibility but no longer drives the layout.
         The caller spawns the terminals afterwards.
         """
-        branch = task.branch
-        agent_tid = f"{task.task_id}:t0"
-        shell_tid = f"{task.task_id}:t1"
+        branch = workspace.branch
+        agent_tid = f"{workspace.workspace_id}:t0"
+        shell_tid = f"{workspace.workspace_id}:t1"
 
         model = LayoutModel()
         model.root = LeafNode(agent_tid)
@@ -3706,16 +3706,16 @@ class ArduisWindow(Adw.ApplicationWindow):
         model.touch(agent_tid)
 
         # Build both VTE leaves (badge "claude" agent / "zsh" shell).
-        self._make_task_leaf(agent_tid, branch, "claude")
-        self._make_task_leaf(shell_tid, branch, "zsh")
+        self._make_workspace_leaf(agent_tid, branch, "claude")
+        self._make_workspace_leaf(shell_tid, branch, "zsh")
 
-        self._layouts[task.task_id] = model
-        self._active_workspace_sid = task.task_id
+        self._layouts[workspace.workspace_id] = model
+        self._active_workspace_sid = workspace.workspace_id
         self._reflect_layout()
         return model
 
-    def _make_task_leaf(self, tid: str, branch: str, badge: str) -> None:
-        """Build + register one task terminal's VTE leaf (palette factory, T-04)."""
+    def _make_workspace_leaf(self, tid: str, branch: str, badge: str) -> None:
+        """Build + register one workspace terminal's VTE leaf (palette factory, T-04)."""
         terminal = self._make_terminal()
         terminal.connect("child-exited", self._on_worktree_term_exited)
         leaf = self._make_leaf(tid, branch, terminal, badge_label=badge)
@@ -3724,7 +3724,7 @@ class ArduisWindow(Adw.ApplicationWindow):
 
     def _add_repo(
         self,
-        task: Task,
+        workspace: Workspace,
         repos: list[str],
         i: int,
         branch: str,
@@ -3741,20 +3741,20 @@ class ArduisWindow(Adw.ApplicationWindow):
         """
         if i >= len(repos):
             # Chain done — finalize. Succeeded repos are exactly those appended to
-            # task.repos in _add_done; everything else aborted/failed. A failed repo
+            # workspace.repos in _add_done; everything else aborted/failed. A failed repo
             # must NOT leave a dead empty column (zombie pane) in the workspace, and
-            # a task where EVERY repo failed must NOT linger as a sidebar row that
+            # a workspace where EVERY repo failed must NOT linger as a sidebar row that
             # counts toward the cap. Prune accordingly (NEVER deletes from disk —
             # D-10; the symlink-only folder may remain, startup scan rejects it).
-            self._finalize_task_creation(task, repos, repo_errors)
+            self._finalize_workspace_creation(workspace, repos, repo_errors)
             return
 
         name = repos[i]
         repo_path = self._member_repo_path(name)
-        wt_dir = repo_worktree_dir(task.task_dir, name)
+        wt_dir = repo_worktree_dir(workspace.workspace_dir, name)
 
         def _advance() -> None:
-            self._add_repo(task, repos, i + 1, branch, repo_errors)
+            self._add_repo(workspace, repos, i + 1, branch, repo_errors)
 
         def _has_commit_done(hstatus, _hout, _herr):
             if hstatus != 0:
@@ -3789,9 +3789,9 @@ class ArduisWindow(Adw.ApplicationWindow):
                             _advance()
                             return
                         # UX pivot: a RepoCheckout is now worktree METADATA only —
-                        # the task's terminals live at task level (built once in
+                        # the workspace's terminals live at workspace level (built once in
                         # finalize), so no per-repo terminal list / spawn here.
-                        task.repos.append(
+                        workspace.repos.append(
                             RepoCheckout(
                                 repo_name=name,
                                 worktree_dir=wt_dir,
@@ -3826,92 +3826,92 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         run_git_async(argv_repo_has_commit(repo_path), _has_commit_done, self._runner)
 
-    def _finalize_task_creation(
-        self, task: Task, chosen_repos: list[str], repo_errors: list[str]
+    def _finalize_workspace_creation(
+        self, workspace: Workspace, chosen_repos: list[str], repo_errors: list[str]
     ) -> None:
-        """Finalize the create chain: drop zombie tasks, else open the task PAIR.
+        """Finalize the create chain: drop zombie workspaces, else open the workspace PAIR.
 
         UX pivot (2026-06-11): there are no per-repo columns to prune anymore — the
-        workspace is the single task-level 2-terminal pair, built+spawned HERE (once
-        the task folder + worktrees are materialized). Partial failure just means
-        fewer worktrees in the task folder; the 2-terminal workspace opens
-        regardless. If ZERO repos succeeded the whole task is a zombie (symlink-only
+        workspace is the single workspace-level 2-terminal pair, built+spawned HERE (once
+        the workspace folder + worktrees are materialized). Partial failure just means
+        fewer worktrees in the workspace folder; the 2-terminal workspace opens
+        regardless. If ZERO repos succeeded the whole workspace is a zombie (symlink-only
         folder, no worktree): remove it from the store so it never appears in the
         sidebar or counts toward the active cap. NEVER deletes from disk (D-10).
         """
-        succeeded = {r.repo_name for r in task.repos}
+        succeeded = {r.repo_name for r in workspace.repos}
 
         if not succeeded:
-            # Zero repos created — tear the task down completely (no zombie row).
-            self._store.remove(task.task_id)
-            self._layouts.pop(task.task_id, None)
-            if self._active_workspace_sid == task.task_id:
+            # Zero repos created — tear the workspace down completely (no zombie row).
+            self._store.remove(workspace.workspace_id)
+            self._layouts.pop(workspace.workspace_id, None)
+            if self._active_workspace_sid == workspace.workspace_id:
                 self._swap_workspace(_MAIN_SID)
             self._rebuild_sidebar()
             if repo_errors:
-                self._show_error("Não foi possível criar a task", "\n".join(repo_errors))
+                self._show_error("Não foi possível criar o workspace", "\n".join(repo_errors))
             return
 
-        # ≥1 repo succeeded → open the DEFAULT 2-terminal workspace at the task
+        # ≥1 repo succeeded → open the DEFAULT 2-terminal workspace at the workspace
         # folder root and spawn the agent+shell pair (now that the worktrees exist).
-        self._build_task_workspace(task, list(succeeded))
-        self._spawn_task_terminals(task)
+        self._build_workspace_terminals(workspace, list(succeeded))
+        self._spawn_workspace_terminals(workspace)
 
-        # Phase 7 (CONT-04): seed the in-memory container state for the fresh task
+        # Phase 7 (CONT-04): seed the in-memory container state for the fresh workspace
         # (no file yet → ContainerState() default, toggle OFF). Never auto-enable.
-        self._container_state[task.task_id] = containerstate.load_container_state(
-            task.task_dir
+        self._container_state[workspace.workspace_id] = containerstate.load_container_state(
+            workspace.workspace_dir
         )
 
         # ENV-02 / criterion 4: run each succeeded repo's trusted [setup] in its shell
-        # pane. CREATE path ONLY — _resume_task never reaches here (Pitfall 3). Failure
+        # pane. CREATE path ONLY — _resume_workspace never reaches here (Pitfall 3). Failure
         # never blocks the agent or crashes creation (D-06).
-        self._run_repo_setups(task)
+        self._run_repo_setups(workspace)
 
         if repo_errors:
             self._show_error("Algumas repos não foram criadas", "\n".join(repo_errors))
         self._rebuild_sidebar()
 
-        # Phase 8 (D-03): auto-read branch+PR status ONCE on create (after the task
+        # Phase 8 (D-03): auto-read branch+PR status ONCE on create (after the workspace
         # is fully in the store with its repos). force=False so the TTL cache gates
         # rapid re-creates; gh is gated on availability + TTL + debounce — no poll.
-        self._refresh_task_status(task)
+        self._refresh_workspace_status(workspace)
 
-    def _task_root_cwd(self, task: Task) -> str:
-        """Working dir for the task's terminals (UX pivot): the task folder root.
+    def _workspace_root_cwd(self, workspace: Workspace) -> str:
+        """Working dir for the workspace's terminals (UX pivot): the workspace folder root.
 
-        Both task-level terminals open at ``task.task_dir`` (it mirrors the project
+        Both workspace-level terminals open at ``workspace.workspace_dir`` (it mirrors the project
         root — chosen repos as worktree dirs + relative symlinks for everything
-        else) so one agent sees and works across ALL the task's repos. Degenerate
-        1-repo task: open at that sole repo's worktree dir so the visible result
+        else) so one agent sees and works across ALL the workspace's repos. Degenerate
+        1-repo workspace: open at that sole repo's worktree dir so the visible result
         equals today's 1-repo behavior (the agent lands inside the repo).
         """
-        if len(task.repos) == 1:
-            return task.repos[0].worktree_dir
-        return task.task_dir
+        if len(workspace.repos) == 1:
+            return workspace.repos[0].worktree_dir
+        return workspace.workspace_dir
 
-    def _spawn_task_terminals(self, task: Task) -> None:
-        """Spawn the task's agent (fed claude) + shell (plain) pair (UX pivot).
+    def _spawn_workspace_terminals(self, workspace: Workspace) -> None:
+        """Spawn the workspace's agent (fed claude) + shell (plain) pair (UX pivot).
 
-        Both root at ``_task_root_cwd(task)`` (the task folder, or the sole repo's
-        worktree in the degenerate 1-repo case). pid/pgid land on ``task.terminals``.
+        Both root at ``_workspace_root_cwd(workspace)`` (the workspace folder, or the sole repo's
+        worktree in the degenerate 1-repo case). pid/pgid land on ``workspace.terminals``.
         """
-        cwd = self._task_root_cwd(task)
-        agent_tid = f"{task.task_id}:t0"
-        shell_tid = f"{task.task_id}:t1"
+        cwd = self._workspace_root_cwd(workspace)
+        agent_tid = f"{workspace.workspace_id}:t0"
+        shell_tid = f"{workspace.workspace_id}:t1"
         agent = self._term_by_sid.get(agent_tid)
         shell = self._term_by_sid.get(shell_tid)
         if agent is not None:
-            self._spawn_into(agent, cwd, task, agent_tid, kind="agent")
+            self._spawn_into(agent, cwd, workspace, agent_tid, kind="agent")
         if shell is not None:
-            self._spawn_into(shell, cwd, task, shell_tid, kind="shell")
+            self._spawn_into(shell, cwd, workspace, shell_tid, kind="shell")
 
     # --- per-worktree [setup] feed (ENV-02, criterion 4) --------------------
 
-    def _run_repo_setups(self, task: Task) -> None:
+    def _run_repo_setups(self, workspace: Workspace) -> None:
         """ENV-02: gather each repo's [setup], run trusted ones silently, gate the rest.
 
-        CREATE-only (called from _finalize_task_creation). For every succeeded repo
+        CREATE-only (called from _finalize_workspace_creation). For every succeeded repo
         with a non-empty [setup] (read from its worktree's .arduis.toml): already-
         trusted (repo_realpath, hash) repos feed silently; the rest are collected and
         confirmed via ONE consolidated Adw.AlertDialog (D-08). 'Pular' leaves the
@@ -3919,30 +3919,30 @@ class ArduisWindow(Adw.ApplicationWindow):
         -> RepoSetup([]) -> no gate (criterion 1).
         """
         to_confirm: list[tuple[RepoCheckout, list[str], str, str]] = []
-        for repo in task.repos:
+        for repo in workspace.repos:
             setup = repoconfig.load_repo_setup(repo.worktree_dir)
             if not setup.commands:
                 continue  # no [setup] -> no gate, no dialog (the dominant no-op path)
             h = trust.setup_hash(setup.commands)
             repo_id = os.path.realpath(self._member_repo_path(repo.repo_name))
             if trust.is_trusted(self._trusted_setups_path, repo_id, h):
-                self._feed_repo_setup(task, repo, setup.commands)  # silent (trusted)
+                self._feed_repo_setup(workspace, repo, setup.commands)  # silent (trusted)
             else:
                 to_confirm.append((repo, setup.commands, repo_id, h))
         if to_confirm:
-            self._present_setup_trust(task, to_confirm)
+            self._present_setup_trust(workspace, to_confirm)
 
     def _feed_repo_setup(
-        self, task: Task, repo: RepoCheckout, commands: list[str]
+        self, workspace: Workspace, repo: RepoCheckout, commands: list[str]
     ) -> None:
-        """Feed ``cd <worktree> &&`` + the commands into the task's SHELL terminal (t1).
+        """Feed ``cd <worktree> &&`` + the commands into the workspace's SHELL terminal (t1).
 
         NEVER the agent terminal (t0) — feeding the claude TUI corrupts its input
         (Pitfall 2). The cd-guard re-roots into the repo's own worktree so multi-repo
         setups resolve relative paths (Pitfall 1). Best-effort: a missing terminal or a
         feed error must not crash creation (D-06).
         """
-        shell = self._term_by_sid.get(f"{task.task_id}:t1")
+        shell = self._term_by_sid.get(f"{workspace.workspace_id}:t1")
         if shell is None:
             return
         try:
@@ -3951,7 +3951,7 @@ class ArduisWindow(Adw.ApplicationWindow):
             pass
 
     def _present_setup_trust(
-        self, task: Task, to_confirm: list[tuple[RepoCheckout, list[str], str, str]]
+        self, workspace: Workspace, to_confirm: list[tuple[RepoCheckout, list[str], str, str]]
     ) -> None:
         """Consolidated trust gate (D-08), mirroring _present_hook_consent.
 
@@ -3979,7 +3979,7 @@ class ArduisWindow(Adw.ApplicationWindow):
                 return  # 'Pular'/close: persist nothing, feed nothing (re-prompt)
             for repo, commands, repo_id, h in to_confirm:
                 trust.record_trust(self._trusted_setups_path, repo_id, h)
-                self._feed_repo_setup(task, repo, commands)
+                self._feed_repo_setup(workspace, repo, commands)
 
         dialog.connect("response", _on_response)
         dialog.present(self)
@@ -3988,10 +3988,10 @@ class ArduisWindow(Adw.ApplicationWindow):
         """Split the active workspace, spawning a new agent terminal beside ``focused_tid`` (D-05).
 
         Every split is an agent terminal by default (D-05) — Ctrl+C drops to the
-        shell. UX pivot (2026-06-11): a task split is a TASK-level terminal — id
-        ``{task}:tN`` rooted at the task folder (``_task_root_cwd``), tracked on
-        ``task.terminals`` so RAM/teardown see it — coherent with the default pair
-        opening at the task root. On the pinned main workspace there is no Task —
+        shell. UX pivot (2026-06-11): a workspace split is a WORKSPACE-level terminal — id
+        ``{workspace}:tN`` rooted at the workspace folder (``_workspace_root_cwd``), tracked on
+        ``workspace.terminals`` so RAM/teardown see it — coherent with the default pair
+        opening at the workspace root. On the pinned main workspace there is no Workspace —
         spawn into the project root, untracked.
 
         ``orientation`` ("h"/"v") threads through to ``LayoutModel.split`` (UI-01):
@@ -4003,11 +4003,11 @@ class ArduisWindow(Adw.ApplicationWindow):
             return
         model = self._workspace_layout(sid)
 
-        task = self._store.get(sid)
-        if task is not None:
-            cwd = self._task_root_cwd(task)
+        workspace = self._store.get(sid)
+        if workspace is not None:
+            cwd = self._workspace_root_cwd(workspace)
             new_tid = self._next_term_id(sid)
-            label = task.branch
+            label = workspace.branch
         else:
             cwd = self._repo_root or GLib.get_home_dir()
             new_tid = self._next_term_id(sid)
@@ -4022,29 +4022,29 @@ class ArduisWindow(Adw.ApplicationWindow):
         model.split(focused_tid, new_tid, orientation)
         self._reflect_layout()
 
-        if task is not None:
-            # Track the split as a task-level terminal so RAM/teardown see it.
-            task.terminals.append(TerminalRecord(new_tid, "agent"))
-            self._spawn_into(terminal, cwd, task, new_tid, kind="agent")
+        if workspace is not None:
+            # Track the split as a workspace-level terminal so RAM/teardown see it.
+            workspace.terminals.append(TerminalRecord(new_tid, "agent"))
+            self._spawn_into(terminal, cwd, workspace, new_tid, kind="agent")
         else:
-            # main workspace has no store task — spawn plain, no record to write.
+            # main workspace has no store workspace — spawn plain, no record to write.
             self._spawn_into(terminal, cwd, None, new_tid, kind="agent")
 
-    def _all_task_terminals(self, task: Task) -> list[TerminalRecord]:
-        """Every TerminalRecord owned by ``task``: task-level pair + any per-repo splits.
+    def _all_workspace_terminals(self, workspace: Workspace) -> list[TerminalRecord]:
+        """Every TerminalRecord owned by ``workspace``: workspace-level pair + any per-repo splits.
 
-        Under the UX pivot the default workspace lives in ``task.terminals``; a user
-        could still attach a split to a specific repo (``task.repos[*].terminals``).
+        Under the UX pivot the default workspace lives in ``workspace.terminals``; a user
+        could still attach a split to a specific repo (``workspace.repos[*].terminals``).
         RAM accounting + teardown must cover BOTH so no process group is missed.
         """
-        records: list[TerminalRecord] = list(task.terminals)
-        for repo in task.repos:
+        records: list[TerminalRecord] = list(workspace.terminals)
+        for repo in workspace.repos:
             records.extend(repo.terminals)
         return records
 
     # --- Phase 8: read-only diff leaf (REVIEW-01, D-02) ----------------------
 
-    def _open_diff_leaf(self, task: Task, repo: RepoCheckout) -> None:
+    def _open_diff_leaf(self, workspace: Workspace, repo: RepoCheckout) -> None:
         """Open a READ-ONLY VTE leaf running ``git --no-pager diff`` for ``repo`` (D-02).
 
         REVIEW-01: spawn a NEW leaf in the ACTIVE workspace, reusing the same
@@ -4125,25 +4125,25 @@ class ArduisWindow(Adw.ApplicationWindow):
     def _on_ver_diff(self, _action, param) -> None:
         """Row-menu ``win.ver_diff(repo_name)``: open the read-only diff for that repo.
 
-        Resolves the right-clicked task + the repo by the string target (mirrors
-        ``win.close_repo``). A hibernated task still has worktrees on disk, so the
+        Resolves the right-clicked workspace + the repo by the string target (mirrors
+        ``win.close_repo``). A hibernated workspace still has worktrees on disk, so the
         diff is available there too.
         """
         if self._menu_target_sid is None:
             return
-        task = self._store.get(self._menu_target_sid)
-        if task is None:
+        workspace = self._store.get(self._menu_target_sid)
+        if workspace is None:
             return
         repo_name = param.get_string()
-        repo = next((r for r in task.repos if r.repo_name == repo_name), None)
+        repo = next((r for r in workspace.repos if r.repo_name == repo_name), None)
         if repo is None:
             return
-        self._open_diff_leaf(task, repo)
+        self._open_diff_leaf(workspace, repo)
 
     # --- Phase 8: branch + PR status subline (GIT-01/REVIEW-02, D-03) --------
 
     def _set_status_subline(self, sid: str, text: str) -> None:
-        """Update a task row's subline label in place (guard a rebuilt/missing row).
+        """Update a workspace row's subline label in place (guard a rebuilt/missing row).
 
         Reuses the EXISTING ``_subline_by_sid`` label set in ``_make_row`` — no row
         rebuild. The row may have been rebuilt between the async read kick and the
@@ -4153,7 +4153,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         if label is not None:
             label.set_text(text)
 
-    def _refresh_task_status(self, task: Task, *, force: bool = False) -> None:
+    def _refresh_workspace_status(self, workspace: Workspace, *, force: bool = False) -> None:
         """Read branch + ahead/behind (git) + PR (gh) and render the row subline (D-03).
 
         THROTTLE (T-08-10): branch/ahead-behind are cheap local git reads; the PR
@@ -4161,13 +4161,13 @@ class ArduisWindow(Adw.ApplicationWindow):
         never call gh), then on the TTL cache (``fresh_payload`` within ``GH_TTL_S``)
         unless ``force``, then on the ``_pr_busy`` in-flight debounce (DROP, never
         queue). All reads go through ``run_git_async`` with ``cwd=worktree`` on the
-        GLib loop. NEVER a poll. Uses the task's PRIMARY repo (``task.repos[0]``) —
+        GLib loop. NEVER a poll. Uses the workspace's PRIMARY repo (``workspace.repos[0]``) —
         aggregate-in-subline per the plan.
         """
-        if not task.repos:
+        if not workspace.repos:
             return
-        repo = task.repos[0]
-        sid = task.task_id
+        repo = workspace.repos[0]
+        sid = workspace.workspace_id
         now = time.monotonic()
 
         # State threaded through the async branch/ahead-behind chain so the PR
@@ -4242,28 +4242,28 @@ class ArduisWindow(Adw.ApplicationWindow):
 
     def _on_refresh_status(self, _action, _param) -> None:
         """Row-menu ``win.refresh_status``: force a TTL-bypassing status re-read (D-03)."""
-        task = self._menu_session()
-        if task is None:
+        workspace = self._menu_session()
+        if workspace is None:
             return
-        self._refresh_task_status(task, force=True)
+        self._refresh_workspace_status(workspace, force=True)
 
     def _on_open_pr(self, _action, _param) -> None:
         """Row-menu ``win.open_pr``: run ``gh pr create --web`` — the ONE allowed write.
 
-        D-05/REVIEW-02: the only write arduis performs. Runs for the task's PRIMARY
+        D-05/REVIEW-02: the only write arduis performs. Runs for the workspace's PRIMARY
         repo via ``run_git_async(cwd=worktree)``; ``--web`` keeps it browser-driven
         (AFK-safe). Toasts the result and, on success, force-refreshes the status so
         the new PR shows. The menu item is offered ONLY when gh is available.
         """
-        task = self._menu_session()
-        if task is None or not task.repos:
+        workspace = self._menu_session()
+        if workspace is None or not workspace.repos:
             return
-        repo = task.repos[0]
+        repo = workspace.repos[0]
 
         def _on_create(rc: int, _out: str, err: str) -> None:
             if rc == 0:
                 self._toast("PR aberto no navegador")
-                self._refresh_task_status(task, force=True)
+                self._refresh_workspace_status(workspace, force=True)
             elif rc == gh.GH_EXIT_NEEDS_AUTH:
                 self._toast(gh.GH_UNAUTH_MSG)
             else:
@@ -4278,24 +4278,24 @@ class ArduisWindow(Adw.ApplicationWindow):
             cwd=repo.worktree_dir,
         )
 
-    # --- Phase 8: "Concluir task" — the SAFE ordered teardown (REVIEW-03, D-04) ---
+    # --- Phase 8: "Concluir workspace" — the SAFE ordered teardown (REVIEW-03, D-04) ---
 
     def _on_conclude_action(self, _action, _param) -> None:
         """Row-menu ``win.conclude``: confirm, then run the D-04 safe teardown.
 
-        Resolves the right-clicked task via ``_menu_session`` and presents a
+        Resolves the right-clicked workspace via ``_menu_session`` and presents a
         DESTRUCTIVE-styled Adw.AlertDialog that states plainly what conclude does:
-        it removes the task's WORKTREES while KEEPING the branch and the source
+        it removes the workspace's WORKTREES while KEEPING the branch and the source
         repos (D-10 / criterion 4). Declining aborts (nothing is touched). On "ok"
-        the FIXED ordered chain ``_conclude_task`` runs.
+        the FIXED ordered chain ``_conclude_workspace`` runs.
         """
-        task = self._menu_session()
-        if task is None:
+        workspace = self._menu_session()
+        if workspace is None:
             return
         dialog = Adw.AlertDialog(
-            heading=f"Concluir {task.branch}?",
+            heading=f"Concluir {workspace.branch}?",
             body=(
-                "Remove as worktrees da task. O código-fonte, o histórico e a "
+                "Remove as worktrees do workspace. O código-fonte, o histórico e a "
                 "branch ficam intactos. Se alguma worktree tiver mudanças não "
                 "commitadas, a conclusão é bloqueada (nada é removido)."
             ),
@@ -4308,20 +4308,20 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         def _on_response(_dlg, response):
             if response == "ok":
-                self._conclude_task(task)
+                self._conclude_workspace(workspace)
 
         dialog.connect("response", _on_response)
         dialog.present(self)
 
-    def _conclude_task(self, task: Task) -> None:
+    def _conclude_workspace(self, workspace: Workspace) -> None:
         """The FIXED D-04 safe teardown order (REVIEW-03 criterion 4 — load-bearing).
 
         Composes three already-built channels in an INVARIANT order, structured as a
         small async state machine driven by ``run_git_async`` callbacks because the
         git reads/removes are async. The ORDER is the security of this phase:
 
-          (a) ``_teardown_session_terminals`` (kill the task's agent/shell process
-              groups, killpg) then ``_clear_task_state_files`` (delete RUNTIME state
+          (a) ``_teardown_session_terminals`` (kill the workspace's agent/shell process
+              groups, killpg) then ``_clear_workspace_state_files`` (delete RUNTIME state
               files — D-10-exempt arduis-owned data).
           (b) ``_container_down`` (Phase-7 compose-down channel; no-op via its own
               guards if isolation was OFF — a SEPARATE channel from killpg, T-07-13).
@@ -4332,21 +4332,21 @@ class ArduisWindow(Adw.ApplicationWindow):
           (d) ``git worktree remove`` (NO ``--force``) per repo, run with cwd=SOURCE
               member repo (D-10), removing only the WORKTREE dir.
           (e) ``git worktree prune`` per source repo.
-          (f) unlink the task folder's RELATIVE symlinks (``os.path.islink`` guard —
+          (f) unlink the workspace folder's RELATIVE symlinks (``os.path.islink`` guard —
               the LINK only, never the target/source/branch — D-10), rmdir if empty.
-          (g) drop the task from the store, rebuild the sidebar, fall back to main if
+          (g) drop the workspace from the store, rebuild the sidebar, fall back to main if
               it was the active workspace, and drop the ``{sid}:`` widget/handle maps
-              the way ``_hibernate_task`` does.
+              the way ``_hibernate_workspace`` does.
         """
         # (a) kill agents + clear runtime state files.
-        self._teardown_session_terminals(task)
-        self._clear_task_state_files(task)
+        self._teardown_session_terminals(workspace)
+        self._clear_workspace_state_files(workspace)
         # (b) compose down (its own guards no-op if isolation was off).
-        self._container_down(task)
+        self._container_down(workspace)
         # (c) clean-gate → on success continues to (d)..(g).
-        self._conclude_clean_gate(task)
+        self._conclude_clean_gate(workspace)
 
-    def _conclude_clean_gate(self, task: Task) -> None:
+    def _conclude_clean_gate(self, workspace: Workspace) -> None:
         """(c) Per-repo porcelain clean-gate — ALL-OR-NOTHING refusal (D-04, A2).
 
         Reads ``git status --porcelain`` for EVERY repo (cwd=worktree). Collects all
@@ -4355,11 +4355,11 @@ class ArduisWindow(Adw.ApplicationWindow):
         pt-BR dialog naming the dirty repo(s). Only when EVERY repo is clean does it
         proceed to ``_conclude_remove_worktrees`` (T-08-12).
         """
-        repos = list(task.repos)
+        repos = list(workspace.repos)
         if not repos:
             # No worktrees on disk to remove; go straight to store cleanup (f)+(g).
-            self._conclude_clean_task_folder(task)
-            self._conclude_finalize(task)
+            self._conclude_clean_workspace_folder(workspace)
+            self._conclude_finalize(workspace)
             return
 
         pending = {"n": len(repos)}
@@ -4379,7 +4379,7 @@ class ArduisWindow(Adw.ApplicationWindow):
                         )
                         self._conclude_refuse_dialog(names)
                         return  # REFUSE — nothing removed (all-or-nothing)
-                    self._conclude_remove_worktrees(task)
+                    self._conclude_remove_worktrees(workspace)
             return _on_status
 
         for repo in repos:
@@ -4400,7 +4400,7 @@ class ArduisWindow(Adw.ApplicationWindow):
             heading="Conclusão bloqueada",
             body=(
                 f"As worktrees a seguir têm mudanças não commitadas: {dirty_names}. "
-                "Conclua ou descarte essas mudanças antes de concluir a task. "
+                "Conclua ou descarte essas mudanças antes de concluir o workspace. "
                 "Nenhuma worktree foi removida."
             ),
         )
@@ -4409,7 +4409,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         dialog.set_close_response("ok")
         dialog.present(self)
 
-    def _conclude_remove_worktrees(self, task: Task) -> None:
+    def _conclude_remove_worktrees(self, workspace: Workspace) -> None:
         """(d) Per-repo ``git worktree remove`` (NO ``--force``), cwd=SOURCE repo (D-10).
 
         Runs ``review.argv_worktree_remove(source_repo, worktree_dir)`` for EACH repo
@@ -4419,7 +4419,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         (d)) the chain STOPS and surfaces the stderr in pt-BR — it does NOT escalate
         to ``--force`` (T-08-14, Pitfall 3/6). When every remove succeeds → prune (e).
         """
-        repos = list(task.repos)
+        repos = list(workspace.repos)
         pending = {"n": len(repos)}
         failed: list[str] = []
 
@@ -4436,7 +4436,7 @@ class ArduisWindow(Adw.ApplicationWindow):
                             "Falha ao remover worktree(s): " + "; ".join(failed)
                         )
                         return  # STOP — no --force escalation
-                    self._conclude_prune(task)
+                    self._conclude_prune(workspace)
             return _on_remove
 
         for repo in repos:
@@ -4448,21 +4448,21 @@ class ArduisWindow(Adw.ApplicationWindow):
                 cwd=source,
             )
 
-    def _conclude_prune(self, task: Task) -> None:
+    def _conclude_prune(self, workspace: Workspace) -> None:
         """(e) Per-source-repo ``git worktree prune`` (clean stale admin entries).
 
         Fire-and-forget per source repo; when all prunes return, proceeds to the
         symlink cleanup (f) + store drop (g). A prune failure is non-fatal (the
         worktree is already gone) — it never blocks the store cleanup.
         """
-        repos = list(task.repos)
+        repos = list(workspace.repos)
         pending = {"n": len(repos)}
 
         def _on_prune(_rc: int, _out: str, _err: str) -> None:
             pending["n"] -= 1
             if pending["n"] == 0:
-                self._conclude_clean_task_folder(task)
-                self._conclude_finalize(task)
+                self._conclude_clean_workspace_folder(workspace)
+                self._conclude_finalize(workspace)
 
         for repo in repos:
             source = self._member_repo_path(repo.repo_name)
@@ -4473,22 +4473,22 @@ class ArduisWindow(Adw.ApplicationWindow):
                 cwd=source,
             )
 
-    def _conclude_clean_task_folder(self, task: Task) -> None:
-        """(f) Unlink the task folder's RELATIVE symlinks — the LINK only (D-10).
+    def _conclude_clean_workspace_folder(self, workspace: Workspace) -> None:
+        """(f) Unlink the workspace folder's RELATIVE symlinks — the LINK only (D-10).
 
         Recomputes the symlink dst set via ``symlink_plan`` and ``os.unlink``s ONLY
         the dsts that are ``os.path.islink`` (the LINK, never ``realpath`` + delete,
         never ``shutil.rmtree`` — that would follow/strip the targets, Pitfall 5).
-        Then ``os.rmdir`` the task folder ONLY if it is now empty (swallow OSError if
+        Then ``os.rmdir`` the workspace folder ONLY if it is now empty (swallow OSError if
         not — never recursively remove). The source repos, symlink TARGETS, branches
         and the meta-repo ``.git`` are NEVER touched (T-08-13).
         """
         root = self._project_root
         if root is None:
             return
-        chosen = {r.repo_name for r in task.repos}
+        chosen = {r.repo_name for r in workspace.repos}
         try:
-            plan = symlink_plan(root, task.task_dir, chosen)
+            plan = symlink_plan(root, workspace.workspace_dir, chosen)
         except OSError:
             plan = []
         for _src, dst in plan:
@@ -4498,20 +4498,20 @@ class ArduisWindow(Adw.ApplicationWindow):
             except OSError:
                 pass  # best-effort; never crash the GLib loop on cleanup
         try:
-            os.rmdir(task.task_dir)  # only succeeds if empty — never rmtree
+            os.rmdir(workspace.workspace_dir)  # only succeeds if empty — never rmtree
         except OSError:
             pass  # not empty / already gone — leave it (D-10: never force-delete)
 
-    def _conclude_finalize(self, task: Task) -> None:
-        """(g) Drop the task from the store + rebuild sidebar + main fallback (D-04).
+    def _conclude_finalize(self, workspace: Workspace) -> None:
+        """(g) Drop the workspace from the store + rebuild sidebar + main fallback (D-04).
 
-        Mirrors the ``_hibernate_task`` store/widget-map drop: removes the task from
+        Mirrors the ``_hibernate_workspace`` store/widget-map drop: removes the workspace from
         the SessionStore, drops its saved layout + every ``{sid}:``-prefixed
         widget/handle map entry, falls back to the always-present main workspace if
-        the concluded task was the visible one, and rebuilds the sidebar so the row
+        the concluded workspace was the visible one, and rebuilds the sidebar so the row
         disappears. The branch + source repos remain on disk (D-10).
         """
-        sid = task.task_id
+        sid = workspace.workspace_id
         self._store.remove(sid)
         self._calm_since.pop(sid, None)
         self._layouts.pop(sid, None)
@@ -4547,22 +4547,22 @@ class ArduisWindow(Adw.ApplicationWindow):
         self,
         terminal: Vte.Terminal,
         cwd: str,
-        task: Task | None,
+        workspace: Workspace | None,
         term_id: str,
         kind: str = "agent",
     ) -> None:
         """Spawn zsh -l -i in ``cwd``; feed the configured agent only when ``kind == "agent"``.
 
         Writes the spawned ``pid``/``pgid`` onto the matching ``TerminalRecord``
-        found across the task's terminals (task-level ``task.terminals`` first, then
-        any per-repo ``task.repos[*].terminals``) by ``term_id``. A plain ``shell``
+        found across the workspace's terminals (workspace-level ``workspace.terminals`` first, then
+        any per-repo ``workspace.repos[*].terminals``) by ``term_id``. A plain ``shell``
         terminal is NOT fed ``claude``.
 
         Phase 4 (STATUS-01): EVERY agent terminal gets the per-terminal env pair
         ``ARDUIS_STATE_FILE`` (where the hook writes) + ``ARDUIS_SESSION_META``
         (the term id) injected through the additive ``extra_env`` seam. A real
-        task's agent registers in ``_record_by_state_file`` so the watcher flips
-        the record's status; a MAIN-workspace agent split (task=None — D-05 made
+        workspace's agent registers in ``_record_by_state_file`` so the watcher flips
+        the record's status; a MAIN-workspace agent split (workspace=None — D-05 made
         every split an agent) has no TerminalRecord, so its state file maps
         straight to its pane dot via ``_main_dot_by_state_file``. Plain shell
         terminals get NO extra env — the hook is then a no-op (Pitfall 8).
@@ -4584,17 +4584,17 @@ class ArduisWindow(Adw.ApplicationWindow):
             if pane_dot is not None:
                 pane_dot.set_visible(True)
             record = None
-            if task is not None:
+            if workspace is not None:
                 record = next(
                     (
                         t
-                        for t in self._all_task_terminals(task)
+                        for t in self._all_workspace_terminals(workspace)
                         if t.term_id == term_id
                     ),
                     None,
                 )
                 if record is not None:
-                    self._record_by_state_file[state_file] = (task, record)
+                    self._record_by_state_file[state_file] = (workspace, record)
             elif pane_dot is not None:
                 # Main-workspace agent split: no record — track the widgets
                 # directly, scoped to the owning (active-at-spawn) project.
@@ -4610,16 +4610,16 @@ class ArduisWindow(Adw.ApplicationWindow):
             # NOT connect in primary mode — hooks are authoritative there and a BEL
             # would fight them. Reveal the dot regardless (it shows the coarse signal).
             if self._degraded and record is not None:
-                terminal.connect("bell", self._make_bell_cb(task, record))
+                terminal.connect("bell", self._make_bell_cb(workspace, record))
                 terminal.connect(
-                    "contents-changed", self._make_activity_cb(task, record)
+                    "contents-changed", self._make_activity_cb(workspace, record)
                 )
             # Instant-waiting accelerator (ALL modes): scan the terminal tail for
             # the approval dialog on contents-changed — escalate-only, so it never
             # fights the authoritative hook events (they overwrite it).
             terminal.connect(
                 "contents-changed",
-                self._make_prompt_scan_cb(terminal, task, term_id, state_file),
+                self._make_prompt_scan_cb(terminal, workspace, term_id, state_file),
             )
         argv, envv = build_worktree_spawn(self._runner, extra_env)
         terminal.spawn_async(
@@ -4632,22 +4632,22 @@ class ArduisWindow(Adw.ApplicationWindow):
             None,                 # child_setup_data
             -1,                   # timeout (-1 = none)
             None,                 # cancellable
-            self._make_wt_spawn_cb(task, term_id, kind),
+            self._make_wt_spawn_cb(workspace, term_id, kind),
         )
         terminal.grab_focus()
 
-    def _make_wt_spawn_cb(self, task: Task | None, term_id: str, kind: str):
+    def _make_wt_spawn_cb(self, workspace: Workspace | None, term_id: str, kind: str):
         # AGENT-01 (D-01/D-03): the fed agent is the CONFIGURED command (default
         # "claude"), built from agentconfig — not a hardcoded literal. An AUTO-
-        # suspended task resumes with resume_feed_bytes (appends ``--continue`` ONLY
+        # suspended workspace resumes with resume_feed_bytes (appends ``--continue`` ONLY
         # for a claude-family command, D-03) so the conversation survives; a normal
         # create / manual resume / split feeds the bare configured command. Capture
-        # the decision HERE (at callback-creation time) so ``_resume_task`` can clear
-        # ``task.auto_suspended`` immediately after spawning without leaking the flag.
+        # the decision HERE (at callback-creation time) so ``_resume_workspace`` can clear
+        # ``workspace.auto_suspended`` immediately after spawning without leaking the flag.
         cmd = self._agent_config.command
         agent_feed = (
             agentconfig.resume_feed_bytes(cmd)
-            if (task is not None and task.auto_suspended)
+            if (workspace is not None and workspace.auto_suspended)
             else agentconfig.agent_feed_bytes(cmd)
         )
 
@@ -4655,12 +4655,12 @@ class ArduisWindow(Adw.ApplicationWindow):
             if error is not None or pid == -1:
                 return  # D-09: no banner; the pane stays a usable shell
             # Write pid/pgid onto the matching TerminalRecord across ALL of the
-            # task's terminals (task-level + any per-repo splits).
-            if task is not None:
+            # workspace's terminals (workspace-level + any per-repo splits).
+            if workspace is not None:
                 record = next(
                     (
                         t
-                        for t in self._all_task_terminals(task)
+                        for t in self._all_workspace_terminals(workspace)
                         if t.term_id == term_id
                     ),
                     None,
@@ -4682,7 +4682,7 @@ class ArduisWindow(Adw.ApplicationWindow):
 
     # --- degraded-mode signals (D-13): bell → waiting, activity → running/idle ---
 
-    def _make_bell_cb(self, task: Task, record: TerminalRecord):
+    def _make_bell_cb(self, workspace: Workspace, record: TerminalRecord):
         """Degraded mode (D-13): a VTE bell is a coarse 'waiting' hint.
 
         Any program in the PTY can ring BEL (T-04-19 spoofing — accepted: degraded
@@ -4697,7 +4697,7 @@ class ArduisWindow(Adw.ApplicationWindow):
             old = record.status
             record.status = AgentStatus.WAITING.value
             record.status_ts = time.time()
-            self._refresh_status_ui(task)
+            self._refresh_status_ui(workspace)
             # Down-labeled badge (D-13 lower confidence): "esperando?" not the dot-only
             # treatment of the primary path.
             badge = self._badge_by_tid.get(record.term_id)
@@ -4705,10 +4705,10 @@ class ArduisWindow(Adw.ApplicationWindow):
                 badge.set_text("esperando?")
             # Notification gate uses the PRE-flip status as `old` so a →waiting
             # transition (unfocused) fires once, even in degraded mode.
-            self._maybe_notify(task, record, old, record.status, None)
+            self._maybe_notify(workspace, record, old, record.status, None)
         return _on_bell
 
-    def _make_activity_cb(self, task: Task, record: TerminalRecord):
+    def _make_activity_cb(self, workspace: Workspace, record: TerminalRecord):
         """Degraded mode (D-13): contents-changed activity → running, clears the bell.
 
         Throttled to once per second per terminal (T-04-21: a TUI repaint storm must
@@ -4731,7 +4731,7 @@ class ArduisWindow(Adw.ApplicationWindow):
                 badge = self._badge_by_tid.get(record.term_id)
                 if badge is not None:
                     badge.set_text("claude")
-                self._refresh_status_ui(task)
+                self._refresh_status_ui(workspace)
         return _on_activity
 
     # --- ~2s off-loop RAM poll (RAM-03/D-12/D-14) ---------------------------
@@ -4751,25 +4751,25 @@ class ArduisWindow(Adw.ApplicationWindow):
         (subline labels, ``calm_since``, ``record_by_state_file``, ``activity_ts``)
         and recompute status-file paths with the OWNING root (``_proj_term_id_for``,
         also closes finding #6), iterating ``proj.store.all()``. The subline
-        ``set_text`` is a no-op for background tasks (their label widget lives in the
+        ``set_text`` is a no-op for background workspaces (their label widget lives in the
         inactive bundle → ``None``), and the dot refresh in ``_apply_state_file`` /
         ``_refresh_status_ui`` is likewise a harmless widget no-op for background
-        tasks (dots reconcile on switch — D-08); the VALUE is the background
+        workspaces (dots reconcile on switch — D-08); the VALUE is the background
         notification + the in-memory ``record.status`` kept fresh.
 
         Phase 4 / RAM-04 (D-12): this tick also drives idle auto-suspend. Calm-state
-        tracking and the ``should_autosuspend`` gate are evaluated per ACTIVE task and
-        the matching tasks are suspended AFTER the whole loop (suspend mutates
+        tracking and the ``should_autosuspend`` gate are evaluated per ACTIVE workspace and
+        the matching workspaces are suspended AFTER the whole loop (suspend mutates
         layouts/widgets — never during iteration). AUTO-SUSPEND IS RESTRICTED TO THE
-        ACTIVE PROJECT (260616-buk decision (i)): ``_hibernate_task`` (the shared
+        ACTIVE PROJECT (260616-buk decision (i)): ``_hibernate_workspace`` (the shared
         teardown body) is wired to the active bundle's layout/workspace/sidebar maps,
-        so auto-suspending a BACKGROUND task would tear down its groups while leaving
+        so auto-suspending a BACKGROUND workspace would tear down its groups while leaving
         the active bundle's widgets/layout stale. Background NOTIFY + dot
         reconcile-on-switch + background RAM polling/re-read all work regardless; only
         the unattended kill is deferred to when the project is active. Degraded mode is
         excluded entirely (no ``ready`` state → never auto-suspend; T-04-18).
         """
-        to_suspend: list[Task] = []
+        to_suspend: list[Workspace] = []
         now = time.time()
         registry = getattr(self, "_registry", None)
         projects = registry.all() if registry is not None else []
@@ -4784,20 +4784,20 @@ class ArduisWindow(Adw.ApplicationWindow):
             record_by_state_file = bundle["record_by_state_file"]
             activity_ts = bundle["activity_ts"]
             is_active_proj = proj is active_proj
-            for task in proj.store.all():
-                if task.state != SessionState.ACTIVE:
+            for workspace in proj.store.all():
+                if workspace.state != SessionState.ACTIVE:
                     # Not active → drop any stale calm tracking (Pitfall 8 chain).
-                    calm_since.pop(task.task_id, None)
+                    calm_since.pop(workspace.workspace_id, None)
                     continue  # skip hibernated (Pitfall 3)
-                # D-10/D-14 (UX pivot): a task's RAM is the SUM of every terminal's
-                # process group — the task-level pair + any user splits + any per-repo
+                # D-10/D-14 (UX pivot): a workspace's RAM is the SUM of every terminal's
+                # process group — the workspace-level pair + any user splits + any per-repo
                 # split. Poll each live group (pgid not None — skip the not-yet-spawned),
                 # writing each terminal's rss_kb back, then sum for the row subline.
-                terms = self._all_task_terminals(task)
+                terms = self._all_workspace_terminals(workspace)
                 for t in (t for t in terms if t.pgid is not None):
                     t.rss_kb = resource_monitor.group_rss_kb(t.pgid)
                 total = sum(t.rss_kb for t in terms if t.rss_kb)
-                label = subline_by_sid.get(task.task_id)
+                label = subline_by_sid.get(workspace.workspace_id)
                 if label is not None:
                     label.set_text(
                         f"claude · {resource_monitor.format_ram_kb(total or None)}"
@@ -4817,7 +4817,7 @@ class ArduisWindow(Adw.ApplicationWindow):
                         self._proj_term_id_for(proj.root, t.term_id),
                     )
                     if path in record_by_state_file:
-                        self._apply_state_file(task, t, path)
+                        self._apply_state_file(workspace, t, path)
 
                 # Phase 4 / D-13 (degraded mode): with hooks declined there are no
                 # state files — the ONLY status signal is the bell (→waiting) and the
@@ -4845,39 +4845,39 @@ class ArduisWindow(Adw.ApplicationWindow):
                             t.status_ts = now
                             changed = True
                     if changed:
-                        self._refresh_status_ui(task)
+                        self._refresh_status_ui(workspace)
 
-                # Phase 4 / RAM-04 (D-12, Pitfall 6): track when this task ENTERED a
+                # Phase 4 / RAM-04 (D-12, Pitfall 6): track when this workspace ENTERED a
                 # calm aggregate (ready/idle/ended) and evaluate auto-suspend. The
                 # aggregate is recomputed AFTER the status re-apply above so it
                 # reflects the freshest idle/staleness transitions. Degraded mode is
                 # excluded — it has no `ready` and killing on a coarse signal risks
                 # SIGKILL'ing a working agent (T-04-18).
-                agg = attention.aggregate_task(terms)
+                agg = attention.aggregate_workspace(terms)
                 if agg in (AgentStatus.READY, AgentStatus.IDLE, AgentStatus.ENDED):
-                    calm_since.setdefault(task.task_id, now)
+                    calm_since.setdefault(workspace.workspace_id, now)
                 else:
-                    # running/waiting/None → reset; a real burst un-calms the task.
-                    calm_since.pop(task.task_id, None)
+                    # running/waiting/None → reset; a real burst un-calms the workspace.
+                    calm_since.pop(workspace.workspace_id, None)
                 # 260616-buk decision (i): only the ACTIVE project auto-suspends (the
                 # shared hibernate body is active-bundle-bound). Background calm
-                # tracking still advances above so a switched-to task suspends promptly.
+                # tracking still advances above so a switched-to workspace suspends promptly.
                 if (
                     is_active_proj
                     and not self._degraded
                     and attention.should_autosuspend(
                         agg,
-                        calm_since.get(task.task_id),
+                        calm_since.get(workspace.workspace_id),
                         now,
                         self._att_config.auto_suspend_minutes,
                     )
                 ):
-                    to_suspend.append(task)
+                    to_suspend.append(workspace)
 
         # Suspend AFTER the iteration (each suspend drops layouts/widgets/maps and
         # rebuilds the sidebar — never mutate while iterating the store snapshot).
-        for task in to_suspend:
-            self._auto_suspend(task)
+        for workspace in to_suspend:
+            self._auto_suspend(workspace)
 
         self._update_footer()
         return GLib.SOURCE_CONTINUE
@@ -4888,15 +4888,15 @@ class ArduisWindow(Adw.ApplicationWindow):
         # _apply_theme before the sidebar footer exists.
         if getattr(self, "_footer_label", None) is None:
             return
-        tasks = self._store.all()
-        n = caps.active_count(tasks)
-        # D-10 (UX pivot): aggregate sums every active task's every terminal RAM
-        # (task-level pair + splits + any per-repo split).
+        workspaces = self._store.all()
+        n = caps.active_count(workspaces)
+        # D-10 (UX pivot): aggregate sums every active workspace's every terminal RAM
+        # (workspace-level pair + splits + any per-repo split).
         total = sum(
             t.rss_kb
-            for task in tasks
-            if task.state == SessionState.ACTIVE
-            for t in self._all_task_terminals(task)
+            for workspace in workspaces
+            if workspace.state == SessionState.ACTIVE
+            for t in self._all_workspace_terminals(workspace)
             if t.rss_kb is not None
         )
         total_str = resource_monitor.format_ram_kb(total if total else None)
@@ -5015,13 +5015,13 @@ class ArduisWindow(Adw.ApplicationWindow):
 
     # --- helpers: session lookup + user messaging ---------------------------
 
-    def _session_for_worktree_dir(self, path: str) -> Task | None:
-        """Return the Task owning a repo whose worktree_dir matches ``path``."""
+    def _session_for_worktree_dir(self, path: str) -> Workspace | None:
+        """Return the Workspace owning a repo whose worktree_dir matches ``path``."""
         norm = path.rstrip("/")
-        for task in self._store.all():
-            for repo in task.repos:
+        for workspace in self._store.all():
+            for repo in workspace.repos:
                 if repo.worktree_dir.rstrip("/") == norm:
-                    return task
+                    return workspace
         return None
 
     def _show_error(self, heading: str, body: str) -> None:
@@ -5077,15 +5077,15 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         # 03.4 (D-10): win.remove_project(root) backs the project-tab right-click
         # "Remover projeto" item. String target = project root; the handler tears
-        # down live tasks (behind a DESTRUCTIVE confirm) then drops from the list.
+        # down live workspaces (behind a DESTRUCTIVE confirm) then drops from the list.
         remove_project = Gio.SimpleAction.new(
             "remove_project", GLib.VariantType.new("s")
         )
         remove_project.connect("activate", self._on_remove_project_action)
         self.add_action(remove_project)
 
-        # Phase 7 (CONT-01/02, D-11): win.toggle_isolation(task_id) backs the row
-        # menu "Isolar/Desligar containers" entry. String target is the task_id;
+        # Phase 7 (CONT-01/02, D-11): win.toggle_isolation(workspace_id) backs the row
+        # menu "Isolar/Desligar containers" entry. String target is the workspace_id;
         # _on_toggle_isolation dispatches enable vs disable from the persisted state.
         toggle_isolation = Gio.SimpleAction.new(
             "toggle_isolation", GLib.VariantType.new("s")
@@ -5112,63 +5112,63 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         # Phase 8 (REVIEW-03, D-04): win.conclude is the LOAD-BEARING safe teardown.
         # No-target, uses _menu_target_sid like hibernate; _on_conclude_action
-        # presents the confirm dialog, then _conclude_task runs the FIXED order.
+        # presents the confirm dialog, then _conclude_workspace runs the FIXED order.
         conclude = Gio.SimpleAction.new("conclude", None)
         conclude.connect("activate", self._on_conclude_action)
         self.add_action(conclude)
 
-    def _menu_session(self) -> Task | None:
-        """Resolve the right-clicked row back to its tracked Task (D-08)."""
+    def _menu_session(self) -> Workspace | None:
+        """Resolve the right-clicked row back to its tracked Workspace (D-08)."""
         if self._menu_target_sid is None:
             return None
         return self._store.get(self._menu_target_sid)
 
     def _on_hibernate(self, _action, _param) -> None:
-        """D-08 menu path: hibernate the right-clicked task (manual, auto_suspended False).
+        """D-08 menu path: hibernate the right-clicked workspace (manual, auto_suspended False).
 
-        Thin guard around the shared ``_hibernate_task`` body — the right-clicked
-        task is resolved via ``_menu_session`` and, when ACTIVE, runs the exact same
+        Thin guard around the shared ``_hibernate_workspace`` body — the right-clicked
+        workspace is resolved via ``_menu_session`` and, when ACTIVE, runs the exact same
         teardown/layout-drop/fallback/rebuild path the auto-suspend tick uses. A
-        manual hibernate leaves ``task.auto_suspended`` False (hibernate_fields never
+        manual hibernate leaves ``workspace.auto_suspended`` False (hibernate_fields never
         touches it), so resume feeds plain ``claude`` — Phase-2 semantics unchanged.
         """
-        task = self._menu_session()
-        if task is None or task.state == SessionState.HIBERNATED:
+        workspace = self._menu_session()
+        if workspace is None or workspace.state == SessionState.HIBERNATED:
             return
-        self._hibernate_task(task)
+        self._hibernate_workspace(workspace)
 
-    def _hibernate_task(self, task: Task) -> None:
+    def _hibernate_workspace(self, workspace: Workspace) -> None:
         """Shared hibernate body: kill every group, discard layout, free RAM (D-08).
 
         Extracted from ``_on_hibernate`` (Plan 04) so BOTH the menu path and the
         idle auto-suspend tick (``_auto_suspend``) go through the SAME proven
         no-orphan machinery (03.2-verified — T-04-18). Tears down EVERY terminal's
         process group (agent + shell + any splits) so nothing is orphaned, deletes
-        the task's state files (Pitfall 5b — placed AFTER teardown, the Plan-03
+        the workspace's state files (Pitfall 5b — placed AFTER teardown, the Plan-03
         ordering, so EVERY caller cleans its files), flips the model to HIBERNATED
         (clearing every pgid; ``auto_suspended`` is left as the caller set it — the
         menu leaves it False, ``_auto_suspend`` sets it True first), then DISCARDS the
         saved LayoutModel + terminal widgets/maps so resume rebuilds the DEFAULT
-        2-terminal layout (D-09) rather than the stale tree. If the hibernated task
+        2-terminal layout (D-09) rather than the stale tree. If the hibernated workspace
         IS the visible workspace, fall back to main (always present, D-07).
         """
-        sid = task.task_id
+        sid = workspace.workspace_id
 
-        self._teardown_session_terminals(task)  # kill every group (Pitfall 3/5)
+        self._teardown_session_terminals(workspace)  # kill every group (Pitfall 3/5)
         # Phase 7 (D-12, CONT-05, Pitfall 7): container teardown is a SEPARATE
         # channel from the killpg agent teardown above — containers are daemon-owned
         # and NOT in arduis's process group. Tear the stack down ALONGSIDE (never
         # inside) _teardown_session_terminals, then flip the durable state OFF while
-        # KEEPING the port map so a resumed task re-enables on stable ports.
-        self._container_down(task)
+        # KEEPING the port map so a resumed workspace re-enables on stable ports.
+        self._container_down(workspace)
         c_state = self._container_state.get(sid)
         if c_state is not None and c_state.enabled:
             c_state.enabled = False  # KEEP c_state.ports (stable re-enable)
-            containerstate.write_container_state(task.task_dir, c_state)
+            containerstate.write_container_state(workspace.workspace_dir, c_state)
             self._container_state[sid] = c_state
-        self._clear_task_state_files(task)  # delete state files (Pitfall 5b)
-        hibernate_fields(task)  # GTK-free: state=HIBERNATED, all pid/pgid=None
-        # The task is no longer calm-tracked while hibernated (it is not ACTIVE).
+        self._clear_workspace_state_files(workspace)  # delete state files (Pitfall 5b)
+        hibernate_fields(workspace)  # GTK-free: state=HIBERNATED, all pid/pgid=None
+        # The workspace is no longer calm-tracked while hibernated (it is not ACTIVE).
         self._calm_since.pop(sid, None)
 
         # D-09: discard the worktree's saved layout so resume rebuilds the default,
@@ -5202,39 +5202,39 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         self._rebuild_sidebar()    # dim/grey-dot the row (D-08, not a tab badge)
 
-    def _auto_suspend(self, task: Task) -> None:
-        """Idle auto-suspend a task through the shared hibernate path (RAM-04, D-12).
+    def _auto_suspend(self, workspace: Workspace) -> None:
+        """Idle auto-suspend a workspace through the shared hibernate path (RAM-04, D-12).
 
         Reached ONLY via the ``should_autosuspend`` gate in ``_poll_ram`` (the single
         call site — running/waiting are immune at any age, T-04-09/Pitfall 6, and
-        degraded mode never reaches here). Marks the task ``auto_suspended`` True so
+        degraded mode never reaches here). Marks the workspace ``auto_suspended`` True so
         resume feeds ``claude --continue`` (the conversation survives), runs the same
-        proven no-orphan ``_hibernate_task`` body, and ALWAYS notifies — even focused
+        proven no-orphan ``_hibernate_workspace`` body, and ALWAYS notifies — even focused
         — because arduis just killed processes on the user's behalf and that must
         never be silent (T-04-22 repudiation).
         """
-        task.auto_suspended = True
-        self._hibernate_task(task)  # teardown + state-file clear + layout drop + rebuild
-        self._calm_since.pop(task.task_id, None)
-        self._notify_suspended(task)
+        workspace.auto_suspended = True
+        self._hibernate_workspace(workspace)  # teardown + state-file clear + layout drop + rebuild
+        self._calm_since.pop(workspace.workspace_id, None)
+        self._notify_suspended(workspace)
 
-    def _notify_suspended(self, task: Task) -> None:
+    def _notify_suspended(self, workspace: Workspace) -> None:
         """Always-on suspension notification (D-12, T-04-22) — bypasses the focus gate.
 
         Unlike ``_maybe_notify`` (which suppresses while focused), this fires whether
         or not the window is active: the user must always be able to tell arduis
         suspended their agent. Reuses the Plan-03 libnotify machinery; the per-terminal
-        notification slot is keyed by the task id so it never collides with an agent
+        notification slot is keyed by the workspace id so it never collides with an agent
         terminal's waiting notification. Never raises (a dead daemon is swallowed).
         """
         if not _HAS_NOTIFY:
             return
-        title = f"{task.branch} suspensa"
+        title = f"{workspace.branch} suspenso"
         body = GLib.markup_escape_text(
             "Suspensa por inatividade — retome para continuar a conversa."
         )
         icon = "dialog-information"
-        slot = f"suspend:{task.task_id}"
+        slot = f"suspend:{workspace.workspace_id}"
         try:
             notif = self._notif_by_tid.get(slot)
             if notif is None:
@@ -5249,68 +5249,68 @@ class ArduisWindow(Adw.ApplicationWindow):
     def _on_resume(self, _action, _param) -> None:
         """D-09: rebuild the DEFAULT 2-terminal layout (agent + shell), not a reattach.
 
-        Resume rebuilds the task like create (UX pivot 2026-06-11): fresh task-level
+        Resume rebuilds the workspace like create (UX pivot 2026-06-11): fresh workspace-level
         terminal records, a fresh LayoutModel with the single agent-over-shell pair
-        rooted at the task folder via the shared ``_build_task_workspace`` helper,
+        rooted at the workspace folder via the shared ``_build_workspace_terminals`` helper,
         then both terminals spawned eagerly — only the agent is fed the configured command.
         The repo set is intact (hibernate only cleared pid/pgid). Earlier extra
         splits are NOT restored (03.1 D-09 stands).
         """
-        task = self._menu_session()
-        if task is None or task.state == SessionState.ACTIVE:
+        workspace = self._menu_session()
+        if workspace is None or workspace.state == SessionState.ACTIVE:
             return
-        self._resume_gated(task)
+        self._resume_gated(workspace)
 
-    def _resume_task(self, task: Task) -> None:
-        """Resume ``task``: rebuild default 2-terminal layout + eager spawn (UX pivot)."""
-        if task.state == SessionState.ACTIVE:
+    def _resume_workspace(self, workspace: Workspace) -> None:
+        """Resume ``workspace``: rebuild default 2-terminal layout + eager spawn (UX pivot)."""
+        if workspace.state == SessionState.ACTIVE:
             return
-        branch = task.branch
+        branch = workspace.branch
 
-        # Fresh task-level terminal records (replaces the hibernated, pgid-cleared
+        # Fresh workspace-level terminal records (replaces the hibernated, pgid-cleared
         # pair) so spawn callbacks can write pid/pgid back onto them. The repo set is
         # intact (hibernate only cleared pid/pgid) — repos are worktree metadata.
-        task.terminals = default_task_terminals(branch)
-        task.state = SessionState.ACTIVE
-        # Drop any stale suspension-notification slot for this task (its key is
-        # "suspend:<task_id>", not "<task_id>:", so the prefix-pop in _hibernate_task
-        # does not cover it) so a resumed task does not reuse a closed notification.
-        self._notif_by_tid.pop(f"suspend:{task.task_id}", None)
+        workspace.terminals = default_workspace_terminals(branch)
+        workspace.state = SessionState.ACTIVE
+        # Drop any stale suspension-notification slot for this workspace (its key is
+        # "suspend:<workspace_id>", not "<workspace_id>:", so the prefix-pop in _hibernate_workspace
+        # does not cover it) so a resumed workspace does not reuse a closed notification.
+        self._notif_by_tid.pop(f"suspend:{workspace.workspace_id}", None)
 
         # Rebuild the DEFAULT 2-terminal workspace (shared with create, UX pivot).
-        self._build_task_workspace(task, [r.repo_name for r in task.repos])
+        self._build_workspace_terminals(workspace, [r.repo_name for r in workspace.repos])
         self._rebuild_sidebar()
 
-        # Spawn the task's agent+shell pair eagerly: agent fed claude, shell plain.
-        # D-12: if this task was AUTO-suspended, the agent's spawn callback (built
-        # synchronously inside _spawn_task_terminals) has already captured the
-        # ``claude --continue`` feed decision from ``task.auto_suspended``. Clearing
+        # Spawn the workspace's agent+shell pair eagerly: agent fed claude, shell plain.
+        # D-12: if this workspace was AUTO-suspended, the agent's spawn callback (built
+        # synchronously inside _spawn_workspace_terminals) has already captured the
+        # ``claude --continue`` feed decision from ``workspace.auto_suspended``. Clearing
         # the flag immediately AFTER the spawn call returns is therefore safe — the
         # closure holds the decision — and guarantees one ``--continue`` never leaks
         # into a later manual hibernate→resume cycle.
-        self._spawn_task_terminals(task)
-        task.auto_suspended = False
+        self._spawn_workspace_terminals(workspace)
+        workspace.auto_suspended = False
 
     def _on_close_repo(self, _action, param) -> None:
-        """D-10: close ONE repo of the right-clicked task — kill its groups, KEEP the dir.
+        """D-10: close ONE repo of the right-clicked workspace — kill its groups, KEEP the dir.
 
         Closing a repository tears down ONLY that repo's terminal process groups
         (no orphan, SIGHUP→SIGKILL via ``_teardown_pgid``), drops its leaves from
         the active layout + widget maps, and clears its terminals' pid/pgid. The
-        ``RepoCheckout`` STAYS in ``task.repos`` and its worktree dir STAYS on disk
+        ``RepoCheckout`` STAYS in ``workspace.repos`` and its worktree dir STAYS on disk
         — arduis NEVER deletes anything (no filesystem-removal nor worktree-pruning
-        calls here or anywhere; D-10). If closing leaves the task with zero live
+        calls here or anywhere; D-10). If closing leaves the workspace with zero live
         terminals, fall back to the pinned main workspace so the canvas isn't blank.
         """
-        task = self._menu_session()
-        if task is None or task.state != SessionState.ACTIVE:
+        workspace = self._menu_session()
+        if workspace is None or workspace.state != SessionState.ACTIVE:
             return
         repo_name = param.get_string()
-        repo = next((r for r in task.repos if r.repo_name == repo_name), None)
+        repo = next((r for r in workspace.repos if r.repo_name == repo_name), None)
         if repo is None:
             return
 
-        sid = task.task_id
+        sid = workspace.workspace_id
         model = self._layouts.get(sid)
         # Kill each of this repo's terminal groups and drop their leaves/widgets.
         # The RepoCheckout itself is KEPT (dir on disk untouched — D-10).
@@ -5324,17 +5324,17 @@ class ArduisWindow(Adw.ApplicationWindow):
             t.pid = None
             t.pgid = None
 
-        # Delete ONLY this repo's terminal state files (Pitfall 5b); the task-level
+        # Delete ONLY this repo's terminal state files (Pitfall 5b); the workspace-level
         # pair's agents keep running so their files stay live (NOT touched here).
         self._clear_repo_state_files(repo)
 
-        # If the task has NO live terminals left at all (task-level pair + any
+        # If the workspace has NO live terminals left at all (workspace-level pair + any
         # per-repo split), fall back to main so the canvas isn't pointing at an
-        # empty tree. UX pivot: with the agent+shell at task level, closing a repo
-        # normally leaves the task-level pair live and the workspace stays put.
+        # empty tree. UX pivot: with the agent+shell at workspace level, closing a repo
+        # normally leaves the workspace-level pair live and the workspace stays put.
         any_live = any(
             self._term_by_sid.get(t.term_id) is not None
-            for t in self._all_task_terminals(task)
+            for t in self._all_workspace_terminals(workspace)
         )
         if self._active_workspace_sid == sid and (
             model is None or not model.visible_ids() or not any_live
@@ -5412,37 +5412,37 @@ class ArduisWindow(Adw.ApplicationWindow):
             except OSError:
                 pass  # never raise out of close
 
-    def _teardown_session_terminals(self, task: Task) -> None:
-        """Tear down EVERY terminal's process group of the task (Pitfall 3/4).
+    def _teardown_session_terminals(self, workspace: Workspace) -> None:
+        """Tear down EVERY terminal's process group of the workspace (Pitfall 3/4).
 
-        UX pivot: the default workspace is the task-level pair (``task.terminals``);
-        a user split could also attach to a repo (``task.repos[*].terminals``).
-        Iterating ``_all_task_terminals`` ensures NO group is forgotten by the
+        UX pivot: the default workspace is the workspace-level pair (``workspace.terminals``);
+        a user split could also attach to a repo (``workspace.repos[*].terminals``).
+        Iterating ``_all_workspace_terminals`` ensures NO group is forgotten by the
         hibernate/close/exit call sites — "no orphans" is a hard acceptance bar.
         """
-        for t in self._all_task_terminals(task):
+        for t in self._all_workspace_terminals(workspace):
             if t.pid:
                 self._teardown_pgid(t.pid)
 
-    def _teardown_session_terminals_now(self, task: Task) -> list[int]:
+    def _teardown_session_terminals_now(self, workspace: Workspace) -> list[int]:
         """Close-path variant of ``_teardown_session_terminals`` (no GLib timer).
 
-        SIGHUPs every terminal group of the task via ``_teardown_pgid_now`` and
+        SIGHUPs every terminal group of the workspace via ``_teardown_pgid_now`` and
         RETURNS the live pgids so the close handler can run one combined synchronous
         ``_sync_sigkill_sweep`` after ALL groups are SIGHUP'd (so every group gets the
         full grace window in parallel, not serially). Mirrors the hibernate/conclude
         variant exactly except for the no-timer SIGHUP + pgid return.
         """
         pgids: list[int] = []
-        for t in self._all_task_terminals(task):
+        for t in self._all_workspace_terminals(workspace):
             if t.pid:
                 pgid = self._teardown_pgid_now(t.pid)
                 if pgid is not None:
                     pgids.append(pgid)
         return pgids
 
-    def _clear_task_state_files(self, task: Task) -> None:
-        """Delete a task's per-terminal state files + their map entries (Pitfall 5b).
+    def _clear_workspace_state_files(self, workspace: Workspace) -> None:
+        """Delete a workspace's per-terminal state files + their map entries (Pitfall 5b).
 
         State files are arduis-owned RUNTIME data under the status dir
         (XDG_RUNTIME_DIR) — exempt from the D-10 never-delete rule (this is the ONLY
@@ -5451,18 +5451,18 @@ class ArduisWindow(Adw.ApplicationWindow):
         it can ever be unlinked — T-04-16). Also drops the per-terminal notification
         handle so a stale Notification is not reused after teardown.
         """
-        # 260616-buk (finding #6): derive paths + pop maps with the task's OWNING
+        # 260616-buk (finding #6): derive paths + pop maps with the workspace's OWNING
         # project root, not the active root. At app-exit (_on_close_request) this
-        # method runs for EVERY project's tasks; the active-root _proj_term_id would
-        # unlink the WRONG path and leave the background task's record stuck in its
+        # method runs for EVERY project's workspaces; the active-root _proj_term_id would
+        # unlink the WRONG path and leave the background workspace's record stuck in its
         # bundle. Resolve the owner; fall back to the active root for the bootstrap /
-        # not-yet-registered case (behavior unchanged for active-project tasks).
-        owner = self._project_for_task(task)
+        # not-yet-registered case (behavior unchanged for active-project workspaces).
+        owner = self._project_for_workspace(workspace)
         root = owner.root if owner is not None else self._project_root
         bundle = self._bundle_for(owner) if owner is not None else self._m()
         record_by_state_file = bundle["record_by_state_file"]
         notif_by_tid = bundle["notif_by_tid"]
-        for record in self._all_task_terminals(task):
+        for record in self._all_workspace_terminals(workspace):
             # A3: unlink + drop the SAME project-namespaced path registered at spawn.
             path = attention.state_file_path(
                 self._status_dir, self._proj_term_id_for(root, record.term_id)
@@ -5479,13 +5479,13 @@ class ArduisWindow(Adw.ApplicationWindow):
     def _clear_repo_state_files(self, repo, root: str | None = None) -> None:
         """Delete ONLY a closed repo's terminal state files (D-10 scoped, Pitfall 5b).
 
-        Used by close-repo: the task-level pair's agents keep running (their state
+        Used by close-repo: the workspace-level pair's agents keep running (their state
         files stay live), so only the repo's own ``terminals`` are cleared. Same
-        status-dir-only path composition as ``_clear_task_state_files`` (T-04-16).
+        status-dir-only path composition as ``_clear_workspace_state_files`` (T-04-16).
 
         260616-buk (finding #6): ``root`` lets the caller name the OWNING project's
         root explicitly; it defaults to the active root (the only close-repo path
-        today acts on the active project's task — behavior unchanged).
+        today acts on the active project's workspace — behavior unchanged).
         """
         if root is None:
             root = self._project_root
@@ -5530,16 +5530,16 @@ class ArduisWindow(Adw.ApplicationWindow):
         # iterated only the active store (self._store.all()), orphaning background
         # projects' agents. The OUTER loop over registry.all() fixes that; iterating
         # session.pid alone would still orphan split agents (Pitfall 3/4). Also delete
-        # each task's state files so none linger past the window (Pitfall 5b).
+        # each workspace's state files so none linger past the window (Pitfall 5b).
         for project in self._registry.all():
             for session in project.store.all():
                 pgids.extend(self._teardown_session_terminals_now(session))
-                self._clear_task_state_files(session)
+                self._clear_workspace_state_files(session)
         # All groups SIGHUP'd → one combined synchronous SIGKILL sweep (never raises).
         self._sync_sigkill_sweep(pgids)
-        # Phase 7 (D-11, D-12, CONT-05, Pitfall 7): tear down every enabled task's
+        # Phase 7 (D-11, D-12, CONT-05, Pitfall 7): tear down every enabled workspace's
         # container stack at app-exit as a SEPARATE loop from the killpg teardown
-        # above — never conflated. Iterate ALL projects; each enabled task's
+        # above — never conflated. Iterate ALL projects; each enabled workspace's
         # compose-down uses ITS OWN project's compose identity (per-project
         # container_state + project_name) — NEVER the active project's name for all
         # (a bug that reused one name would leak the other project's containers).

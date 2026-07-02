@@ -70,7 +70,7 @@ def main():
     gi.require_version("Gtk", "4.0"); gi.require_version("Adw", "1"); gi.require_version("Vte", "3.91")
     from gi.repository import Adw
     from arduis import repoconfig, trust
-    from arduis.session import Task, RepoCheckout, SessionState, default_task_terminals
+    from arduis.session import Workspace, RepoCheckout, SessionState, default_workspace_terminals
     from arduis.window import ArduisWindow
 
     app = Adw.Application(application_id="dev.smoke.arduis06")
@@ -81,16 +81,16 @@ def main():
         # trust list path must be inside the sandbox HOME (not the real one)
         check("trust_path_sandboxed", win._trusted_setups_path.startswith(home))
 
-        # Build a task with a real worktree dir holding an .arduis.toml [setup].
-        task_dir = os.path.join(sandbox, "proj-tasks", "feat")
-        wt = os.path.join(task_dir, "proj")
+        # Build a workspace with a real worktree dir holding an .arduis.toml [setup].
+        workspace_dir = os.path.join(sandbox, "proj-workspaces", "feat")
+        wt = os.path.join(workspace_dir, "proj")
         os.makedirs(wt)
-        task = Task(task_id="feat", branch="feat", task_dir=task_dir,
+        workspace = Workspace(workspace_id="feat", branch="feat", workspace_dir=workspace_dir,
                     repos=[RepoCheckout(repo_name="proj", worktree_dir=wt, branch="feat")],
-                    state=SessionState.ACTIVE, terminals=default_task_terminals("feat"))
-        win._store.add(task)
+                    state=SessionState.ACTIVE, terminals=default_workspace_terminals("feat"))
+        win._store.add(workspace)
         win._rebuild_sidebar()
-        win._build_task_workspace(task, ["proj"])  # builds t0 (agent) + t1 (shell) terminals
+        win._build_workspace_terminals(workspace, ["proj"])  # builds t0 (agent) + t1 (shell) terminals
 
         # record what each terminal is fed
         fed = {}
@@ -100,7 +100,7 @@ def main():
                 term.feed_child = (lambda t: (lambda b: fed.__setitem__(t, fed.get(t, b"") + b)))(tid)
 
         # --- criterion 1: ABSENT .arduis.toml → strict no-op (no feed) ----------
-        win._run_repo_setups(task)
+        win._run_repo_setups(workspace)
         absent_noop = "feat:t1" not in fed and "feat:t0" not in fed
         check("absent_file_is_noop", absent_noop)
 
@@ -116,7 +116,7 @@ def main():
         # --- emulate "Confiar e rodar": record trust + feed (what the dialog does) -
         trust.record_trust(win._trusted_setups_path, repo_id, h)
         # now a fresh _run_repo_setups must feed SILENTLY into t1 only
-        win._run_repo_setups(task)
+        win._run_repo_setups(workspace)
         t1_fed = fed.get("feat:t1", b"")
         feed_shape_ok = t1_fed.startswith(b"cd '" + wt.encode() + b"' &&") and b"npm install" in t1_fed
         agent_untouched = "feat:t0" not in fed

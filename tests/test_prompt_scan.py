@@ -74,7 +74,7 @@ import arduis.window as W  # noqa: E402
 from arduis.attention import AttentionConfig  # noqa: E402
 from arduis.project import Project, ProjectRegistry  # noqa: E402
 from arduis.session import (  # noqa: E402
-    SessionState, SessionStore, Task, TerminalRecord,
+    SessionState, SessionStore, Workspace, TerminalRecord,
 )
 
 
@@ -114,13 +114,13 @@ def _win():
     return win
 
 
-def test_escalate_marks_task_record_waiting_and_lights_ui():
+def test_escalate_marks_workspace_record_waiting_and_lights_ui():
     win = _win()
-    task = Task(task_id="alpha", branch="alpha", task_dir="/t", repos=[],
+    workspace = Workspace(workspace_id="alpha", branch="alpha", workspace_dir="/t", repos=[],
                 state=SessionState.ACTIVE,
                 terminals=[TerminalRecord("alpha:t0", "agent", status="running")])
-    win._escalate_waiting(task, "alpha:t0", "/sf.json")
-    assert task.terminals[0].status == "waiting"
+    win._escalate_waiting(workspace, "alpha:t0", "/sf.json")
+    assert workspace.terminals[0].status == "waiting"
     assert win._row_by_sid["alpha"].has_css_class("arduis-row-attention")
     assert win._leaf_by_sid["alpha:t0"].has_css_class("attention")
 
@@ -141,12 +141,12 @@ def test_escalate_main_split_lights_main_row():
 
 def test_escalate_is_noop_when_already_waiting():
     win = _win()
-    task = Task(task_id="alpha", branch="alpha", task_dir="/t", repos=[],
+    workspace = Workspace(workspace_id="alpha", branch="alpha", workspace_dir="/t", repos=[],
                 state=SessionState.ACTIVE,
                 terminals=[TerminalRecord("alpha:t0", "agent", status="waiting")])
-    ts_before = task.terminals[0].status_ts
-    win._escalate_waiting(task, "alpha:t0", "/sf.json")
-    assert task.terminals[0].status_ts == ts_before  # untouched — no churn
+    ts_before = workspace.terminals[0].status_ts
+    win._escalate_waiting(workspace, "alpha:t0", "/sf.json")
+    assert workspace.terminals[0].status_ts == ts_before  # untouched — no churn
 
 
 # --- symmetric clear: dialog answered -> running (user feedback 2026-07-01) --
@@ -179,15 +179,15 @@ def test_scan_action_noop_while_dialog_still_shown():
     assert next_scan_action(True, True, "waiting") is None
 
 
-def test_deescalate_task_flips_waiting_to_running_and_clears_ui():
+def test_deescalate_workspace_flips_waiting_to_running_and_clears_ui():
     win = _win()
-    task = Task(task_id="alpha", branch="alpha", task_dir="/t", repos=[],
+    workspace = Workspace(workspace_id="alpha", branch="alpha", workspace_dir="/t", repos=[],
                 state=SessionState.ACTIVE,
                 terminals=[TerminalRecord("alpha:t0", "agent", status="waiting")])
     win._leaf_by_sid["alpha:t0"].add_css_class("attention")
     win._row_by_sid["alpha"].add_css_class("arduis-row-attention")
-    win._deescalate_running(task, "alpha:t0", "/sf.json")
-    assert task.terminals[0].status == "running"
+    win._deescalate_running(workspace, "alpha:t0", "/sf.json")
+    assert workspace.terminals[0].status == "running"
     assert not win._leaf_by_sid["alpha:t0"].has_css_class("attention")
     assert not win._row_by_sid["alpha"].has_css_class("arduis-row-attention")
 
@@ -210,8 +210,8 @@ def test_deescalate_main_split_clears_main_row():
 
 def test_deescalate_noop_unless_waiting():
     win = _win()
-    task = Task(task_id="alpha", branch="alpha", task_dir="/t", repos=[],
+    workspace = Workspace(workspace_id="alpha", branch="alpha", workspace_dir="/t", repos=[],
                 state=SessionState.ACTIVE,
                 terminals=[TerminalRecord("alpha:t0", "agent", status="ready")])
-    win._deescalate_running(task, "alpha:t0", "/sf.json")
-    assert task.terminals[0].status == "ready"  # untouched
+    win._deescalate_running(workspace, "alpha:t0", "/sf.json")
+    assert workspace.terminals[0].status == "ready"  # untouched

@@ -1,8 +1,8 @@
 """A WAITING agent must be LOUD (user feedback 2026-07-01): the 8px dot alone is
 easy to miss, so the whole card rings in the attention color ("attention" class
-on the leaf) and the sidebar row highlights ("arduis-row-attention") — for task
+on the leaf) and the sidebar row highlights ("arduis-row-attention") — for workspace
 agents AND for main-workspace agent splits (whose sidebar row is the pinned
-main row; the user reported waiting in main while working inside a task and
+main row; the user reported waiting in main while working inside a workspace and
 seeing nothing).
 
 GTK-free (mirrors test_window_attention_multiproject.py): a bare window via
@@ -16,7 +16,7 @@ import time
 import arduis.window as W
 from arduis.attention import AttentionConfig
 from arduis.project import Project, ProjectRegistry
-from arduis.session import SessionState, SessionStore, Task, TerminalRecord
+from arduis.session import SessionState, SessionStore, Workspace, TerminalRecord
 from arduis.themes import PARALLEL_DARK
 
 
@@ -38,11 +38,11 @@ class _FakeWidget:
         self.visible = v
 
 
-def _task(status):
-    return Task(
-        task_id="alpha",
+def _workspace(status):
+    return Workspace(
+        workspace_id="alpha",
         branch="alpha",
-        task_dir="/tasks/alpha",
+        workspace_dir="/workspaces/alpha",
         repos=[],
         state=SessionState.ACTIVE,
         terminals=[TerminalRecord("alpha:t0", "agent", status=status)],
@@ -82,11 +82,11 @@ def test_attention_ring_declared_after_focus_so_it_wins():
     assert css.index(".arduis-leaf.focus") < css.index(".arduis-leaf.attention")
 
 
-# --- task agents: _refresh_status_ui ----------------------------------------
+# --- workspace agents: _refresh_status_ui ----------------------------------------
 
 def test_waiting_agent_rings_card_and_highlights_row():
     win = _win()
-    win._refresh_status_ui(_task("waiting"))
+    win._refresh_status_ui(_workspace("waiting"))
     assert win._leaf_by_sid["alpha:t0"].has_css_class("attention")
     assert win._row_by_sid["alpha"].has_css_class("arduis-row-attention")
 
@@ -95,18 +95,18 @@ def test_running_agent_clears_ring_and_row_highlight():
     win = _win()
     win._leaf_by_sid["alpha:t0"].add_css_class("attention")
     win._row_by_sid["alpha"].add_css_class("arduis-row-attention")
-    win._refresh_status_ui(_task("running"))
+    win._refresh_status_ui(_workspace("running"))
     assert not win._leaf_by_sid["alpha:t0"].has_css_class("attention")
     assert not win._row_by_sid["alpha"].has_css_class("arduis-row-attention")
 
 
-def test_hibernated_task_never_rings():
+def test_hibernated_workspace_never_rings():
     win = _win()
-    task = _task("waiting")
-    task.state = SessionState.HIBERNATED
+    workspace = _workspace("waiting")
+    workspace.state = SessionState.HIBERNATED
     win._leaf_by_sid["alpha:t0"].add_css_class("attention")
     win._row_by_sid["alpha"].add_css_class("arduis-row-attention")
-    win._refresh_status_ui(task)
+    win._refresh_status_ui(workspace)
     assert not win._leaf_by_sid["alpha:t0"].has_css_class("attention")
     assert not win._row_by_sid["alpha"].has_css_class("arduis-row-attention")
 
@@ -136,7 +136,7 @@ def test_main_split_waiting_rings_card_and_lights_main_row(tmp_path):
     win._apply_main_state_file(path)
     assert dot.has_css_class("arduis-dot-waiting")
     assert leaf.has_css_class("attention")
-    # THE user-reported gap: working inside a task, the sidebar main row must
+    # THE user-reported gap: working inside a workspace, the sidebar main row must
     # light up when a main-split agent waits.
     assert win._dot_by_sid[W._MAIN_SID].has_css_class("arduis-dot-waiting")
     assert win._row_by_sid[W._MAIN_SID].has_css_class("arduis-row-attention")
@@ -167,7 +167,7 @@ def test_background_project_main_split_does_not_light_active_main_row(tmp_path):
 
 def test_ready_agent_lights_ready_ring_and_row():
     win = _win()
-    win._refresh_status_ui(_task("ready"))
+    win._refresh_status_ui(_workspace("ready"))
     assert win._leaf_by_sid["alpha:t0"].has_css_class("attention-ready")
     assert not win._leaf_by_sid["alpha:t0"].has_css_class("attention")
     assert win._row_by_sid["alpha"].has_css_class("arduis-row-attention-ready")
@@ -178,14 +178,14 @@ def test_running_clears_ready_ring_and_row():
     win = _win()
     win._leaf_by_sid["alpha:t0"].add_css_class("attention-ready")
     win._row_by_sid["alpha"].add_css_class("arduis-row-attention-ready")
-    win._refresh_status_ui(_task("running"))
+    win._refresh_status_ui(_workspace("running"))
     assert not win._leaf_by_sid["alpha:t0"].has_css_class("attention-ready")
     assert not win._row_by_sid["alpha"].has_css_class("arduis-row-attention-ready")
 
 
 def test_waiting_beats_ready_no_double_class():
     win = _win()
-    win._refresh_status_ui(_task("waiting"))
+    win._refresh_status_ui(_workspace("waiting"))
     assert win._leaf_by_sid["alpha:t0"].has_css_class("attention")
     assert not win._leaf_by_sid["alpha:t0"].has_css_class("attention-ready")
 

@@ -6,7 +6,7 @@ window via ``__new__`` (skip __init__/GTK), give it a real ``ProjectRegistry``, 
 the GTK-touching + disk-scan helpers so we can drive ``_init_projects`` headless and
 assert the registry outcome.
 
-This file is created here (Plan 03 Task 2); Plan 04 Task 3 extends it with the four
+This file is created here (Plan 03 Workspace 2); Plan 04 Workspace 3 extends it with the four
 project-lifecycle (switch / remove / teardown / app-exit) cases.
 """
 import os
@@ -16,7 +16,7 @@ import arduis.window as W
 from arduis import compose
 from arduis.containerstate import ContainerState
 from arduis.project import Project, ProjectRegistry
-from arduis.session import RepoCheckout, SessionState, SessionStore, Task
+from arduis.session import RepoCheckout, SessionState, SessionStore, Workspace
 from arduis import projects_store
 
 
@@ -31,15 +31,15 @@ def _bare_projects_window(monkeypatch, projects_json, cwd_root, cwd_members):
     monkeypatch.setattr(win, "_resolve_cwd_project", lambda: (cwd_root, cwd_members))
     # member detection for remembered roots: deterministic, no disk scan.
     monkeypatch.setattr(W, "detect_member_repos", lambda root: ["backend"])
-    # compose detection + the per-project task scan are no-ops here.
+    # compose detection + the per-project workspace scan are no-ops here.
     monkeypatch.setattr(win, "_detect_compose_path", lambda root: None)
-    monkeypatch.setattr(win, "_scan_tasks", lambda project=None: None)
+    monkeypatch.setattr(win, "_scan_workspaces", lambda project=None: None)
     # GTK chrome is stubbed (no display).
     monkeypatch.setattr(win, "_refresh_project_chrome", lambda: None)
     monkeypatch.setattr(win, "_rebuild_sidebar", lambda: None)
     monkeypatch.setattr(win, "_reconcile_orphans", lambda: None)
     # _build_project_tabs is getattr-guarded in _init_projects; stub to a no-op so
-    # the guard sees a callable and we exercise the (Task-3) render branch safely.
+    # the guard sees a callable and we exercise the (Workspace-3) render branch safely.
     monkeypatch.setattr(win, "_build_project_tabs", lambda: None, raising=False)
     return win
 
@@ -146,22 +146,22 @@ def test_init_projects_tolerates_zero_projects(monkeypatch, tmp_path):
 # Same bare-__new__ + monkeypatch-stub discipline as above (no display).
 # ---------------------------------------------------------------------------
 
-def _active_task(branch: str, *, enabled=False, project_name="") -> Task:
-    """A live (ACTIVE) task with one repo; optionally container-enabled."""
-    return Task(
-        task_id=branch,
+def _active_workspace(branch: str, *, enabled=False, project_name="") -> Workspace:
+    """A live (ACTIVE) workspace with one repo; optionally container-enabled."""
+    return Workspace(
+        workspace_id=branch,
         branch=branch,
-        task_dir=f"/tasks/{branch}",
+        workspace_dir=f"/workspaces/{branch}",
         repos=[RepoCheckout(repo_name="backend",
-                            worktree_dir=f"/tasks/{branch}/backend", branch=branch)],
+                            worktree_dir=f"/workspaces/{branch}/backend", branch=branch)],
         state=SessionState.ACTIVE,
     )
 
 
-def _project_with_tasks(root, tasks, *, compose_path=None, container_state=None):
-    """A Project carrying a real SessionStore seeded with ``tasks``."""
+def _project_with_workspaces(root, workspaces, *, compose_path=None, container_state=None):
+    """A Project carrying a real SessionStore seeded with ``workspaces``."""
     store = SessionStore()
-    for t in tasks:
+    for t in workspaces:
         store.add(t)
     p = Project(root=root, member_repos=["backend"], store=store)
     p.compose_path = compose_path
@@ -170,43 +170,43 @@ def _project_with_tasks(root, tasks, *, compose_path=None, container_state=None)
 
 
 def test_cap_gate_counts_union(monkeypatch):
-    """D-09: the new-task gate counts agents across ALL projects, not one store.
+    """D-09: the new-workspace gate counts agents across ALL projects, not one store.
 
-    Two projects with 4 + 3 ACTIVE tasks → ``_all_tasks()`` is 7 (the union), and
+    Two projects with 4 + 3 ACTIVE workspaces → ``_all_workspaces()`` is 7 (the union), and
     the cap gate (cap default 5) takes the prompt-hibernate branch. A bug that fed
-    only the active store (3 tasks, under cap) would WRONGLY proceed (Pitfall 4).
+    only the active store (3 workspaces, under cap) would WRONGLY proceed (Pitfall 4).
     """
     win = W.ArduisWindow.__new__(W.ArduisWindow)
     win._registry = ProjectRegistry()
-    proj_a = _project_with_tasks("/A", [_active_task(f"a{i}") for i in range(4)])
-    proj_b = _project_with_tasks("/B", [_active_task(f"b{i}") for i in range(3)])
+    proj_a = _project_with_workspaces("/A", [_active_workspace(f"a{i}") for i in range(4)])
+    proj_b = _project_with_workspaces("/B", [_active_workspace(f"b{i}") for i in range(3)])
     win._registry.add(proj_a)
     win._registry.add(proj_b)
     win._registry.set_active("/B")  # active store has only 3 (under the cap)
 
-    assert len(win._all_tasks()) == 7  # the UNION, not the active store's 3
+    assert len(win._all_workspaces()) == 7  # the UNION, not the active store's 3
 
-    # Drive the new-task gate: with 7 > cap(5), it must take the hibernate branch.
+    # Drive the new-workspace gate: with 7 > cap(5), it must take the hibernate branch.
     prompted = []
     monkeypatch.setattr(win, "_prompt_hibernate_then",
                         lambda proceed: prompted.append(proceed))
-    monkeypatch.setattr(win, "_begin_new_task",
+    monkeypatch.setattr(win, "_begin_new_workspace",
                         lambda: prompted.append("BEGAN"))
     win._project_root = "/B"  # the early-guard `if not self._project_root`
 
     win._on_new_worktree_clicked(None)
 
     # The union is at/over cap → the gate prompts to hibernate, never begins.
-    assert prompted and prompted[0] is win._begin_new_task
+    assert prompted and prompted[0] is win._begin_new_workspace
     assert "BEGAN" not in prompted
 
 
-def test_remove_with_live_tasks_tears_down_then_drops(monkeypatch):
-    """D-10: removing a project with a live task tears it down, then drops it.
+def test_remove_with_live_workspaces_tears_down_then_drops(monkeypatch):
+    """D-10: removing a project with a live workspace tears it down, then drops it.
 
     No display: we drive the 'remove' confirm response path directly (the
     Adw.AlertDialog response callback is what _remove_project wires). Assert the
-    live task's terminals were torn down, the container channel ran, the registry
+    live workspace's terminals were torn down, the container channel ran, the registry
     dropped the root, projects.json was rewritten — and NO disk-deletion call
     (there is none anywhere in the method).
     """
@@ -216,21 +216,21 @@ def test_remove_with_live_tasks_tears_down_then_drops(monkeypatch):
     win._docker_available = True
     win._projects_json = "/dev/null/ignored"  # save_projects swallows OSError
 
-    task = _active_task("feat", enabled=True, project_name="arduis-feat")
+    workspace = _active_workspace("feat", enabled=True, project_name="arduis-feat")
     cstate = ContainerState(project_name="arduis-feat", enabled=True, ports={})
-    proj = _project_with_tasks("/Live", [task],
+    proj = _project_with_workspaces("/Live", [workspace],
                               compose_path="/Live/docker-compose.yml",
                               container_state={"feat": cstate})
-    other = _project_with_tasks("/Other", [])
+    other = _project_with_workspaces("/Other", [])
     win._registry.add(proj)
     win._registry.add(other)
     win._registry.set_active("/Live")
 
     teardowns, cleared, downed = [], [], []
     monkeypatch.setattr(win, "_teardown_session_terminals",
-                        lambda t: teardowns.append(t.task_id))
-    monkeypatch.setattr(win, "_clear_task_state_files",
-                        lambda t: cleared.append(t.task_id))
+                        lambda t: teardowns.append(t.workspace_id))
+    monkeypatch.setattr(win, "_clear_workspace_state_files",
+                        lambda t: cleared.append(t.workspace_id))
     # capture the compose-down argv that would hit subprocess.run
     monkeypatch.setattr(W.subprocess, "run",
                         lambda argv, **k: downed.append(argv) or None)
@@ -247,16 +247,16 @@ def test_remove_with_live_tasks_tears_down_then_drops(monkeypatch):
     monkeypatch.setattr(win._registry, "remove",
                         lambda root: removed_roots.append(root) or real_remove(root))
 
-    # Compute the live tasks + drive the confirm 'remove' response directly.
+    # Compute the live workspaces + drive the confirm 'remove' response directly.
     proj_lookup = win._registry.get("/Live")
     live = [t for t in proj_lookup.store.all() if t.state == SessionState.ACTIVE]
     for t in live:
         win._teardown_session_terminals(t)
-        win._clear_task_state_files(t)
+        win._clear_workspace_state_files(t)
     win._teardown_project_containers(proj_lookup)
     win._drop_project("/Live")
 
-    assert teardowns == ["feat"]            # the live task's terminals killed
+    assert teardowns == ["feat"]            # the live workspace's terminals killed
     assert cleared == ["feat"]              # its state files cleared
     assert len(downed) == 1                 # compose down -v issued once
     assert "arduis-feat" in downed[0]       # this project's OWN compose name
@@ -264,26 +264,26 @@ def test_remove_with_live_tasks_tears_down_then_drops(monkeypatch):
     assert win._registry.get("/Live") is None
 
 
-def test_remove_no_live_tasks_is_silent(monkeypatch):
-    """D-10: a project with only HIBERNATED tasks drops with NO dialog/teardown."""
+def test_remove_no_live_workspaces_is_silent(monkeypatch):
+    """D-10: a project with only HIBERNATED workspaces drops with NO dialog/teardown."""
     win = W.ArduisWindow.__new__(W.ArduisWindow)
     win._registry = ProjectRegistry()
     win._projects_json = "/dev/null/ignored"
 
-    hib = Task(task_id="old", branch="old", task_dir="/tasks/old",
+    hib = Workspace(workspace_id="old", branch="old", workspace_dir="/workspaces/old",
                repos=[RepoCheckout(repo_name="backend",
-                                  worktree_dir="/tasks/old/backend", branch="old")],
+                                  worktree_dir="/workspaces/old/backend", branch="old")],
                state=SessionState.HIBERNATED)
-    proj = _project_with_tasks("/Dorm", [hib])
-    keep = _project_with_tasks("/Keep", [])
+    proj = _project_with_workspaces("/Dorm", [hib])
+    keep = _project_with_workspaces("/Keep", [])
     win._registry.add(proj)
     win._registry.add(keep)
     win._registry.set_active("/Keep")  # removing a non-active project
 
     teardowns = []
     monkeypatch.setattr(win, "_teardown_session_terminals",
-                        lambda t: teardowns.append(t.task_id))
-    monkeypatch.setattr(win, "_clear_task_state_files", lambda t: None)
+                        lambda t: teardowns.append(t.workspace_id))
+    monkeypatch.setattr(win, "_clear_workspace_state_files", lambda t: None)
     for n in ("_refresh_project_chrome", "_rebuild_sidebar", "_build_project_tabs"):
         monkeypatch.setattr(win, n, lambda *a, **k: None, raising=False)
     monkeypatch.setattr(projects_store, "save_projects", lambda *a, **k: None)
@@ -295,16 +295,16 @@ def test_remove_no_live_tasks_is_silent(monkeypatch):
     win._remove_project("/Dorm")
 
     assert not presented            # no dialog constructed (silent path)
-    assert teardowns == []          # nothing torn down (no live tasks)
+    assert teardowns == []          # nothing torn down (no live workspaces)
     assert win._registry.get("/Dorm") is None   # dropped
 
 
 def test_close_request_tears_down_all_projects(monkeypatch):
-    """D-11: app-exit tears down EVERY project's tasks with per-project compose argv.
+    """D-11: app-exit tears down EVERY project's workspaces with per-project compose argv.
 
     Two projects, EACH a distinct compose project_name/compose_path and EACH one
-    live isolated task. After _on_close_request, assert (a) _teardown_session_terminals_now
-    (the close-path, no-GLib-timer variant — Finding #5) fired ONCE PER TASK across BOTH
+    live isolated workspace. After _on_close_request, assert (a) _teardown_session_terminals_now
+    (the close-path, no-GLib-timer variant — Finding #5) fired ONCE PER WORKSPACE across BOTH
     projects (2 calls, not 1), and (b) the compose-down channel ran TWICE with TWO
     DISTINCT per-project names — a bug reusing the active project's name for all would
     produce two identical names and fail (Pitfall 3).
@@ -317,14 +317,14 @@ def test_close_request_tears_down_all_projects(monkeypatch):
     win._status_monitor = None
     win._shell_pid = None
 
-    task_a = _active_task("alpha")
-    task_b = _active_task("beta")
+    workspace_a = _active_workspace("alpha")
+    workspace_b = _active_workspace("beta")
     cstate_a = ContainerState(project_name="arduis-alpha", enabled=True, ports={})
     cstate_b = ContainerState(project_name="arduis-beta", enabled=True, ports={})
-    proj_a = _project_with_tasks("/ProjA", [task_a],
+    proj_a = _project_with_workspaces("/ProjA", [workspace_a],
                                 compose_path="/ProjA/docker-compose.yml",
                                 container_state={"alpha": cstate_a})
-    proj_b = _project_with_tasks("/ProjB", [task_b],
+    proj_b = _project_with_workspaces("/ProjB", [workspace_b],
                                 compose_path="/ProjB/docker-compose.yml",
                                 container_state={"beta": cstate_b})
     win._registry.add(proj_a)
@@ -335,14 +335,14 @@ def test_close_request_tears_down_all_projects(monkeypatch):
     # Close path uses the no-timer variant (_teardown_session_terminals_now); it
     # returns pgids that feed the synchronous sweep. Return [] so the sweep is a no-op.
     monkeypatch.setattr(win, "_teardown_session_terminals_now",
-                        lambda t: teardowns.append(t.task_id) or [])
-    monkeypatch.setattr(win, "_clear_task_state_files", lambda t: None)
+                        lambda t: teardowns.append(t.workspace_id) or [])
+    monkeypatch.setattr(win, "_clear_workspace_state_files", lambda t: None)
     monkeypatch.setattr(W.subprocess, "run",
                         lambda argv, **k: down_argvs.append(argv) or None)
 
     win._on_close_request()
 
-    # (a) EVERY project's task torn down — 2 calls, not just the active project's 1.
+    # (a) EVERY project's workspace torn down — 2 calls, not just the active project's 1.
     assert sorted(teardowns) == ["alpha", "beta"]
     # (b) TWO compose-down calls, each carrying ITS OWN project's compose name.
     assert len(down_argvs) == 2
@@ -402,7 +402,7 @@ def test_reconcile_orphans_cross_project(monkeypatch):
 
     Regression for the cosmetic v1.0 gap: a background project's compose stack was
     wrongly flagged as an orphan because ``live`` was built from ``self._store.all()``
-    (the ACTIVE project only) instead of every registered project's tasks.
+    (the ACTIVE project only) instead of every registered project's workspaces.
     Audit ref: gaps.integration[reconcile-orphans-scope], window.py:1914.
 
     Drives the REAL ``_reconcile_orphans``/``_on_ls`` path: ``run_compose_async`` is
@@ -415,8 +415,8 @@ def test_reconcile_orphans_cross_project(monkeypatch):
     win._runner = W.HostRunner()
     win._docker_available = True
 
-    proj_a = _project_with_tasks("/A", [_active_task("feat/alpha")])
-    proj_b = _project_with_tasks("/B", [_active_task("feat/beta")])
+    proj_a = _project_with_workspaces("/A", [_active_workspace("feat/alpha")])
+    proj_b = _project_with_workspaces("/B", [_active_workspace("feat/beta")])
     win._registry.add(proj_a)
     win._registry.add(proj_b)
     win._registry.set_active("/B")

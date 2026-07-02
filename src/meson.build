@@ -34,12 +34,12 @@ py.install_sources(
     'arduis/review_cache.py',
     'arduis/session.py',
     'arduis/spawn.py',
-    'arduis/task_layout.py',
     'arduis/theme.py',
     'arduis/themes.py',
     'arduis/topbar.py',
     'arduis/trust.py',
     'arduis/window.py',
+    'arduis/workspace_layout.py',
     'arduis/worktree.py',
     # hooks/ — arduis_hook.py MUST ship as package data (importlib.resources)
     'arduis/hooks/__init__.py',
