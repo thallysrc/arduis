@@ -265,12 +265,11 @@ dialog.alert dimming {{
 .arduis-row-attention .arduis-row-branch {{
     color: {theme.dot_waiting};
 }}
-/* End-of-turn: the agent finished and sits at its prompt — also "waiting for
-   you", rung in the READY color (orange stays exclusive to approvals). */
-.arduis-leaf.attention-ready {{
-    border-color: {theme.dot_ready};
-    box-shadow: inset 0 0 0 1px {theme.dot_ready};
-}}
+/* End-of-turn: the agent finished and sits at its prompt. Signaled by the blue
+   status DOT alone (.arduis-dot-ready) — the card is intentionally NOT ringed.
+   The loud full-card ring stays exclusive to WAITING (orange approvals). The
+   `.arduis-leaf.attention-ready` class is still applied by the status logic but
+   carries no card border/shadow. */
 .arduis-row-attention-ready {{
     background-color: alpha({theme.dot_ready}, 0.14);
 }}
