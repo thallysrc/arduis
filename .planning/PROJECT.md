@@ -19,7 +19,7 @@ espera**.
 
 **v1.0 MVP shipped 2026-07-01** (tag `v1.0`). 13 fases (9 planejadas + 4 corretivas inseridas), 52 planos, 320 commits em 23 dias, ~14.2k LOC Python, **448 testes verdes**. Auditoria do milestone: PASSED (33/33 requisitos, 14/14 seams de integração, 7/7 fluxos E2E) com 4 aceitações de risco registradas (UAT visual das fases 03–08 e UAT de hardware da fase 9 — fechadas por decisão explícita do PO sem execução ao vivo; contrato de reabertura em `.planning/milestones/v1.0-MILESTONE-AUDIT.md`).
 
-O app: topbar multi-projeto ("both alive"), task cross-repo = worktrees + symlinks espelhando a raiz, 2 terminais VTE por task (agente + shell) em layout livre, atenção hooks-first ("quem te espera"), temas trocáveis, `.arduis.toml` com trust gate, containers compose isolados opt-in, review read-only + conclude com clean-gate, empacotado como `.deb` (0 erros lintian) + PKGBUILD.
+O app: topbar multi-projeto ("both alive"), workspace cross-repo = worktrees + symlinks espelhando a raiz, 2 terminais VTE por workspace (agente + shell) em layout livre, atenção hooks-first ("quem te espera"), temas trocáveis, `.arduis.toml` com trust gate, containers compose isolados opt-in, review read-only + conclude com clean-gate, empacotado como `.deb` (0 erros lintian) + PKGBUILD.
 
 **Pendências v1.1:** publicar (AUR push + hospedar .deb + CI), confirmar oportunisticamente os itens risk-accepted em uso real.
 
@@ -100,7 +100,7 @@ O app: topbar multi-projeto ("both alive"), task cross-repo = worktrees + symlin
 | Agente = comando configurável (Ctrl+C troca) | Flexibilidade (claude/codex/aider/shell) sem integração profunda | ✓ Good — v1.0 Fase 5 (`[agent] command` + re-feed C-Space a) |
 | MVP = paralelismo simples; swarm = Fase 2 opcional | Evolução constante e visível (Accelerate); swarm monolítico mataria o momentum | ✓ Good — v1 shipped sem swarm; seams (SessionStore GTK-free, AgentSpec) preservados |
 | Gestão de RAM como requisito de 1ª classe | Custo real vem de agentes (Node) + containers isolados, não do app | ✓ Good — poll ~2s, caps, hibernate/auto-suspend, teardown garantido em todos os caminhos |
-| Isolamento por TASK (set de worktrees cross-repo), não por worktree | Projeto real é multi-repo; compose na raiz; duplicação atômica do stack | ✓ Good — pivô 03.2, sustentou 03.4 e Fase 7 |
+| Isolamento por WORKSPACE (set de worktrees cross-repo), não por worktree | Projeto real é multi-repo; compose na raiz; duplicação atômica do stack | ✓ Good — pivô 03.2, sustentou 03.4 e Fase 7 |
 | Fechar UAT humano por aceitação de risco (hardware 09, visual 03–08) | PO preferiu ship a bloquear no gate manual; toda a lógica provada headless | — Revisit em uso real; contrato de reabertura no audit |
 
 ## Evolution

@@ -108,7 +108,7 @@ espera**.
 
 ## Docker Compose Orchestration (Phase 7)
 
-> **Re-anchored 2026-06-10 (Phase 03.2):** the isolation unit is the **TASK** (a set of worktrees
+> **Re-anchored 2026-06-10 (Phase 03.2):** the isolation unit is the **WORKSPACE** (a set of worktrees
 > across the project's repos), not a single worktree. The compose base is **ONE
 > `docker-compose.yml` at the project ROOT** (multi-repo meta-repo) covering all member services —
 > one shared network (service discovery by name) and atomic whole-stack duplication. Per-repo
@@ -116,18 +116,18 @@ espera**.
 
 - Docker runs **on the host directly** (native build → no sandbox, no socket permission hole).
   Compose orchestration is "build argv → run `docker compose ...` via `HostRunner`".
-- **Isolation via `COMPOSE_PROJECT_NAME`** — a unique project name per TASK gives separate
-  container names, networks, and volumes (an isolated DB per task for free). Pass it as an env var.
+- **Isolation via `COMPOSE_PROJECT_NAME`** — a unique project name per WORKSPACE gives separate
+  container names, networks, and volumes (an isolated DB per workspace for free). Pass it as an env var.
 - **Override files** — `docker compose -f docker-compose.yml -f docker-compose.override.yml ...`
   merges, override wins; arrays like `ports` are *combined* not replaced. To remap a port, override
   the **whole** service's `ports` list. Generate the override with the offset-applied port list.
 - **Base from `main`** — read the root compose file from the meta-repo's `main`; generate the
-  override into the **task folder** (which mirrors the root layout — worktrees keep the repo dir
+  override into the **workspace folder** (which mirrors the root layout — worktrees keep the repo dir
   names — so relative build contexts/bind mounts resolve verbatim).
-- **Port offset** — auto-assign with a per-task offset (config `port_offset = 1000`) but **probe
-  for free ports** before committing; persist the chosen ports per task so badges/URLs stay stable.
-- **Teardown** — `docker compose -p <name> down -v` on task conclude/hibernate; wire into both
-  "conclude task" and app-exit handlers (first-class RAM requirement).
+- **Port offset** — auto-assign with a per-workspace offset (config `port_offset = 1000`) but **probe
+  for free ports** before committing; persist the chosen ports per workspace so badges/URLs stay stable.
+- **Teardown** — `docker compose -p <name> down -v` on workspace conclude/hibernate; wire into both
+  "conclude workspace" and app-exit handlers (first-class RAM requirement).
 - **No Python docker library** — skip `docker` PyPI SDK / `python-on-whales`; shell `docker compose` via `HostRunner`.
 
 ## Packaging (Phase 9) — native only in v1
