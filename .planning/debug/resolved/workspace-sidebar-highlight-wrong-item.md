@@ -1,8 +1,8 @@
 ---
-status: awaiting_human_verify
+status: resolved
 trigger: "workspace-sidebar-highlight-wrong-item: WORKSPACES list highlights the wrong item (novo-teste) instead of the actually-active workspace (arduis)"
 created: 2026-07-02T17:39:18Z
-updated: 2026-07-02T18:25:00Z
+updated: 2026-07-02T18:35:00Z
 ---
 
 ## Current Focus
@@ -62,5 +62,5 @@ started: Always broken since the multi-workspace sidebar existed (not a recent r
 
 root_cause: TWO layered bugs. (1) Boot: `_open_shell_leaf` set `_active_workspace_sid = _MAIN_SID` via `_reflect_layout` without syncing the ListBox selection, and the only prior `_rebuild_sidebar` ran while `_active_workspace_sid` was still None — so the active row was never selected at boot (round 1, fixed by commit 6858fca). (2) Workspace switch via create/resume: `_build_workspace_terminals` (shared by workspace creation-finalize and resume) and `_restore_layout` (shared by boot main-restore and worktree-resume) both set `_active_workspace_sid` and swap the canvas via `_reflect_layout()` directly, WITHOUT calling `_sync_sidebar_selection()` themselves — they relied on the caller's later, separate `_rebuild_sidebar()` call, an indirect coupling that left the highlight on whatever row was selected before (e.g. the boot-selected "arduis" row) while the canvas had already moved to the new/resumed workspace (round 2).
 fix: Round 1 — added `_sync_sidebar_selection()` (selects the row for `_active_workspace_sid`, unselects when None) and called it from `_open_shell_leaf` + `_rebuild_sidebar`. Round 2 — made `_build_workspace_terminals` and `_restore_layout` self-sufficient by calling `_sync_sidebar_selection()` directly after their `_reflect_layout()` call (no longer depending on the caller), and refactored `_swap_workspace`/`_show_hibernated_placeholder`'s pre-existing inline sync blocks to call the same shared helper for consistency. Added an AST-based structural test (`test_every_active_workspace_sid_write_site_syncs_the_highlight`) that scans `window.py` and fails if ANY function assigns `_active_workspace_sid` without also calling `_sync_sidebar_selection()` in its own body — a standing guard against this exact bug class recurring at a new call site.
-verification: 7 tests in `tests/test_window_sidebar_selection.py` (4 from round 1 + 3 new: `_build_workspace_terminals` self-sync, `_restore_layout` self-sync, AST structural guard) all pass. Full test suite: 455 tests pass, no regressions (only pre-existing unrelated deprecation warnings). Round 1 was already confirmed fixed by the user for the boot case before round 2's screenshot surfaced the create/resume-switch gap; round 2 fix awaiting fresh human verification.
+verification: 7 tests in `tests/test_window_sidebar_selection.py` (4 from round 1 + 3 new: `_build_workspace_terminals` self-sync, `_restore_layout` self-sync, AST structural guard) all pass. Full test suite: 455 tests pass, no regressions (only pre-existing unrelated deprecation warnings). User confirmed fixed end-to-end (boot + create/resume/switch) in the running app.
 files_changed: [src/arduis/window.py, tests/test_window_sidebar_selection.py]
