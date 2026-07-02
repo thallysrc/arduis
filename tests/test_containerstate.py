@@ -1,7 +1,7 @@
-"""Contract tests for the GTK-free per-task container state (``arduis.containerstate``).
+"""Contract tests for the GTK-free per-workspace container state (``arduis.containerstate``).
 
 Pins CONT-04 (D-07): a tolerant no-op read (a corrupt/absent file == "not isolated", never
-crashes task creation — T-07-05), an atomic uncorruptible write (tmp + os.replace —
+crashes workspace creation — T-07-05), an atomic uncorruptible write (tmp + os.replace —
 T-07-06), and a full-fidelity round-trip of the COMPOSE_PROJECT_NAME + on/off flag +
 resolved base->host port map (so badges/URLs stay stable across restarts — criterion 3).
 Plus CONT-03 (D-06): the ``[containers].port_offset`` user-config read defaulting to 1000.
@@ -21,10 +21,10 @@ from arduis.containerstate import (
 )
 
 
-def _write_state_file(task_dir, text):
-    p = task_dir / "arduis.container.toml"
+def _write_state_file(workspace_dir, text):
+    p = workspace_dir / "arduis.container.toml"
     p.write_text(text, encoding="utf-8")
-    return str(task_dir)
+    return str(workspace_dir)
 
 
 def _write_config(tmp_path, text, name="arduis.toml"):

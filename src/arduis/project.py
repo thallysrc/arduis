@@ -5,7 +5,7 @@ A *project* is a root folder; its direct subdirs whose ``.git`` is a **directory
 worktree / submodule and is NOT a member (D-04 / 03.3). The root's OWN ``.git`` is
 never a member (D-05) and there is no walk-up-the-tree (D-07). A project with no
 member subdirs is the degenerate 1-repo case: the caller treats ``[]`` as "this
-root is itself the single repo" and builds a one-``RepoCheckout`` Task (criterion 5).
+root is itself the single repo" and builds a one-``RepoCheckout`` Workspace (criterion 5).
 
 Threats (see 03.2 threat register):
 - T-03.2-04: scanned dir names are returned verbatim and only ever land as
@@ -50,20 +50,20 @@ def detect_member_repos(root: str) -> list[str]:
 
 @dataclass
 class Project:
-    """One open PROJECT: a multi-repo root + its OWN tasks + live state (D-01/D-02).
+    """One open PROJECT: a multi-repo root + its OWN workspaces + live state (D-01/D-02).
 
     The 03.4 corrective lifts ``window.py``'s one-project singletons
     (``_project_root``/``_member_repos``/single ``_store``) into this GTK-free
     object so N projects can be "both alive" behind a ``ProjectRegistry``. Each
-    Project owns its OWN ``SessionStore`` (D-02 — task stores are never shared; the
+    Project owns its OWN ``SessionStore`` (D-02 — workspace stores are never shared; the
     window renders the active project's store and re-points it on switch).
 
     Fields:
     - ``root``: absolute project root (the meta-repo dir; also the registry key).
     - ``member_repos``: ``detect_member_repos(root)`` result, computed ONCE at open
       time and stored here (RESEARCH anti-pattern: never re-detect on every switch).
-    - ``store``: this project's ``SessionStore`` (its tasks).
-    - ``last_active_task``: the task_id (or pinned-main sid) to swap back to when the
+    - ``store``: this project's ``SessionStore`` (its workspaces).
+    - ``last_active_workspace``: the workspace_id (or pinned-main sid) to swap back to when the
       project is re-selected; None until the project has been worked in.
     - ``compose_path`` / ``container_state``: per-project Phase-7 state moves here
       (a different root may have a different root ``docker-compose.yml``); plain
@@ -73,7 +73,7 @@ class Project:
     root: str
     member_repos: list[str] = field(default_factory=list)
     store: SessionStore = field(default_factory=SessionStore)
-    last_active_task: str | None = None
+    last_active_workspace: str | None = None
     compose_path: str | None = None
     container_state: dict = field(default_factory=dict)
 
@@ -149,8 +149,8 @@ def ensure_project(
 def project_term_id(project_root: str, term_id: str) -> str:
     """Namespace a term_id with a stable per-project discriminator (A3, Pitfall 1).
 
-    ``task_id`` defaults to the branch name and ``term_id`` is ``{task_id}:tN``, so
-    two DIFFERENT projects each with a ``feat`` task both yield ``feat:t0`` — which
+    ``workspace_id`` defaults to the branch name and ``term_id`` is ``{workspace_id}:tN``, so
+    two DIFFERENT projects each with a ``feat`` workspace both yield ``feat:t0`` — which
     would collide on the GLOBAL attention status-file path
     (``attention.state_file_path(status_dir, term_id)``). Prefix the id with the
     first 8 hex of ``sha1(project_root)`` so ``/a/Foo`` and ``/b/Foo`` produce

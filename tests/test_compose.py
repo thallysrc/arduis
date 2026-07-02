@@ -40,7 +40,7 @@ def test_sanitize_lowercases_and_replaces_slash():
 
 
 def test_sanitize_empty_after_strip_falls_back():
-    assert sanitize_project_name("---") == "arduis-task"
+    assert sanitize_project_name("---") == "arduis-workspace"
 
 
 def test_sanitize_single_char_and_valid_pattern():
@@ -100,26 +100,26 @@ def test_parse_skips_expose_only_port():
 # --- Task 1: argv builders (D-05/D-12/D-13, CONT-05) -------------------------
 
 def test_compose_argv_full_shape():
-    assert compose_argv("arduis-x", "/h/u/proj-tasks/x", "up", "-d") == [
+    assert compose_argv("arduis-x", "/h/u/proj-workspaces/x", "up", "-d") == [
         "docker",
         "compose",
         "-p",
         "arduis-x",
         "-f",
-        "/h/u/proj-tasks/x/docker-compose.yml",
+        "/h/u/proj-workspaces/x/docker-compose.yml",
         "-f",
-        "/h/u/proj-tasks/x/docker-compose.override.yml",
+        "/h/u/proj-workspaces/x/docker-compose.override.yml",
         "up",
         "-d",
     ]
 
 
 def test_up_argv_ends_with_up_d():
-    assert up_argv("arduis-x", "/h/u/proj-tasks/x")[-2:] == ["up", "-d"]
+    assert up_argv("arduis-x", "/h/u/proj-workspaces/x")[-2:] == ["up", "-d"]
 
 
 def test_down_argv_teardown_flags():
-    assert down_argv("arduis-x", "/h/u/proj-tasks/x")[-3:] == [
+    assert down_argv("arduis-x", "/h/u/proj-workspaces/x")[-3:] == [
         "down",
         "--remove-orphans",
         "--volumes",
@@ -127,11 +127,11 @@ def test_down_argv_teardown_flags():
 
 
 def test_config_argv_reads_base_only():
-    assert config_argv("/h/u/proj-tasks/x") == [
+    assert config_argv("/h/u/proj-workspaces/x") == [
         "docker",
         "compose",
         "-f",
-        "/h/u/proj-tasks/x/docker-compose.yml",
+        "/h/u/proj-workspaces/x/docker-compose.yml",
         "config",
         "--format",
         "json",
@@ -187,8 +187,8 @@ def test_assign_ports_all_free_offset_1000():
     }
 
 
-def test_assign_ports_collision_bumps_whole_task():
-    # Free only at step 2000 (base + 2000) — whole task bumps together (clustered).
+def test_assign_ports_collision_bumps_whole_workspace():
+    # Free only at step 2000 (base + 2000) — whole workspace bumps together (clustered).
     free_at = {8080 + 2000, 9000 + 2000, 5432 + 2000}
 
     def probe(host_port):

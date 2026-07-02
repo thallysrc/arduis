@@ -13,7 +13,7 @@ Anchors (04-CONTEXT decisions):
 - D-04: per-terminal state files under ``$XDG_RUNTIME_DIR/arduis/status/`` with the
   ``~/.cache/arduis/status/`` fallback; arduis composes the FULL path itself and
   hands it to the hook via env, so branch-name sanitization lives in tested Python.
-- D-06: a task's status aggregates over its AGENT terminals only (waiting >
+- D-06: a workspace's status aggregates over its AGENT terminals only (waiting >
   running > ready > idle > ended); a terminal with no opinion (no state file ever)
   contributes nothing (Pitfall 8).
 - Pitfall 5/7: a ``running`` file whose hook pid is dead → ``ended``; a ``running``
@@ -21,7 +21,7 @@ Anchors (04-CONTEXT decisions):
   ``waiting``).
 
 This module performs NO GTK and NO blocking work: ``effective_status`` /
-``aggregate_task`` take ``now`` and ``pid_alive`` from the caller and never touch
+``aggregate_workspace`` take ``now`` and ``pid_alive`` from the caller and never touch
 the clock or the process table themselves.
 """
 from __future__ import annotations
@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 # --- Sanitization (mirror worktree.sanitize_branch_for_dir hardening) ----------
-# term_id is task-scoped ("feat:t0") or repo-split ("feat:backend:t2"); ":" is a
+# term_id is workspace-scoped ("feat:t0") or repo-split ("feat:backend:t2"); ":" is a
 # legal Linux filename char so it is KEPT, only the unsafe set collapses to "-".
 _UNSAFE_TERM_CHARS = re.compile(r"[^A-Za-z0-9._:-]")
 _DOTDOT = re.compile(r"\.\.+")  # any run of >=2 dots -> "-" (path-traversal guard)
@@ -229,13 +229,13 @@ def effective_status(
     return AgentStatus.ENDED
 
 
-# --- Task aggregation (D-06, Pitfall 8) ----------------------------------------
-def aggregate_task(records) -> AgentStatus | None:
-    """Aggregate a task's AGENT terminals into one status (D-06), or None.
+# --- Workspace aggregation (D-06, Pitfall 8) ----------------------------------------
+def aggregate_workspace(records) -> AgentStatus | None:
+    """Aggregate a workspace's AGENT terminals into one status (D-06), or None.
 
     Precedence waiting > running > ready > idle > ended. Only ``kind == "agent"``
     records with a non-None ``status`` contribute (Pitfall 8: shell terminals and
-    agents that never produced a file have NO opinion — a task whose agent never
+    agents that never produced a file have NO opinion — a workspace whose agent never
     wrote a file must not look idle and so must not auto-suspend). Empty/all-None
     input → None.
 
@@ -466,12 +466,12 @@ def should_autosuspend(
     now: float,
     minutes: int,
 ) -> bool:
-    """Should an idle task be auto-suspended right now? (RAM-04, D-12, Pitfall 6)
+    """Should an idle workspace be auto-suspended right now? (RAM-04, D-12, Pitfall 6)
 
-    True ONLY when the task aggregate is calm (READY/IDLE/ENDED) and has been calm
+    True ONLY when the workspace aggregate is calm (READY/IDLE/ENDED) and has been calm
     for at least ``minutes`` minutes. ``minutes <= 0`` is OFF (the default — D-11).
     RUNNING/WAITING are NEVER suspended at any age (a 30-min tool call must survive
-    — T-04-09). A None aggregate (no opinion — a fileless task) or a None
+    — T-04-09). A None aggregate (no opinion — a fileless workspace) or a None
     ``calm_since`` never suspends (Pitfall 8 chain).
     """
     if minutes <= 0:

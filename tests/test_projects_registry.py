@@ -2,7 +2,7 @@
 
 Pins the multi-project model the 03.4 corrective rests on, ALL GTK-free (imports NO
 ``gi``): a ``Project`` owns its root + member_repos + its OWN ``SessionStore`` (D-02 —
-stores are never shared) + a switch-back ``last_active_task``; a ``ProjectRegistry``
+stores are never shared) + a switch-back ``last_active_workspace``; a ``ProjectRegistry``
 tracks open projects keyed by absolute root with a single active pointer (add / get /
 all / active / set_active / remove); ``ensure_project`` is the D-07 launch-autoregister
 helper (idempotent per root); and ``project_term_id`` (A3) derives a stable per-project
@@ -18,11 +18,11 @@ from arduis.project import (
     ensure_project,
     project_term_id,
 )
-from arduis.session import SessionStore, Task
+from arduis.session import SessionStore, Workspace
 
 
-def _task(task_id: str = "feat", branch: str = "feat") -> Task:
-    return Task(task_id=task_id, branch=branch, task_dir=f"/tmp/x/{task_id}")
+def _workspace(workspace_id: str = "feat", branch: str = "feat") -> Workspace:
+    return Workspace(workspace_id=workspace_id, branch=branch, workspace_dir=f"/tmp/x/{workspace_id}")
 
 
 # --- Project ------------------------------------------------------------------
@@ -32,14 +32,14 @@ def test_project_holds_root_members_and_own_store():
     assert p.name == "Livon-Saude"  # basename
     assert p.member_repos == ["backend", "frontend"]
     assert isinstance(p.store, SessionStore)
-    assert p.last_active_task is None
+    assert p.last_active_workspace is None
 
 
 def test_two_projects_have_independent_stores():
     # D-02: each project owns its OWN store; adding to A never leaks into B.
     a = Project(root="/x/A")
     b = Project(root="/x/B")
-    a.store.add(_task("feat"))
+    a.store.add(_workspace("feat"))
     assert len(a.store.all()) == 1
     assert b.store.all() == []  # not shared
 

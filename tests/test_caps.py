@@ -1,37 +1,37 @@
 """RED contract tests for the GTK-free active-agent cap policy (``arduis.caps``).
 
-Pins the cap policy over the 03.2 ``Task`` model. ``caps.py`` itself is unchanged
-— it only needs ``state.value == "active"`` over a Task list, and a fat multi-repo
-Task counts as ONE active (D-14).
+Pins the cap policy over the 03.2 ``Workspace`` model. ``caps.py`` itself is unchanged
+— it only needs ``state.value == "active"`` over a Workspace list, and a fat multi-repo
+Workspace counts as ONE active (D-14).
 
 Decisions pinned:
 - D-15: ``ACTIVE_CAP_DEFAULT == 6`` — a single, Phase-6-sourceable constant.
 - D-16: ``at_cap`` triggers the prompt with ``>=`` (active_count >= cap), counting
-  only Tasks whose state is ACTIVE.
-- D-14: a single multi-repo Task counts as 1 active (not 1-per-repo).
+  only Workspaces whose state is ACTIVE.
+- D-14: a single multi-repo Workspace counts as 1 active (not 1-per-repo).
 """
 from arduis import caps
 from arduis.caps import ACTIVE_CAP_DEFAULT, active_count, at_cap
 from arduis.project import Project
-from arduis.session import RepoCheckout, SessionState, Task, default_repo_terminals
+from arduis.session import RepoCheckout, SessionState, Workspace, default_repo_terminals
 
 
-def _task(task_id: str, state: SessionState, repo_names=("repo",)) -> Task:
+def _workspace(workspace_id: str, state: SessionState, repo_names=("repo",)) -> Workspace:
     repos = [
         RepoCheckout(
             repo_name=name,
-            worktree_dir=f"/home/u/livon-tasks/{task_id}/{name}",
-            branch=task_id,
-            terminals=default_repo_terminals(task_id, name),
+            worktree_dir=f"/home/u/livon-workspaces/{workspace_id}/{name}",
+            branch=workspace_id,
+            terminals=default_repo_terminals(workspace_id, name),
         )
         for name in repo_names
     ]
-    return Task(task_id=task_id, branch=task_id, task_dir=f"/home/u/livon-tasks/{task_id}",
+    return Workspace(workspace_id=workspace_id, branch=workspace_id, workspace_dir=f"/home/u/livon-workspaces/{workspace_id}",
                 repos=repos, state=state)
 
 
-def _active(n: int) -> list[Task]:
-    return [_task(f"a{i}", SessionState.ACTIVE) for i in range(n)]
+def _active(n: int) -> list[Workspace]:
+    return [_workspace(f"a{i}", SessionState.ACTIVE) for i in range(n)]
 
 
 def test_active_cap_default():
@@ -40,18 +40,18 @@ def test_active_cap_default():
 
 
 def test_active_count():
-    tasks = [
-        _task("a", SessionState.ACTIVE),
-        _task("b", SessionState.HIBERNATED),
-        _task("c", SessionState.ACTIVE),
-        _task("d", SessionState.HIBERNATED),
+    workspaces = [
+        _workspace("a", SessionState.ACTIVE),
+        _workspace("b", SessionState.HIBERNATED),
+        _workspace("c", SessionState.ACTIVE),
+        _workspace("d", SessionState.HIBERNATED),
     ]
-    assert active_count(tasks) == 2
+    assert active_count(workspaces) == 2
 
 
-def test_multi_repo_task_counts_as_one():
-    # D-14: a single 3-repo Task counts as 1 active, not 3.
-    fat = _task("big", SessionState.ACTIVE, repo_names=("backend", "frontend", "keycloak"))
+def test_multi_repo_workspace_counts_as_one():
+    # D-14: a single 3-repo Workspace counts as 1 active, not 3.
+    fat = _workspace("big", SessionState.ACTIVE, repo_names=("backend", "frontend", "keycloak"))
     assert len(fat.repos) == 3
     assert active_count([fat]) == 1
     assert at_cap([fat]) is False
@@ -75,13 +75,13 @@ def test_at_cap_custom():
 def test_cap_counts_union_across_projects():
     # D-09: the active-agent cap is GLOBAL across all open projects — RAM is a
     # machine-global resource. Each Project owns its OWN store (D-02); the cap is
-    # fed the FLAT UNION of every project's tasks, not one store.
+    # fed the FLAT UNION of every project's workspaces, not one store.
     a = Project(root="/home/u/Livon-Saude")
     b = Project(root="/home/u/KarveLabs")
     for i in range(4):
-        a.store.add(_task(f"a{i}", SessionState.ACTIVE))
+        a.store.add(_workspace(f"a{i}", SessionState.ACTIVE))
     for i in range(3):
-        b.store.add(_task(f"b{i}", SessionState.ACTIVE))
+        b.store.add(_workspace(f"b{i}", SessionState.ACTIVE))
 
     union = [t for p in (a, b) for t in p.store.all()]
     assert active_count(union) == 7  # 4 + 3, machine-wide
@@ -96,13 +96,13 @@ def test_cap_counts_union_across_projects():
 
 
 def test_cap_union_hibernated_excluded():
-    # A HIBERNATED task in EITHER project's store is not counted toward the cap.
+    # A HIBERNATED workspace in EITHER project's store is not counted toward the cap.
     a = Project(root="/home/u/Livon-Saude")
     b = Project(root="/home/u/KarveLabs")
-    a.store.add(_task("a0", SessionState.ACTIVE))
-    a.store.add(_task("a1", SessionState.HIBERNATED))
-    b.store.add(_task("b0", SessionState.ACTIVE))
-    b.store.add(_task("b1", SessionState.HIBERNATED))
+    a.store.add(_workspace("a0", SessionState.ACTIVE))
+    a.store.add(_workspace("a1", SessionState.HIBERNATED))
+    b.store.add(_workspace("b0", SessionState.ACTIVE))
+    b.store.add(_workspace("b1", SessionState.HIBERNATED))
 
     union = [t for p in (a, b) for t in p.store.all()]
     assert active_count(union) == 2  # the two ACTIVE, hibernated excluded

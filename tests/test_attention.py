@@ -21,7 +21,7 @@ from arduis.attention import (
     AgentStatus,
     AttentionConfig,
     StateDoc,
-    aggregate_task,
+    aggregate_workspace,
     clear_status_dir,
     declined_marker_path,
     effective_status,
@@ -232,7 +232,7 @@ def test_effective_ended_stays_ended():
     )
 
 
-# --- aggregate_task (D-06, Pitfall 8) ------------------------------------------
+# --- aggregate_workspace (D-06, Pitfall 8) ------------------------------------------
 def _agent(status):
     r = TerminalRecord("feat:t0", "agent")
     r.status = status
@@ -246,27 +246,27 @@ def _shell(status=None):
 
 
 def test_aggregate_precedence():
-    assert aggregate_task([_agent("ready"), _agent("waiting"), _agent("running")]) == AgentStatus.WAITING
-    assert aggregate_task([_agent("ready"), _agent("running")]) == AgentStatus.RUNNING
-    assert aggregate_task([_agent("ready"), _agent("idle")]) == AgentStatus.READY
-    assert aggregate_task([_agent("idle"), _agent("ended")]) == AgentStatus.IDLE
-    assert aggregate_task([_agent("ended")]) == AgentStatus.ENDED
+    assert aggregate_workspace([_agent("ready"), _agent("waiting"), _agent("running")]) == AgentStatus.WAITING
+    assert aggregate_workspace([_agent("ready"), _agent("running")]) == AgentStatus.RUNNING
+    assert aggregate_workspace([_agent("ready"), _agent("idle")]) == AgentStatus.READY
+    assert aggregate_workspace([_agent("idle"), _agent("ended")]) == AgentStatus.IDLE
+    assert aggregate_workspace([_agent("ended")]) == AgentStatus.ENDED
 
 
 def test_aggregate_excludes_shell_terminals():
     # Pitfall 8: a shell never contributes even if a status is somehow set.
-    assert aggregate_task([_shell("waiting"), _agent("ready")]) == AgentStatus.READY
+    assert aggregate_workspace([_shell("waiting"), _agent("ready")]) == AgentStatus.READY
 
 
 def test_aggregate_excludes_none_status_agents():
     # an agent that never produced a file (status None) has no opinion.
-    assert aggregate_task([_agent("ready"), _agent(None)]) == AgentStatus.READY
+    assert aggregate_workspace([_agent("ready"), _agent(None)]) == AgentStatus.READY
 
 
 def test_aggregate_all_none_or_empty_is_none():
-    assert aggregate_task([]) is None
-    assert aggregate_task([_agent(None), _shell(None)]) is None
-    assert aggregate_task([_shell("waiting")]) is None  # only shells -> no opinion
+    assert aggregate_workspace([]) is None
+    assert aggregate_workspace([_agent(None), _shell(None)]) is None
+    assert aggregate_workspace([_shell("waiting")]) is None  # only shells -> no opinion
 
 
 # --- Hook install helpers + settings merge (Pattern 3, Pitfall 9, T-04-08) -----
@@ -468,7 +468,7 @@ def test_autosuspend_never_running_or_waiting_at_any_age():
 
 
 def test_autosuspend_none_aggregate_or_calm_since_never_suspends():
-    # Pitfall 8 chain: a fileless task (None aggregate) never suspends.
+    # Pitfall 8 chain: a fileless workspace (None aggregate) never suspends.
     assert should_autosuspend(None, 0.0, now=10 ** 9, minutes=30) is False
     assert should_autosuspend(AgentStatus.READY, None, now=10 ** 9, minutes=30) is False
 

@@ -6,7 +6,7 @@ and asserts the load-bearing facts:
   - the override carries `ports: !override` (REPLACE, not concatenate — criterion 2/D-01),
     the OFFSET port string is present, and the BASE port string is NOT;
   - every docker compose argv shape (config/up/down/ls) is exact;
-  - the offset-probe bumps the whole task on collision and caps with PortAssignmentError;
+  - the offset-probe bumps the whole workspace on collision and caps with PortAssignmentError;
   - ContainerState round-trips on disk.
 Real `docker compose up` / badges / teardown are host-only live UAT (07-HUMAN-UAT.md).
 """
@@ -23,12 +23,12 @@ FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "compose_config.js
 
 
 @pytest.fixture
-def task_dir(tmp_path, monkeypatch):
+def workspace_dir(tmp_path, monkeypatch):
     # Sandbox $HOME so write_container_state never touches the real ~/.config (D-09).
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
-    td = tmp_path / "proj-tasks" / "feat"
+    td = tmp_path / "proj-workspaces" / "feat"
     td.mkdir(parents=True)
     return str(td)
 
@@ -38,10 +38,10 @@ def _published():
     return compose.parse_published_ports(model)
 
 
-def test_override_uses_override_tag_and_replaces_base_port(task_dir):
+def test_override_uses_override_tag_and_replaces_base_port(workspace_dir):
     published = _published()
     port_map = compose.assign_ports(published, 1000, probe=lambda _p: True)
-    override = task_dir + "/docker-compose.override.yml"
+    override = workspace_dir + "/docker-compose.override.yml"
     with open(override, "wb") as fh:
         fh.write(compose.override_bytes(port_map))
     text = open(override).read()
@@ -60,18 +60,18 @@ def test_empty_port_map_writes_empty_services_override():
     assert b"services" in out
 
 
-def test_argv_shapes_exact(task_dir):
-    base = os.path.join(task_dir, "docker-compose.yml")
-    override = os.path.join(task_dir, "docker-compose.override.yml")
-    assert compose.up_argv("arduis-feat", task_dir) == [
+def test_argv_shapes_exact(workspace_dir):
+    base = os.path.join(workspace_dir, "docker-compose.yml")
+    override = os.path.join(workspace_dir, "docker-compose.override.yml")
+    assert compose.up_argv("arduis-feat", workspace_dir) == [
         "docker", "compose", "-p", "arduis-feat", "-f", base, "-f", override, "up", "-d",
     ]
-    assert compose.down_argv("arduis-feat", task_dir) == [
+    assert compose.down_argv("arduis-feat", workspace_dir) == [
         "docker", "compose", "-p", "arduis-feat", "-f", base, "-f", override,
         "down", "--remove-orphans", "--volumes",
     ]
     # config reads the BASE only (no -p, no override) before the override exists
-    assert compose.config_argv(task_dir) == [
+    assert compose.config_argv(workspace_dir) == [
         "docker", "compose", "-f", base, "config", "--format", "json",
     ]
     ls = compose.ls_argv()
@@ -83,10 +83,10 @@ def test_project_name_sanitized():
         compose.sanitize_project_name("feat/MLK-123").startswith("arduis-")
 
 
-def test_probe_bumps_whole_task_on_collision():
+def test_probe_bumps_whole_workspace_on_collision():
     published = _published()
     # step-1000 candidates (8080->9080, 9000->10000, 5432->6432) all collide;
-    # step-2000 (10080, 11000, 7432) are free → whole task bumps to base+2000.
+    # step-2000 (10080, 11000, 7432) are free → whole workspace bumps to base+2000.
     step1000 = {pp.published + 1000 for pp in published}
     port_map = compose.assign_ports(published, 1000, probe=lambda p: p not in step1000)
     for entries in port_map.values():
@@ -99,16 +99,16 @@ def test_probe_cap_raises():
         compose.assign_ports(published, 1000, probe=lambda _p: False)
 
 
-def test_container_state_round_trips_on_disk(task_dir):
+def test_container_state_round_trips_on_disk(workspace_dir):
     port_map = compose.assign_ports(_published(), 1000, probe=lambda _p: True)
     state = ContainerState(project_name="arduis-feat", enabled=True, ports=port_map)
-    containerstate.write_container_state(task_dir, state)
-    loaded = containerstate.load_container_state(task_dir)
+    containerstate.write_container_state(workspace_dir, state)
+    loaded = containerstate.load_container_state(workspace_dir)
     assert loaded.project_name == "arduis-feat"
     assert loaded.enabled is True
     assert loaded.ports == port_map
 
 
-def test_missing_state_is_noop_default(task_dir):
-    loaded = containerstate.load_container_state(task_dir)
+def test_missing_state_is_noop_default(workspace_dir):
+    loaded = containerstate.load_container_state(workspace_dir)
     assert loaded.project_name == "" and loaded.enabled is False and loaded.ports == {}

@@ -1,18 +1,18 @@
-"""GTK-free per-task container state persistence (CONT-02/03/04, D-06/D-07, OD-2).
+"""GTK-free per-workspace container state persistence (CONT-02/03/04, D-06/D-07, OD-2).
 
-The isolation unit is the TASK. When a task opts into an isolated docker-compose stack
+The isolation unit is the WORKSPACE. When a workspace opts into an isolated docker-compose stack
 (default OFF), arduis must durably remember three things so the feature survives an app
 restart and a crash: the unique ``COMPOSE_PROJECT_NAME``, the on/off flag, and the
 resolved base->host port map (so badges/URLs stay stable — criterion 3). That record
-lives in ``<task_dir>/arduis.container.toml``.
+lives in ``<workspace_dir>/arduis.container.toml``.
 
 **Disk is the source of truth** (matching 03.2's no-app-state-file model): there is no
 in-memory registry to keep in sync; the startup scan rediscovers state by reading these
 files. Two disciplines make that safe:
 
 * **Tolerant read** — a missing, corrupt, or wrong-typed file is NOT an error: it yields
-  ``ContainerState()`` (project_name="", enabled=False, ports={}), i.e. a task with no
-  isolation. A forged/garbage file can never crash task creation or the startup scan
+  ``ContainerState()`` (project_name="", enabled=False, ports={}), i.e. a workspace with no
+  isolation. A forged/garbage file can never crash workspace creation or the startup scan
   (T-07-05); malformed port rows are dropped defensively, never raised.
 * **Atomic write** — ``write_container_state`` writes a same-dir tmp file then
   ``os.replace`` (mirroring ``appconfig.write_theme``). A torn write can never corrupt the
@@ -33,7 +33,7 @@ import tomllib
 from dataclasses import dataclass, field
 
 # User-config default offset (CONT-03, D-06); the section is [containers] (plural) in the
-# user-level arduis.toml, distinct from a task file's [container] (singular) table.
+# user-level arduis.toml, distinct from a workspace file's [container] (singular) table.
 _DEFAULT_PORT_OFFSET = 1000
 
 _STATE_FILENAME = "arduis.container.toml"
@@ -41,10 +41,10 @@ _STATE_FILENAME = "arduis.container.toml"
 
 @dataclass
 class ContainerState:
-    """Durable per-task container state (CONT-04, D-07).
+    """Durable per-workspace container state (CONT-04, D-07).
 
     The default ``ContainerState()`` — project_name="", enabled=False, ports={} — is the
-    no-op: a task with no isolation, returned for any missing/garbage/wrong-typed file.
+    no-op: a workspace with no isolation, returned for any missing/garbage/wrong-typed file.
 
     ``ports`` matches ``compose.assign_ports``'s shape:
     ``{service: [{"base": int, "host": int, "target": int, "host_ip": str | None}]}``.
@@ -55,9 +55,9 @@ class ContainerState:
     ports: dict[str, list[dict]] = field(default_factory=dict)
 
 
-def state_path(task_dir: str) -> str:
-    """Return ``<task_dir>/arduis.container.toml`` so window + tests agree on the name."""
-    return os.path.join(task_dir, _STATE_FILENAME)
+def state_path(workspace_dir: str) -> str:
+    """Return ``<workspace_dir>/arduis.container.toml`` so window + tests agree on the name."""
+    return os.path.join(workspace_dir, _STATE_FILENAME)
 
 
 def _fmt_scalar(v) -> str:
@@ -131,16 +131,16 @@ def _serialize(state: ContainerState) -> str:
     return "\n".join(lines) + "\n"
 
 
-def load_container_state(task_dir: str) -> ContainerState:
-    """Read ``<task_dir>/arduis.container.toml`` -> ``ContainerState`` (tolerant, CONT-04).
+def load_container_state(workspace_dir: str) -> ContainerState:
+    """Read ``<workspace_dir>/arduis.container.toml`` -> ``ContainerState`` (tolerant, CONT-04).
 
     Missing file / garbage TOML / no ``[container]`` table / wrong-typed keys all yield the
     no-op ``ContainerState()`` default — never raises (T-07-05). Malformed port rows are
     dropped; a partially-valid file yields the valid parts. The DOMINANT case (no file) is
-    the no-op default, so a task with no isolation costs nothing.
+    the no-op default, so a workspace with no isolation costs nothing.
     """
     try:
-        with open(state_path(task_dir), "rb") as fh:
+        with open(state_path(workspace_dir), "rb") as fh:
             data = tomllib.load(fh)
     except (OSError, tomllib.TOMLDecodeError):
         return ContainerState()
@@ -175,17 +175,17 @@ def load_container_state(task_dir: str) -> ContainerState:
     return ContainerState(project_name=project_name, enabled=enabled, ports=ports)
 
 
-def write_container_state(task_dir: str, state: ContainerState) -> None:
-    """Atomically persist ``state`` to ``<task_dir>/arduis.container.toml`` (CONT-04, D-07).
+def write_container_state(workspace_dir: str, state: ContainerState) -> None:
+    """Atomically persist ``state`` to ``<workspace_dir>/arduis.container.toml`` (CONT-04, D-07).
 
     Serializes to TOML, writes a same-dir tmp file, then ``os.replace`` onto the target —
     atomic, so a crash mid-write can never corrupt the durable record (T-07-06). The parent
-    dir is created if absent (``task_dir`` exists in production; harmless otherwise).
+    dir is created if absent (``workspace_dir`` exists in production; harmless otherwise).
     Best-effort: an OSError (read-only dir, replace failure) is swallowed — a failed write
     degrades to "no state" (re-derive on next run), never a half-written file.
     """
     text = _serialize(state)
-    path = state_path(task_dir)
+    path = state_path(workspace_dir)
     try:
         d = os.path.dirname(path) or "."
         os.makedirs(d, exist_ok=True)

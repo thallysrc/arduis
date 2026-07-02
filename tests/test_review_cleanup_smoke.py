@@ -34,7 +34,7 @@ def repo_and_worktree(tmp_path, monkeypatch):
     (src / "f.txt").write_text("base\n")
     _run(["git", "add", "."], cwd=str(src), env=genv)
     _run(["git", "commit", "-q", "-m", "init"], cwd=str(src), env=genv)
-    wt = tmp_path / "proj-tasks" / "feat" / "backend"
+    wt = tmp_path / "proj-workspaces" / "feat" / "backend"
     wt.parent.mkdir(parents=True)
     _run(["git", "worktree", "add", "-q", "-b", "feat", str(wt)], cwd=str(src), env=genv)
     return str(src), str(wt), genv
@@ -73,7 +73,7 @@ def test_dirty_worktree_refuses_remove_without_force(repo_and_worktree):
 
 def test_d10_islink_unlink_keeps_target(tmp_path):
     target = tmp_path / "docker-compose.yml"; target.write_text("services: {}\n")
-    link = tmp_path / "task" / "docker-compose.yml"; link.parent.mkdir()
+    link = tmp_path / "workspace" / "docker-compose.yml"; link.parent.mkdir()
     os.symlink(os.path.relpath(target, link.parent), link)
     # the conclude folder-clean pattern: unlink only if islink
     assert os.path.islink(link)

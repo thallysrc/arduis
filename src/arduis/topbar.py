@@ -2,7 +2,7 @@
 
 The topbar previously rendered one chip per member repo (03.3). That was the
 WRONG level: the topbar holds switchable PROJECTS (each a multi-repo root), not
-repos. Member repos now surface only in the "Nova task" dialog. This module is
+repos. Member repos now surface only in the "Novo workspace" dialog. This module is
 kept empty-but-present so the package surface is unchanged; the project-switcher
 widget lives in ``window.py`` (Plan 03+).
 

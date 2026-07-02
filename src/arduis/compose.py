@@ -82,14 +82,14 @@ def sanitize_project_name(branch: str) -> str:
     Compose project names are STRICTER than dir names: lowercase letters / digits
     / dashes / underscores only, and must BEGIN with a lowercase letter or digit.
     The ``arduis-`` prefix guarantees the leading-char rule. Empty-after-sanitize
-    falls back to ``arduis-task`` so the result can NEVER be invalid.
+    falls back to ``arduis-workspace`` so the result can NEVER be invalid.
 
     This is a SEPARATE sanitizer from ``worktree.sanitize_branch_for_dir`` (which
     allows ``.`` and uppercase — both invalid here). [CITED: docs.docker.com]
     """
     s = _PROJECT_UNSAFE.sub("-", branch.lower())
     s = _PROJECT_DASH_RUNS.sub("-", s).strip("-_")
-    return f"arduis-{s}" if s else "arduis-task"
+    return f"arduis-{s}" if s else "arduis-workspace"
 
 
 # --- authoritative base-stack reader (D-02, CONT-02/03) ----------------------
@@ -143,11 +143,11 @@ def port_free(host_port: int, host: str = "127.0.0.1") -> bool:
 # --- deterministic offset + probe + clustered retry (D-06, OD-6, CONT-03) ----
 
 def assign_ports(published, offset, probe=port_free):
-    """Map each base published port -> base + a clustered task offset, probed free.
+    """Map each base published port -> base + a clustered workspace offset, probed free.
 
     On EACH attempt every service's candidate host port is
     ``base_published + offset * (attempt + 1)`` (1000, 2000, ...). ALL candidates
-    are probed; if ALL are free the map commits, otherwise the WHOLE task bumps to
+    are probed; if ALL are free the map commits, otherwise the WHOLE workspace bumps to
     the next step (clustered / predictable) and re-probes. Capped at 10 attempts,
     then raises ``PortAssignmentError`` (T-07-03).
 
@@ -241,29 +241,29 @@ def override_bytes(port_map: dict) -> bytes:
 
 # --- docker compose argv builders (D-05/D-12/D-13, CONT-05, T-07-01) ---------
 
-def compose_argv(project: str, task_dir: str, *cmd: str) -> list[str]:
+def compose_argv(project: str, workspace_dir: str, *cmd: str) -> list[str]:
     """``docker compose -p <project> -f <base> -f <override> <cmd...>`` as a LIST.
 
-    Both ``-f`` paths live under ``task_dir`` (which is under ``$HOME`` — D-09 so
+    Both ``-f`` paths live under ``workspace_dir`` (which is under ``$HOME`` — D-09 so
     snap-docker can read them). argv stays a LIST — never joined into a shell
     string (T-07-01).
     """
-    base = os.path.join(task_dir, "docker-compose.yml")
-    override = os.path.join(task_dir, "docker-compose.override.yml")
+    base = os.path.join(workspace_dir, "docker-compose.yml")
+    override = os.path.join(workspace_dir, "docker-compose.override.yml")
     return ["docker", "compose", "-p", project, "-f", base, "-f", override, *cmd]
 
 
-def up_argv(project: str, task_dir: str) -> list[str]:
+def up_argv(project: str, workspace_dir: str) -> list[str]:
     """``docker compose ... up -d``."""
-    return compose_argv(project, task_dir, "up", "-d")
+    return compose_argv(project, workspace_dir, "up", "-d")
 
 
-def down_argv(project: str, task_dir: str) -> list[str]:
+def down_argv(project: str, workspace_dir: str) -> list[str]:
     """``docker compose ... down --remove-orphans --volumes`` (D-12 teardown)."""
-    return compose_argv(project, task_dir, "down", "--remove-orphans", "--volumes")
+    return compose_argv(project, workspace_dir, "down", "--remove-orphans", "--volumes")
 
 
-def config_argv(task_dir: str) -> list[str]:
+def config_argv(workspace_dir: str) -> list[str]:
     """``docker compose -f <base> config --format json`` — base ONLY (D-02).
 
     No ``-p`` and no override: this enumerates the authoritative published ports
@@ -273,7 +273,7 @@ def config_argv(task_dir: str) -> list[str]:
         "docker",
         "compose",
         "-f",
-        os.path.join(task_dir, "docker-compose.yml"),
+        os.path.join(workspace_dir, "docker-compose.yml"),
         "config",
         "--format",
         "json",
