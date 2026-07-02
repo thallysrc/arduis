@@ -52,6 +52,27 @@ def test_tree_from_dict_missing_ratio_defaults_half():
     assert tree.ratio == 0.5
 
 
+def test_tree_from_dict_sanitizes_degenerate_ratio():
+    # A degenerate persisted ratio (a sliver) would pin a split to ~0 extent — a
+    # resize-RESISTANT black hole (split-broken-after-todays-changes). tree_from_dict
+    # must normalize it back to a balanced 0.5 on load.
+    for bad in (0.0, 0.01, 0.02, 0.98, 0.99, 1.0, -0.5, 1.5, float("nan"), float("inf")):
+        tree = layout_store.tree_from_dict(
+            {"split": "h", "ratio": bad, "start": {"leaf": "a"}, "end": {"leaf": "b"}}
+        )
+        assert isinstance(tree, SplitNode)
+        assert tree.ratio == 0.5, f"degenerate ratio {bad!r} not sanitized"
+
+
+def test_tree_from_dict_keeps_valid_ratio():
+    for good in (0.25, 0.5, 0.75, 0.3, 0.97):
+        tree = layout_store.tree_from_dict(
+            {"split": "h", "ratio": good, "start": {"leaf": "a"}, "end": {"leaf": "b"}}
+        )
+        assert isinstance(tree, SplitNode)
+        assert tree.ratio == good
+
+
 def test_leaf_ids_in_order():
     tree = SplitNode(
         "h",

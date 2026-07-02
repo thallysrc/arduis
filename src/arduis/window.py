@@ -177,7 +177,8 @@ headerbar {{
     border-radius: 6px;
 }}
 .arduis-sidebar row:selected {{
-    background-color: {card};
+    background-color: alpha({theme.accent}, 0.20);
+    box-shadow: inset 3px 0 0 0 {theme.accent};
 }}
 .arduis-pane-header {{
     background-color: transparent;
@@ -527,6 +528,11 @@ class ArduisWindow(Adw.ApplicationWindow):
         # sidebar main-row highlight to the OWNING project. Keys are
         # project-namespaced state-file paths (_proj_term_id).
         self._main_split_info: dict[str, dict] = {}
+        # State-file paths whose terminal CURRENTLY shows a blocking dialog
+        # (maintained by the prompt scanner). Window-global — state-file paths are
+        # project-namespaced and therefore unique. The degraded-mode activity
+        # handler consults it so dialog repaints never clear a live waiting.
+        self._dialog_on_screen: set[str] = set()
         # True in degraded mode (consent declined or settings unparseable) — Plan 04
         # surfaces the hint; here it is only the flag + marker logic. Window-global.
         self._degraded = False
@@ -1000,14 +1006,16 @@ class ArduisWindow(Adw.ApplicationWindow):
     def _setup_attention(self) -> None:
         """Install/refresh the hook, gate consent (D-02), and start the watcher.
 
-        Four branches after refreshing the script copy + reading the user's
+        Five branches after refreshing the script copy + reading the user's
         settings:
         1. settings UNPARSEABLE → degraded, no write (never clobber a file we
            cannot parse — T-04-12); start the monitor anyway.
         2. already installed → no dialog (idempotent re-runs are silent — D-02).
-        3. declined marker present → degraded; start the monitor anyway (files may
+        3. script referenced but registration OUTDATED → silent re-merge (consent
+           was already given for exactly this script; no second dialog).
+        4. declined marker present → degraded; start the monitor anyway (files may
            appear if hooks were installed manually).
-        4. otherwise → first-run consent Adw.AlertDialog (pt-BR). The monitor
+        5. otherwise → first-run consent Adw.AlertDialog (pt-BR). The monitor
            starts REGARDLESS, before the async dialog response (so a same-session
            accept is watched immediately).
         """
@@ -1056,6 +1064,14 @@ class ArduisWindow(Adw.ApplicationWindow):
             return
 
         if attention.is_installed(settings, target):
+            self._start_status_monitor()
+            return
+
+        if attention.references_script(settings, target):
+            # An OUTDATED arduis registration (e.g. the pre-matcher Notification
+            # shape): consent was already given for exactly this script, so
+            # re-merge silently — no second dialog.
+            self._install_hooks(settings, settings_path, target)
             self._start_status_monitor()
             return
 
@@ -1191,12 +1207,14 @@ class ArduisWindow(Adw.ApplicationWindow):
     def _apply_state_file(self, workspace: Workspace, record: TerminalRecord, path: str) -> None:
         """Read one state file → recompute the record's effective status (D-05).
 
-        Reads the (tolerant) parsed doc; computes pid liveness from the record's
-        pgid (the killpg(pgid, 0) probe already used by the RAM machinery), falling
-        back to the hook pid when no pgid is known; runs ``attention.effective_status``
+        Reads the (tolerant) parsed doc; computes pid liveness (hook pid first,
+        pane pgid fallback — ``_pid_alive``); runs ``attention.effective_status``
         (time + pid based) and writes ``record.status``/``record.status_ts``; then
         refreshes the dots and evaluates the notification gate. A missing/partial
         file (read_state → None) is ignored — readers never crash (T-04-07/T-04-15).
+        A scanner-escalated WAITING survives re-reads of a doc that is not NEWER
+        than the escalation (``attention.preserve_scan_waiting``) — otherwise the
+        ~2s poll tick would stomp the orange back to the file's stale opinion.
         """
         doc = attention.read_state(path)
         if doc is None:
@@ -1209,6 +1227,10 @@ class ArduisWindow(Adw.ApplicationWindow):
             pid_alive,
             self._att_config.idle_minutes * 60,
         )
+        if attention.preserve_scan_status(
+            record.status, record.status_ts, doc.ts, new, pid_alive
+        ):
+            return
         record.status = new.value
         record.status_ts = doc.ts
         self._refresh_status_ui(workspace)
@@ -1229,19 +1251,23 @@ class ArduisWindow(Adw.ApplicationWindow):
         doc = attention.read_state(path)
         if doc is None:
             return
-        alive = True
-        pid = getattr(doc, "pid", None)
-        if isinstance(pid, int):
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
-                alive = False
-            except OSError:
-                pass  # EPERM etc. — process exists, just not ours to signal
+        alive = self._hook_pid_alive(doc)
+        if alive is None:
+            alive = True  # no pid in the doc — never wrongly retire it
         status = attention.effective_status(
             doc, time.time(), alive, self._att_config.idle_minutes * 60
         )
+        # Same guard as _apply_state_file: a scanner-set status (waiting dialog /
+        # busy banner) outlives a doc that is not NEWER than the flip. Without it
+        # the batched FileMonitor delivery of an OLDER Stop(ready) lands AFTER
+        # the scanner's green and paints a static pane blue for good (the race
+        # only bites main splits — the record path re-reads on the poll tick).
+        if attention.preserve_scan_status(
+            info.get("status"), info.get("status_ts"), doc.ts, status, alive
+        ):
+            return
         info["status"] = status.value
+        info["status_ts"] = doc.ts
         dot = info.get("dot")
         if dot is not None:
             self._set_dot_class(dot, self._dot_css_for(status, True))
@@ -1297,14 +1323,35 @@ class ArduisWindow(Adw.ApplicationWindow):
                 self._set_dot_class(dot, "arduis-dot-active")
 
     # --- instant-waiting accelerator (terminal-text scan, RESEARCH Pattern 5) --
-    # Claude Code fires the permission Notification only ~6s after the dialog
-    # renders (measured 2026-07-01; no bell, not configurable). The terminal
-    # text is the only instant signal: on (debounced) contents-changed, scan the
-    # tail for the approval dialog and ESCALATE-ONLY to waiting — every hook
-    # event that follows stays authoritative and overwrites this opinion.
+    # Claude Code fires the Notification event only seconds after a dialog
+    # renders (~6s permission, 3-4s option-select; no bell, not configurable).
+    # The terminal text is the only instant signal: on (debounced)
+    # contents-changed, scan the tail for a blocking dialog (approval OR
+    # option-select — attention.looks_like_pending_dialog) and ESCALATE-ONLY to
+    # waiting — every hook event that follows stays authoritative and
+    # overwrites this opinion. The same scan drives the background-busy banner
+    # ("Waiting for N background agents to finish"): a turn that ends with
+    # background agents still running fires Stop (hook says READY) while work
+    # continues — the banner keeps the dot green (attention.next_busy_action).
+
+    # Allowed FROM-sets for the scanner transitions (see _scan_set_status).
+    _SCAN_FROM_ANY_BUT_WAITING = (
+        None,
+        AgentStatus.RUNNING.value,
+        AgentStatus.READY.value,
+        AgentStatus.IDLE.value,
+        AgentStatus.ENDED.value,
+    )
+    _SCAN_FROM_CALM = (None, AgentStatus.READY.value, AgentStatus.IDLE.value)
 
     def _terminal_tail_text(self, terminal) -> str:
-        """The last ~20 rows of ``terminal`` up to the cursor (best-effort).
+        """~20 rows ABOVE and BELOW the cursor of ``terminal`` (best-effort).
+
+        Both directions matter: Claude Code's TUI parks the terminal cursor on
+        the FOCUSED option row of the select dialog, so the footer key-hint row
+        (the option-select marker) sits ~10 rows BELOW the cursor (verified
+        empirically 2026-07-02 in a headless VTE — a cursor-terminated window
+        never sees it). Rows past the end of content are clamped by VTE.
 
         Uses ``get_text_range_format`` (VTE 0.72+, within the 0.76 floor) — the
         legacy ``get_text_range``/``get_text`` return empty on this VTE build
@@ -1313,37 +1360,81 @@ class ArduisWindow(Adw.ApplicationWindow):
         try:
             _col, row = terminal.get_cursor_position()
             start = max(0, row - 20)
-            res = terminal.get_text_range_format(Vte.Format.TEXT, start, 0, row + 1, 0)
+            res = terminal.get_text_range_format(Vte.Format.TEXT, start, 0, row + 21, 0)
             text = res[0] if isinstance(res, tuple) else res
             return text or ""
         except Exception:  # noqa: BLE001 — scan is best-effort, never crash UI
             return ""
 
-    def _escalate_waiting(self, workspace: Workspace | None, term_id: str, state_file: str) -> None:
-        """Flip ``term_id`` to WAITING now (escalate-only; hooks overwrite later)."""
+    def _scan_set_status(
+        self,
+        workspace: Workspace | None,
+        term_id: str,
+        state_file: str,
+        new: str,
+        only_from: tuple,
+    ):
+        """The ONE scanner-driven status mutator (the SECONDARY channel).
+
+        Sets ``new`` iff the terminal's current status is in ``only_from`` and
+        differs, then reconciles every widget the hook path reconciles (dot,
+        waiting/ready rings, sidebar row). Returns ``(old_status, record)`` when
+        a flip happened (``record`` is None for a main split), else None — the
+        caller uses it for the notify gate.
+        """
         if workspace is not None:
             record = next(
                 (t for t in self._all_workspace_terminals(workspace) if t.term_id == term_id),
                 None,
             )
-            if record is None or record.status == AgentStatus.WAITING.value:
-                return
-            record.status = AgentStatus.WAITING.value
+            if record is None or record.status not in only_from or record.status == new:
+                return None
+            old = record.status
+            record.status = new
             record.status_ts = time.time()
             self._refresh_status_ui(workspace)
-            return
+            return old, record
         info = getattr(self, "_main_split_info", {}).get(state_file)
-        if info is None or info.get("status") == "waiting":
-            return
-        info["status"] = "waiting"
+        if info is None or info.get("status") not in only_from or info.get("status") == new:
+            return None
+        old = info.get("status")
+        info["status"] = new
+        # Scanner flips stamp NOW (always newer than the doc they outran) so
+        # _apply_main_state_file's preserve guard can tell them from hook writes.
+        info["status_ts"] = time.time()
+        status = next((s for s in AgentStatus if s.value == new), None)
         dot = info.get("dot")
         if dot is not None:
-            self._set_dot_class(dot, "arduis-dot-waiting")
+            self._set_dot_class(dot, self._dot_css_for(status, True))
             dot.set_visible(True)
         leaf = info.get("leaf")
         if leaf is not None:
-            leaf.add_css_class("attention")
+            if status == AgentStatus.WAITING:
+                leaf.add_css_class("attention")
+            else:
+                leaf.remove_css_class("attention")
+            if status == AgentStatus.READY:
+                leaf.add_css_class("attention-ready")
+            else:
+                leaf.remove_css_class("attention-ready")
         self._refresh_main_row_attention()
+        return old, None
+
+    def _escalate_waiting(self, workspace: Workspace | None, term_id: str, state_file: str) -> None:
+        """Flip ``term_id`` to WAITING now (escalate-only; hooks overwrite later).
+
+        Routes through ``_maybe_notify`` with the PRE-flip status: the scanner
+        usually beats the hook's Notification event, and without this the later
+        hook write would see old == waiting and the D-08 desktop notification
+        would never fire.
+        """
+        flip = self._scan_set_status(
+            workspace, term_id, state_file,
+            AgentStatus.WAITING.value, self._SCAN_FROM_ANY_BUT_WAITING,
+        )
+        if flip is not None and workspace is not None:
+            old, record = flip
+            self._maybe_notify(workspace, record, old, AgentStatus.WAITING.value, None)
 
     def _current_scan_status(self, workspace: Workspace | None, term_id: str, state_file: str) -> str | None:
         """The terminal's current status string as the scanner sees it."""
@@ -1363,44 +1454,33 @@ class ArduisWindow(Adw.ApplicationWindow):
         ``waiting`` (never touches ready/idle/ended), so the authoritative hook
         events that follow are never fought, just anticipated.
         """
-        if workspace is not None:
-            record = next(
-                (t for t in self._all_workspace_terminals(workspace) if t.term_id == term_id),
-                None,
-            )
-            if record is None or record.status != AgentStatus.WAITING.value:
-                return
-            record.status = AgentStatus.RUNNING.value
-            record.status_ts = time.time()
-            self._refresh_status_ui(workspace)
-            return
-        info = getattr(self, "_main_split_info", {}).get(state_file)
-        if info is None or info.get("status") != "waiting":
-            return
-        info["status"] = "running"
-        dot = info.get("dot")
-        if dot is not None:
-            self._set_dot_class(dot, "arduis-dot-active")
-        leaf = info.get("leaf")
-        if leaf is not None:
-            leaf.remove_css_class("attention")
-        self._refresh_main_row_attention()
+        self._scan_set_status(
+            workspace, term_id, state_file,
+            AgentStatus.RUNNING.value, (AgentStatus.WAITING.value,),
+        )
 
     def _make_prompt_scan_cb(self, terminal, workspace: Workspace | None, term_id: str, state_file: str):
         """A leading-edge-debounced contents-changed handler scanning for the
-        approval dialog (300ms coalesce — the signal fires on every repaint).
+        blocking dialog AND the background-busy banner (300ms coalesce — the
+        signal fires on every repaint).
 
-        Tracks whether THIS terminal showed the dialog (``saw_dialog``) so the
-        vanish-side transition (dialog answered → running) never clears a
-        waiting the scanner did not witness (attention.next_scan_action).
+        Tracks whether THIS terminal showed the dialog/banner (``saw_dialog`` /
+        ``saw_busy``) so the vanish-side transitions (dialog answered → running;
+        banner gone with no work spinner → ready) never clear a state the
+        scanner did not witness (attention.next_scan_action/next_busy_action).
         """
         pending = [False]
         saw_dialog = [False]
+        saw_busy = [False]
 
         def _scan() -> bool:
             pending[0] = False
             text = self._terminal_tail_text(terminal)
-            has_dialog = attention.looks_like_permission_prompt(text)
+            has_dialog = attention.looks_like_pending_dialog(text)
+            if has_dialog:
+                self._dialog_on_screen.add(state_file)
+            else:
+                self._dialog_on_screen.discard(state_file)
             status = self._current_scan_status(workspace, term_id, state_file)
             action = attention.next_scan_action(saw_dialog[0], has_dialog, status)
             if has_dialog:
@@ -1410,6 +1490,31 @@ class ArduisWindow(Adw.ApplicationWindow):
             elif action == "deescalate":
                 saw_dialog[0] = False
                 self._deescalate_running(workspace, term_id, state_file)
+
+            # Background-busy banner (re-read the status — the dialog action
+            # above may have just flipped it).
+            has_busy = attention.looks_like_background_busy(text)
+            working = attention.looks_like_agent_working(text)
+            busy_action = attention.next_busy_action(
+                saw_busy[0], has_busy, working,
+                self._current_scan_status(workspace, term_id, state_file),
+            )
+            if has_busy:
+                saw_busy[0] = True
+            elif working:
+                # claude resumed on its own — hooks own the status again.
+                saw_busy[0] = False
+            if busy_action == "busy":
+                self._scan_set_status(
+                    workspace, term_id, state_file,
+                    AgentStatus.RUNNING.value, self._SCAN_FROM_CALM,
+                )
+            elif busy_action == "unbusy":
+                saw_busy[0] = False
+                self._scan_set_status(
+                    workspace, term_id, state_file,
+                    AgentStatus.READY.value, (AgentStatus.RUNNING.value,),
+                )
             return GLib.SOURCE_REMOVE
 
         def _on_changed(_term) -> None:
@@ -1420,14 +1525,36 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         return _on_changed
 
+    def _hook_pid_alive(self, doc) -> bool | None:
+        """Liveness of the hook-written pid — claude itself (the hook's parent).
+
+        ``None`` when the doc carries no usable pid (the caller picks a fallback);
+        signal 0 sends nothing, EPERM still means "exists".
+        """
+        pid = getattr(doc, "pid", None)
+        if not isinstance(pid, int):
+            return None
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except OSError:
+            return True  # EPERM etc. — process exists, just not ours to signal
+
     def _pid_alive(self, record: TerminalRecord, doc) -> bool:
         """Liveness probe for the staleness sweep (Pitfall 5, T-04-17).
 
-        Prefer the terminal's process GROUP (``killpg(pgid, 0)`` — signal 0 sends
-        nothing); ProcessLookupError → dead. With no pgid yet, fall back to the
-        hook-written pid (``os.kill(pid, 0)``); with neither, assume alive (a fresh
-        record we have not torn down — never wrongly retire it).
+        Prefer the HOOK-written pid — that IS claude (the hook's parent). The
+        record's pgid is the PANE SHELL's process group: an interactive zsh puts
+        claude in its own foreground group, so ``killpg(record.pgid, 0)`` only
+        proves the pane is open and would keep a SIGKILL'd claude 'running'/
+        'waiting' forever. The pgid is the fallback when the doc has no pid;
+        with neither, assume alive (a fresh record — never wrongly retire it).
         """
+        alive = self._hook_pid_alive(doc)
+        if alive is not None:
+            return alive
         if record.pgid is not None:
             try:
                 os.killpg(record.pgid, 0)
@@ -1436,15 +1563,6 @@ class ArduisWindow(Adw.ApplicationWindow):
                 return False
             except OSError:
                 return True  # EPERM etc. — process exists, just not ours to signal
-        pid = getattr(doc, "pid", None)
-        if isinstance(pid, int):
-            try:
-                os.kill(pid, 0)
-                return True
-            except ProcessLookupError:
-                return False
-            except OSError:
-                return True
         return True
 
     def _refresh_status_ui(self, workspace: Workspace) -> None:
@@ -1803,8 +1921,9 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         Tears down the terminal's process group (no orphan), removes it from the
         active LayoutModel and the widget/session maps, then re-reflects. If that
-        was the workspace's LAST terminal, fall back to the main workspace so the
-        canvas is never left blank (Failure 2).
+        was the workspace's LAST terminal, STAY in the workspace and render the
+        recoverable empty state (quick 260702-kzo) — the never-blank-canvas
+        guarantee (Failure 2) is now the empty state, not a swap to main.
         """
         sid = self._active_workspace_sid
         if sid is None:
@@ -1846,12 +1965,16 @@ class ArduisWindow(Adw.ApplicationWindow):
         ]
         for p in stale:
             self._main_split_info.pop(p, None)
+            self._dialog_on_screen.discard(p)
         if stale:
             self._refresh_main_row_attention()
 
-        # Empty workspace -> fall back to main so the canvas isn't blank.
+        # Empty workspace -> STAY in the workspace and show the recoverable empty
+        # state (quick 260702-kzo). The empty state IS the never-blank-canvas
+        # guarantee now, so closing the last pane no longer forces a swap to main
+        # (which stranded the user on a black main canvas if main was empty too).
         if not model.visible_ids():
-            self._swap_workspace(_MAIN_SID)
+            self._reflect_layout()
             self._schedule_layout_save()
             return
 
@@ -4165,7 +4288,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         dialog.connect("response", _on_response)
         dialog.present(self)
 
-    def _split_active_pane(self, focused_tid: str, orientation: str = "h") -> None:
+    def _split_active_pane(self, focused_tid: str | None, orientation: str = "h") -> None:
         """Split the active workspace, spawning a new agent terminal beside ``focused_tid`` (D-05).
 
         Every split is an agent terminal by default (D-05) — Ctrl+C drops to the
@@ -4178,6 +4301,12 @@ class ArduisWindow(Adw.ApplicationWindow):
         ``orientation`` ("h"/"v") threads through to ``LayoutModel.split`` (UI-01):
         the top/bottom split button passes "v" (stacked); ``C-Space -``/``=`` pass "v"/"h"
         from the keymap tuple's second element.
+
+        Empty-state recovery (quick 260702-kzo): ``focused_tid`` may be ``None`` (empty-state
+        button, or the ``C-Space =``/``-`` keybinding on a workspace whose panes were all
+        closed). When the model has no visible pane to split beside, ROOT the new leaf instead
+        of no-oping — same degenerate path ``_open_diff_leaf`` already uses — so a blank canvas
+        always has a keyboard/click path back to a live agent.
         """
         sid = self._active_workspace_sid
         if sid is None:
@@ -4200,7 +4329,15 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._leaf_by_sid[new_tid] = leaf
         self._term_by_sid[new_tid] = terminal
 
-        model.split(focused_tid, new_tid, orientation)
+        if model.root is None or focused_tid is None or not model.is_visible(focused_tid):
+            # Empty canvas (all panes closed / restored empty): root the new leaf
+            # instead of no-oping — same degenerate pattern as _open_diff_leaf. This
+            # is the empty-state recovery path (quick 260702-kzo).
+            model.root = LeafNode(new_tid)
+            model.focused_id = new_tid
+            model.touch(new_tid)
+        else:
+            model.split(focused_tid, new_tid, orientation)
         self._reflect_layout()
 
         if workspace is not None:
@@ -4787,6 +4924,7 @@ class ArduisWindow(Adw.ApplicationWindow):
                     "dot": pane_dot,
                     "leaf": self._leaf_by_sid.get(term_id),
                     "status": None,
+                    "status_ts": None,
                 }
             # Degraded mode (D-13, hooks declined): the bell + contents-changed
             # signals are the ONLY status signal. Both are pre-0.76 (floor-safe). Do
@@ -4795,10 +4933,11 @@ class ArduisWindow(Adw.ApplicationWindow):
             if self._degraded and record is not None:
                 terminal.connect("bell", self._make_bell_cb(workspace, record))
                 terminal.connect(
-                    "contents-changed", self._make_activity_cb(workspace, record)
+                    "contents-changed",
+                    self._make_activity_cb(workspace, record, state_file),
                 )
             # Instant-waiting accelerator (ALL modes): scan the terminal tail for
-            # the approval dialog on contents-changed — escalate-only, so it never
+            # a blocking dialog on contents-changed — escalate-only, so it never
             # fights the authoritative hook events (they overwrite it).
             terminal.connect(
                 "contents-changed",
@@ -4893,7 +5032,9 @@ class ArduisWindow(Adw.ApplicationWindow):
             self._maybe_notify(workspace, record, old, record.status, None)
         return _on_bell
 
-    def _make_activity_cb(self, workspace: Workspace, record: TerminalRecord):
+    def _make_activity_cb(
+        self, workspace: Workspace, record: TerminalRecord, state_file: str
+    ):
         """Degraded mode (D-13): contents-changed activity → running, clears the bell.
 
         Throttled to once per second per terminal (T-04-21: a TUI repaint storm must
@@ -4902,6 +5043,10 @@ class ArduisWindow(Adw.ApplicationWindow):
         has no opinion yet, it becomes 'running' (activity clears the hint) and the
         badge is restored to "claude". 'running'/'idle' staleness vs idle is handled
         on the poll tick. NO 'ready' state in degraded mode (plan_decisions).
+
+        While the prompt scanner sees a blocking dialog on THIS terminal
+        (``_dialog_on_screen``), repaints are not progress: do NOT clear the
+        waiting — the scanner's deescalate handles the answered case instantly.
         """
         def _on_activity(_terminal) -> None:
             now = time.time()
@@ -4909,6 +5054,8 @@ class ArduisWindow(Adw.ApplicationWindow):
             if now - last < 1.0:
                 return  # throttle: ignore bursts within 1s (T-04-21)
             self._activity_last_handled[record.term_id] = now
+            if state_file in self._dialog_on_screen:
+                return  # a visible dialog repaints without being progress
             self._activity_ts[record.term_id] = now
             if record.status in (AgentStatus.WAITING.value, None):
                 record.status = AgentStatus.RUNNING.value
@@ -5184,13 +5331,50 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         # Phase 03.1: read the ACTIVE worktree's tree, not a global tree (D-04).
         model = self._active_layout()
-        if model is None or model.root is None:
+        if model is None:
+            # No active workspace (bootstrap, no project) — neutral placeholder box.
             self._canvas_slot.set_child(self._build_widget(None))
+            return
+        if model.root is None:
+            # Active workspace with no panes: recoverable empty state (quick
+            # 260702-kzo) — never a blank/black canvas when there IS a workspace.
+            self._canvas_slot.set_child(self._make_empty_state())
             return
         self._canvas_slot.set_child(self._build_widget(model.root))
 
         # Apply the focused-pane purple ring to exactly one leaf (UI-SPEC).
         self._refresh_focus_ring(model.focused_id)
+
+    def _make_empty_state(self) -> Gtk.Widget:
+        """Recoverable empty canvas: a centered StatusPage with '+ Novo terminal'.
+
+        Shown when an ACTIVE workspace has no visible pane (all closed / restored
+        empty) instead of a blank/black box (quick 260702-kzo). The button reuses the
+        exact split spawn path (``_split_active_pane(None, ...)`` → roots a leaf →
+        ``_spawn_into(kind="agent")``) so the recovered pane runs the default agent
+        (claude) in the current workspace. It is born focused (app is keyboard-driven:
+        Enter/Space activates it directly). No new VTE/libadwaita API beyond the 0.76
+        VTE floor — ``Adw.StatusPage``/``Adw.ButtonContent`` exist since libadwaita 1.0.
+        """
+        btn = Gtk.Button()
+        content = Adw.ButtonContent(
+            icon_name="list-add-symbolic", label="Novo terminal"
+        )
+        btn.set_child(content)
+        btn.add_css_class("suggested-action")
+        btn.add_css_class("pill")
+        btn.set_halign(Gtk.Align.CENTER)
+        btn.connect("clicked", lambda *_: self._split_active_pane(None, "h"))
+        page = Adw.StatusPage(
+            icon_name="utilities-terminal-symbolic",
+            title="Nenhum terminal aberto",
+            description="Crie um pane novo com o agente padrão (claude) neste workspace",
+        )
+        page.set_child(btn)
+        # Keyboard-driven app: focus the button so Enter/Space activates it directly
+        # (idle so it is mapped/realized before grabbing focus).
+        GLib.idle_add(btn.grab_focus)
+        return page
 
     def _build_widget(self, node) -> Gtk.Widget:
         """Reflect one layout node into a widget (SplitNode->Paned, LeafNode->leaf)."""
@@ -5262,12 +5446,35 @@ class ArduisWindow(Adw.ApplicationWindow):
         settled = [False]   # True once we've applied on a REAL (max-position>1) allocation
 
         def _apply(*_args) -> bool:
+            # NEVER touch the position before the paned has a REAL allocation:
+            # a freshly built paned reports max-position = G_MAXINT until its
+            # first size_allocate, and applying ratio*G_MAXINT makes GTK clamp
+            # position == allocation → gtk_paned_calc_position() latches the end
+            # child's child_visible to False (allocated-but-unmapped = an
+            # invisible black pane) and NEVER restores it on its own.
+            extent = (
+                paned.get_width()
+                if paned.get_orientation() == Gtk.Orientation.HORIZONTAL
+                else paned.get_height()
+            )
+            if extent <= 1:
+                return False  # not allocated yet — wait for the next notify/frame
             maxp = paned.get_property("max-position")
             if maxp <= 1:
-                return False  # allocation not known yet — wait for the next notify/frame
+                return False
             pos = int(maxp * ratio[0])
             last_set[0] = pos
             paned.set_position(pos)
+            # Heal a latched child_visible=False (see above): with a sane
+            # proportional position both children own a nonzero share, so they
+            # must be child-visible; GTK never flips this back by itself.
+            for child in (paned.get_start_child(), paned.get_end_child()):
+                if (
+                    child is not None
+                    and child.get_visible()
+                    and not child.get_child_visible()
+                ):
+                    child.set_child_visible(True)
             settled[0] = True
             return True
 
@@ -5289,15 +5496,45 @@ class ArduisWindow(Adw.ApplicationWindow):
         paned.connect("notify::max-position", _apply)
         paned.connect("notify::position", _learn)
 
-        # Guaranteed final application (split-black-pane-hole): keep re-applying on
-        # each frame until the paned reaches a real settled allocation, then
-        # self-disconnect. A safety budget caps the ticking so a paned that never
-        # gets a usable allocation (hidden/collapsed) cannot tick forever.
-        frames_left = [600]  # ~10s at 60fps — generous; the split settles far sooner
+        # Guaranteed final application (split-black-pane-hole / split-broken-after-
+        # todays-changes): keep re-applying the proportional position on each frame
+        # until the paned's usable extent (max-position) has been STABLE for several
+        # consecutive frames — NOT merely until it first exceeds 1.
+        #
+        # Why stability, not first-hit: a freshly rebuilt nested Paned tree — created
+        # by a split AND, since restore-on-boot (D-06), by the boot/resume path —
+        # passes through TRANSIENT extents during its multi-pass allocation. GTK4
+        # coalesces the final ``notify::max-position``, so a paned can settle at its
+        # real extent WITHOUT a last re-notify. Stopping at the FIRST max-position>1
+        # frame pins the split to a transient extent (one child ≈0 → a black hole
+        # that "self-heals only on resize"). Re-applying until the extent settles
+        # guarantees the final application lands on the REAL allocation regardless of
+        # notification coalescing. A safety budget caps the ticking so a paned that
+        # never gets a usable allocation (hidden/collapsed) cannot tick forever; the
+        # reactive ``notify::max-position`` path still handles later resizes.
+        frames_left = [600]     # ~10s at 60fps — generous; the split settles far sooner
+        stable_frames = [0]     # consecutive frames max-position held (within tolerance)
+        last_maxp = [-1]        # last max-position we observed, for the stability check
 
         def _tick(_widget, _clock) -> bool:
             frames_left[0] -= 1
-            if _apply() or frames_left[0] <= 0:
+            # Only count stability on frames where the position was actually
+            # APPLIED (real allocation): before the first allocate max-position
+            # is a constant G_MAXINT, which would read as "stable" and remove
+            # the tick without ever applying.
+            if _apply():
+                maxp = paned.get_property("max-position")
+                # Tolerate ±2px jitter so sub-pixel wobble doesn't reset the counter
+                # (which would keep re-applying — and fighting a user drag — for the
+                # whole budget).
+                if abs(maxp - last_maxp[0]) <= 2:
+                    stable_frames[0] += 1
+                else:
+                    stable_frames[0] = 0
+                last_maxp[0] = maxp
+            # Stop once the extent has held steady (final allocation reached) or the
+            # safety budget is exhausted.
+            if stable_frames[0] >= 5 or frames_left[0] <= 0:
                 return GLib.SOURCE_REMOVE
             return GLib.SOURCE_CONTINUE
 
@@ -5779,6 +6016,7 @@ class ArduisWindow(Adw.ApplicationWindow):
                 pass
             record_by_state_file.pop(path, None)
             notif_by_tid.pop(record.term_id, None)
+            self._dialog_on_screen.discard(path)
 
     def _clear_repo_state_files(self, repo, root: str | None = None) -> None:
         """Delete ONLY a closed repo's terminal state files (D-10 scoped, Pitfall 5b).
@@ -5806,6 +6044,7 @@ class ArduisWindow(Adw.ApplicationWindow):
                 pass
             self._record_by_state_file.pop(path, None)
             self._notif_by_tid.pop(record.term_id, None)
+            self._dialog_on_screen.discard(path)
 
     def _on_close_request(self, *_):
         """No-orphan teardown across ALL panes (D-13): scratch shell + sessions."""

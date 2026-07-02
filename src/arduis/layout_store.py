@@ -53,6 +53,13 @@ def tree_from_dict(d):
             ratio = float(d.get("ratio", 0.5))
         except (TypeError, ValueError):
             ratio = 0.5
+        # Defensive sanitization (split-broken-after-todays-changes): a degenerate
+        # persisted ratio (a sliver ≤0.02 or ≥0.98, or a NaN/inf) would pin a split
+        # to ~0 extent — a black hole that is RESISTANT to resize because the bad
+        # ratio is re-applied every allocation. Normalize it back to a balanced 0.5
+        # on load so a poisoned layouts.json can never reproduce the hole.
+        if not (0.02 < ratio < 0.98):
+            ratio = 0.5
         return SplitNode(d["split"], start, end, ratio=ratio)
     return None
 
