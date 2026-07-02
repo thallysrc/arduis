@@ -1703,13 +1703,14 @@ class ArduisWindow(Adw.ApplicationWindow):
 
     def _make_split_pane_cb(self, sid: str):
         def _split(_btn) -> None:
-            # ⊟ splits the active workspace, adding a new agent terminal beside
-            # this one (D-05). ``sid`` here is a TERMINAL id in the active tree.
+            # ⊟ splits the active workspace, stacking a new agent terminal BELOW
+            # this one (orientation "v", top/bottom) — consistent with the default
+            # agent-over-shell pair. ``sid`` here is a TERMINAL id in the active tree.
             model = self._active_layout()
             if model is None:
                 return
             model.focused_id = sid
-            self._split_active_pane(sid)
+            self._split_active_pane(sid, "v")
         return _split
 
     def _make_zoom_pane_cb(self, sid: str):
@@ -3995,8 +3996,8 @@ class ArduisWindow(Adw.ApplicationWindow):
         spawn into the project root, untracked.
 
         ``orientation`` ("h"/"v") threads through to ``LayoutModel.split`` (UI-01):
-        the ⊟ button keeps the default "h"; ``C-Space -``/``=`` pass "v"/"h" from the
-        keymap tuple's second element.
+        the ⊟ button passes "v" (stacked top/bottom); ``C-Space -``/``=`` pass "v"/"h"
+        from the keymap tuple's second element.
         """
         sid = self._active_workspace_sid
         if sid is None:
