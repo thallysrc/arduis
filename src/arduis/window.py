@@ -386,6 +386,38 @@ def _read_keys_section(path: str) -> dict:
     return out
 
 
+def _learned_ratio(
+    position: int, max_position: int, last_set: int, settled: bool
+) -> float | None:
+    """Ratio to learn from a ``Gtk.Paned`` position change, or ``None`` to ignore.
+
+    Guards ``_init_paned_position``'s drag-learning against transient/spurious
+    ``notify::position`` emissions (split-black-pane-hole). We only learn a user
+    drag; everything else must be rejected so a bad ratio never gets persisted to
+    ``layouts.json`` (which would produce a resize-RESISTANT black hole):
+
+    - ``max_position <= 1``  → the paned has no real allocation yet; the read is
+      meaningless. Ignore.
+    - ``not settled``        → we have not applied our own proportional position
+      yet; any position change is layout noise, not a user drag. Ignore.
+    - ``position == last_set``→ this is the echo of our own ``set_position``
+      (robust to GTK4 deferring ``notify::position`` to a later size-allocate,
+      which the old synchronous ``applying`` flag missed). Ignore.
+    - degenerate ratio (``<= 0.02`` or ``>= 0.98``) → a transient collapse to a
+      sliver, never a deliberate drag. Ignore so we never persist a ~0 ratio.
+    """
+    if max_position <= 1:
+        return None
+    if not settled:
+        return None
+    if position == last_set:
+        return None
+    ratio = position / max_position
+    if ratio <= 0.02 or ratio >= 0.98:
+        return None
+    return ratio
+
+
 class ArduisWindow(Adw.ApplicationWindow):
     """Sidebar + nested-GtkPaned canvas: N worktree terminals, decoupled view."""
 
@@ -5202,36 +5234,68 @@ class ArduisWindow(Adw.ApplicationWindow):
         (~6px) and never corrected — collapsing the whole subtree to a left sliver.
 
         Instead we drive the position off ``max-position``, which reflects the REAL
-        usable extent and re-notifies as the parent distributes space (it settles
-        correctly even for nested paneds, verified headlessly). We re-apply the
-        stored ratio on every ``max-position`` change (never one-shot), and learn a
-        new ratio from any ``position`` change the USER makes (a drag) so manual
-        sizing is preserved. ``_ratio_applying`` guards against our own
-        ``set_position`` looping back through ``notify::position``.
+        usable extent and re-notifies as the parent distributes space. We re-apply
+        the stored ratio on every ``max-position`` change (never one-shot), and
+        learn a new ratio from any ``position`` change the USER makes (a drag) so
+        manual sizing is preserved.
+
+        The reactive ``notify::max-position`` path alone is NOT enough
+        (split-black-pane-hole): creating a split rebuilds the ENTIRE nested Paned
+        tree, and during that fresh multi-pass allocation GTK4 coalesces
+        max-position notifications — intermittently a paned settles at its real
+        extent WITHOUT a final re-notify, so ``_apply`` never runs on a usable
+        allocation and the paned keeps a degenerate position (one child ≈0 extent →
+        a black hole). We therefore ALSO drive ``_apply`` from a tick callback that
+        re-runs every frame until the paned has a real allocation, then removes
+        itself — guaranteeing the first proportional split regardless of
+        notification coalescing. Learning is guarded by ``_learned_ratio`` so a
+        transient/echoed/degenerate position can never poison the persisted ratio.
         """
         ratio = [node.ratio if node is not None else 0.5]  # start from the persisted fraction
-        applying = [False]         # True while WE set the position (ignore the echo)
+        last_set = [-1]     # last position WE applied — used for echo detection
+        settled = [False]   # True once we've applied on a REAL (max-position>1) allocation
 
-        def _apply(*_args) -> None:
+        def _apply(*_args) -> bool:
             maxp = paned.get_property("max-position")
             if maxp <= 1:
-                return  # allocation not known yet — wait for the next notify
-            applying[0] = True
-            paned.set_position(int(maxp * ratio[0]))
-            applying[0] = False
+                return False  # allocation not known yet — wait for the next notify/frame
+            pos = int(maxp * ratio[0])
+            last_set[0] = pos
+            paned.set_position(pos)
+            settled[0] = True
+            return True
 
         def _learn(*_args) -> None:
-            # A position change we did NOT cause is a user drag — remember its ratio.
-            if applying[0]:
+            # A position change we did NOT cause is a user drag — remember its ratio,
+            # but only if it survives every spurious-emission guard.
+            learned = _learned_ratio(
+                paned.get_position(),
+                paned.get_property("max-position"),
+                last_set[0],
+                settled[0],
+            )
+            if learned is None:
                 return
-            maxp = paned.get_property("max-position")
-            if maxp > 1:
-                ratio[0] = paned.get_position() / maxp
-                if node is not None:
-                    node.ratio = ratio[0]  # persist the learned ratio into the tree
+            ratio[0] = learned
+            if node is not None:
+                node.ratio = learned  # persist the learned ratio into the tree
 
         paned.connect("notify::max-position", _apply)
         paned.connect("notify::position", _learn)
+
+        # Guaranteed final application (split-black-pane-hole): keep re-applying on
+        # each frame until the paned reaches a real settled allocation, then
+        # self-disconnect. A safety budget caps the ticking so a paned that never
+        # gets a usable allocation (hidden/collapsed) cannot tick forever.
+        frames_left = [600]  # ~10s at 60fps — generous; the split settles far sooner
+
+        def _tick(_widget, _clock) -> bool:
+            frames_left[0] -= 1
+            if _apply() or frames_left[0] <= 0:
+                return GLib.SOURCE_REMOVE
+            return GLib.SOURCE_CONTINUE
+
+        paned.add_tick_callback(_tick)
 
     # --- helpers: session lookup + user messaging ---------------------------
 
