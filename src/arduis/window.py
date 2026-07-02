@@ -521,6 +521,18 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._css_provider: Gtk.CssProvider | None = None
         self._display = Gdk.Display.get_default()
 
+        # App-bundled symbolic icons (the split-pane glyphs Adwaita lacks) live in
+        # data/icons/hicolor/symbolic/actions. Installed builds get them via the
+        # hicolor theme in XDG_DATA_DIRS automatically; for a dev run (run.sh) add
+        # the repo's data/icons to the theme search path so they resolve too.
+        if self._display is not None:
+            _repo_icons = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                "data", "icons",
+            )
+            if os.path.isdir(_repo_icons):
+                Gtk.IconTheme.get_for_display(self._display).add_search_path(_repo_icons)
+
         # libadwaita dark base (A3): force dark so Adw widgets render correctly
         # under all 4 dark palettes. Set once here (main.py does not force it).
         Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.FORCE_DARK)
@@ -1657,27 +1669,31 @@ class ArduisWindow(Adw.ApplicationWindow):
         header.append(spacer)
 
         # Two split buttons so BOTH orientations are reachable from the UI
-        # (the C-Space -/= chords already do both). ⊟ = stacked top/bottom ("v"),
-        # ◫ = side-by-side columns ("h").
-        split_v_btn = Gtk.Button(label="⊟")
+        # (the C-Space -/= chords already do both). Adwaita has no split glyph, so
+        # these use app-bundled symbolics that literally draw the result: two rows
+        # stacked = top/bottom ("v"); two columns = side-by-side ("h").
+        split_v_btn = Gtk.Button(icon_name="arduis-split-v-symbolic")
         split_v_btn.set_tooltip_text("Dividir em cima/embaixo")
         split_v_btn.add_css_class("flat")
         split_v_btn.connect("clicked", self._make_split_pane_cb(sid, "v"))
         header.append(split_v_btn)
 
-        split_h_btn = Gtk.Button(label="◫")
+        split_h_btn = Gtk.Button(icon_name="arduis-split-h-symbolic")
         split_h_btn.set_tooltip_text("Dividir lado a lado")
         split_h_btn.add_css_class("flat")
         split_h_btn.connect("clicked", self._make_split_pane_cb(sid, "h"))
         header.append(split_h_btn)
 
-        zoom_btn = Gtk.Button(label="⊞")
-        zoom_btn.set_tooltip_text("Zoom")
+        # Expand/focus: the pane grows to fill the whole canvas. Uses the system
+        # Adwaita symbolic (diagonal arrows to the corners) — the freedesktop
+        # standard for "fullscreen", no extra icon dependency (CLAUDE.md: system libs).
+        zoom_btn = Gtk.Button(icon_name="view-fullscreen-symbolic")
+        zoom_btn.set_tooltip_text("Expandir painel")
         zoom_btn.add_css_class("flat")
         zoom_btn.connect("clicked", self._make_zoom_pane_cb(sid))
         header.append(zoom_btn)
 
-        close_btn = Gtk.Button(label="✕")
+        close_btn = Gtk.Button(icon_name="window-close-symbolic")
         close_btn.set_tooltip_text("Fechar painel")
         close_btn.add_css_class("flat")
         close_btn.connect("clicked", self._make_close_pane_cb(sid))
@@ -1724,7 +1740,7 @@ class ArduisWindow(Adw.ApplicationWindow):
 
     def _make_zoom_pane_cb(self, sid: str):
         def _zoom(_btn) -> None:
-            # ⊞ and C-Space z share _zoom_pane — one place for the toggle logic.
+            # Expand button and C-Space z share _zoom_pane — one place for the toggle logic.
             self._zoom_pane(sid)
         return _zoom
 
@@ -2728,7 +2744,7 @@ class ArduisWindow(Adw.ApplicationWindow):
     def _zoom_pane(self, sid: str) -> None:
         """Toggle zoom on terminal ``sid`` in the active workspace (UI-01).
 
-        Shared by the ⊞ pane-header button and the ``C-Space z`` action so the toggle
+        Shared by the expand pane-header button and the ``C-Space z`` action so the toggle
         logic lives in ONE place. Zooms ``sid`` if nothing is zoomed, else unzooms.
         """
         model = self._active_layout()
@@ -2987,9 +3003,9 @@ class ArduisWindow(Adw.ApplicationWindow):
             label.set_ellipsize(Pango.EllipsizeMode.END)
             outer.append(label)
 
-            # Inline ✕ (parallel-code style) → the SAME remove flow as the
+            # Inline close (parallel-code style) → the SAME remove flow as the
             # context menu (teardown + confirm live in _remove_project).
-            close = Gtk.Button(label="✕")
+            close = Gtk.Button(icon_name="window-close-symbolic")
             close.add_css_class("flat")
             close.add_css_class("arduis-row-close")
             close.set_tooltip_text("Remover projeto")
@@ -4005,7 +4021,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         spawn into the project root, untracked.
 
         ``orientation`` ("h"/"v") threads through to ``LayoutModel.split`` (UI-01):
-        the ⊟ button passes "v" (stacked top/bottom); ``C-Space -``/``=`` pass "v"/"h"
+        the top/bottom split button passes "v" (stacked); ``C-Space -``/``=`` pass "v"/"h"
         from the keymap tuple's second element.
         """
         sid = self._active_workspace_sid
@@ -4981,11 +4997,11 @@ class ArduisWindow(Adw.ApplicationWindow):
             paned.set_shrink_end_child(True)
             paned.set_start_child(self._build_widget(node.start))
             paned.set_end_child(self._build_widget(node.end))
-            self._init_paned_position(paned)
+            self._init_paned_position(paned, node)
             return paned
         return Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
 
-    def _init_paned_position(self, paned: Gtk.Paned) -> None:
+    def _init_paned_position(self, paned: Gtk.Paned, node=None) -> None:
         """Keep a Gtk.Paned split proportional (50/50 default), drag-preserving.
 
         The one-shot ``map`` + ``get_width()`` approach (commit b487dfe) was wrong
@@ -5001,7 +5017,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         sizing is preserved. ``_ratio_applying`` guards against our own
         ``set_position`` looping back through ``notify::position``.
         """
-        ratio = [0.5]              # current split fraction (default centered)
+        ratio = [node.ratio if node is not None else 0.5]  # start from the persisted fraction
         applying = [False]         # True while WE set the position (ignore the echo)
 
         def _apply(*_args) -> None:
@@ -5019,6 +5035,8 @@ class ArduisWindow(Adw.ApplicationWindow):
             maxp = paned.get_property("max-position")
             if maxp > 1:
                 ratio[0] = paned.get_position() / maxp
+                if node is not None:
+                    node.ratio = ratio[0]  # persist the learned ratio into the tree
 
         paned.connect("notify::max-position", _apply)
         paned.connect("notify::position", _learn)
