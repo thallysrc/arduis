@@ -1,6 +1,6 @@
 """Tests for the pure per-repo worktree-add resolution (D-13 / OQ2 / criterion 5).
 
-``task_layout.resolve_repo_add`` is the GTK-free decision Plan 02's window.py
+``workspace_layout.resolve_repo_add`` is the GTK-free decision Plan 02's window.py
 chain calls once per member repo, after running the porcelain pre-check + local
 branch list async. It returns:
   ("new", argv)      — branch absent → create a new branch off base
@@ -18,7 +18,7 @@ import subprocess
 
 import pytest
 
-from arduis.task_layout import resolve_repo_add
+from arduis.workspace_layout import resolve_repo_add
 
 
 def test_resolve_new():
@@ -26,12 +26,12 @@ def test_resolve_new():
     kind, argv = resolve_repo_add(
         "/r/backend", "feat", existing_branches=["master"],
         parsed_worktrees=[{"path": "/r/backend", "branch": "master"}],
-        base="master", worktree_dir="/r-tasks/feat/backend",
+        base="master", worktree_dir="/r-workspaces/feat/backend",
     )
     assert kind == "new"
     assert argv == [
         "git", "-C", "/r/backend", "worktree", "add", "-b", "feat",
-        "/r-tasks/feat/backend", "master",
+        "/r-workspaces/feat/backend", "master",
     ]
     assert "--force" not in argv  # D-13 / T-03.2-03
 
@@ -41,11 +41,11 @@ def test_resolve_existing_reusable():
     kind, argv = resolve_repo_add(
         "/r/backend", "feat", existing_branches=["master", "feat"],
         parsed_worktrees=[{"path": "/r/backend", "branch": "master"}],
-        base="master", worktree_dir="/r-tasks/feat/backend",
+        base="master", worktree_dir="/r-workspaces/feat/backend",
     )
     assert kind == "existing"
     assert argv == [
-        "git", "-C", "/r/backend", "worktree", "add", "/r-tasks/feat/backend", "feat",
+        "git", "-C", "/r/backend", "worktree", "add", "/r-workspaces/feat/backend", "feat",
     ]
     assert "--force" not in argv  # D-13 / T-03.2-03
 
@@ -58,7 +58,7 @@ def test_resolve_abort_on_ref_namespace_prefix_conflict_new_under_existing():
     kind, reason = resolve_repo_add(
         "/r/backend", "feat/MLK-1200-teste", existing_branches=["master", "feat"],
         parsed_worktrees=[{"path": "/r/backend", "branch": "master"}],
-        base="master", worktree_dir="/r-tasks/feat-MLK-1200-teste/backend",
+        base="master", worktree_dir="/r-workspaces/feat-MLK-1200-teste/backend",
     )
     assert kind == "abort"
     assert "feat" in reason
@@ -75,7 +75,7 @@ def test_resolve_abort_on_ref_namespace_prefix_conflict_existing_under_new():
     kind, reason = resolve_repo_add(
         "/r/backend", "feat", existing_branches=["master", "feat/pao"],
         parsed_worktrees=[{"path": "/r/backend", "branch": "master"}],
-        base="master", worktree_dir="/r-tasks/feat/backend",
+        base="master", worktree_dir="/r-workspaces/feat/backend",
     )
     assert kind == "abort"
     assert "feat/pao" in reason
@@ -89,7 +89,7 @@ def test_resolve_no_false_namespace_conflict_on_shared_prefix_string():
     kind, argv = resolve_repo_add(
         "/r/backend", "feature", existing_branches=["master", "feat"],
         parsed_worktrees=[{"path": "/r/backend", "branch": "master"}],
-        base="master", worktree_dir="/r-tasks/feature/backend",
+        base="master", worktree_dir="/r-workspaces/feature/backend",
     )
     assert kind == "new"
     assert "--force" not in argv
@@ -101,7 +101,7 @@ def test_resolve_slash_branch_still_works_without_conflict():
     kind, argv = resolve_repo_add(
         "/r/backend", "feat/MLK-1234-tarefa", existing_branches=["master"],
         parsed_worktrees=[{"path": "/r/backend", "branch": "master"}],
-        base="master", worktree_dir="/r-tasks/feat-MLK-1234-tarefa/backend",
+        base="master", worktree_dir="/r-workspaces/feat-MLK-1234-tarefa/backend",
     )
     assert kind == "new"
     assert argv[:6] == ["git", "-C", "/r/backend", "worktree", "add", "-b"]
@@ -117,7 +117,7 @@ def test_resolve_abort_when_checked_out_elsewhere():
             {"path": "/r/backend", "branch": "master"},
             {"path": "/r/backend-feat", "branch": "feat"},
         ],
-        base="master", worktree_dir="/r-tasks/feat/backend",
+        base="master", worktree_dir="/r-workspaces/feat/backend",
     )
     assert kind == "abort"
     assert "/r/backend-feat" in reason  # reason mentions the conflicting path
@@ -132,7 +132,7 @@ def test_per_repo_independence_best_effort():
     kind_a, argv_a = resolve_repo_add(
         "/r/backend", "feat", existing_branches=["master"],
         parsed_worktrees=[{"path": "/r/backend", "branch": "master"}],
-        base="master", worktree_dir="/r-tasks/feat/backend",
+        base="master", worktree_dir="/r-workspaces/feat/backend",
     )
     kind_b, _b = resolve_repo_add(
         "/r/frontend", "feat", existing_branches=["master", "feat"],
@@ -140,7 +140,7 @@ def test_per_repo_independence_best_effort():
             {"path": "/r/frontend", "branch": "master"},
             {"path": "/r/frontend-feat", "branch": "feat"},
         ],
-        base="master", worktree_dir="/r-tasks/feat/frontend",
+        base="master", worktree_dir="/r-workspaces/feat/frontend",
     )
     assert kind_a == "new"
     assert kind_b == "abort"
@@ -153,7 +153,7 @@ def test_degenerate_single_repo_same_path():
     kind, argv = resolve_repo_add(
         "/solo", "feat", existing_branches=["master"],
         parsed_worktrees=[{"path": "/solo", "branch": "master"}],
-        base="master", worktree_dir="/solo-tasks/feat/solo",
+        base="master", worktree_dir="/solo-workspaces/feat/solo",
     )
     assert kind == "new"
     assert argv[:6] == ["git", "-C", "/solo", "worktree", "add", "-b"]
@@ -166,7 +166,7 @@ def test_no_force_across_all_branches():
         kind, argv = resolve_repo_add(
             "/r", "feat", existing_branches=existing,
             parsed_worktrees=[{"path": "/r", "branch": "master"}],
-            base="master", worktree_dir="/r-tasks/feat/r",
+            base="master", worktree_dir="/r-workspaces/feat/r",
         )
         assert kind in ("new", "existing")
         assert "--force" not in argv

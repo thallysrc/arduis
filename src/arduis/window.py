@@ -95,11 +95,11 @@ from arduis.session import (  # noqa: E402
 )
 from arduis import agentconfig, appconfig, keyconfig, repoconfig, trust  # noqa: E402
 from arduis.themes import THEMES, Theme, get_theme  # noqa: E402
-from arduis.task_layout import (  # noqa: E402
+from arduis.workspace_layout import (  # noqa: E402
     repo_worktree_dir,
     resolve_repo_add,
     symlink_plan,
-    task_dir_for,
+    workspace_dir_for,
 )
 from arduis.worktree import (  # noqa: E402
     argv_default_branch_local,

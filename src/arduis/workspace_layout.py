@@ -1,20 +1,20 @@
-"""GTK-free task-folder layout builders (D-08/D-09). Imports NO gi.
+"""GTK-free workspace-folder layout builders (D-08/D-09). Imports NO gi.
 
-A *task* is one branch name across N member repos. Its worktrees live grouped
+A *workspace* is one branch name across N member repos. Its worktrees live grouped
 under a sibling folder ``<parent-of-root>/<root_base>-tasks/<sanitized-branch>/``
 (D-08), each member repo getting a subdir that KEEPS the repo's dir name so
 relative compose build-contexts/bind-mounts resolve verbatim. Non-repo top-level
 root entries (CLAUDE.md, docker-compose.yml, scripts, ...) are mirrored into the
-task folder as symlinks so the layout mirrors the root (D-09).
+workspace folder as symlinks so the layout mirrors the root (D-09).
 
 Threats (see 03.2 threat register):
-- T-03.2-01 (path traversal): the task-dir leaf is ``sanitize_branch_for_dir(branch)``
-  (reused tested T-02-02 guard); ``task_dir_for`` derives the dir from
+- T-03.2-01 (path traversal): the workspace-dir leaf is ``sanitize_branch_for_dir(branch)``
+  (reused tested T-02-02 guard); ``workspace_dir_for`` derives the dir from
   ``dirname(root)``, never from raw branch input.
 - T-03.2-02 (symlink escape, V12): ``symlink_plan`` only enumerates top-level
-  entries of ``root`` and positions them INSIDE ``task_dir``; it never resolves
+  entries of ``root`` and positions them INSIDE ``workspace_dir``; it never resolves
   user input into a symlink target. The caller materializes with a RELATIVE
-  target (``os.path.relpath``) so the task folder stays relocatable.
+  target (``os.path.relpath``) so the workspace folder stays relocatable.
 - T-03.2-03 (force clobber): ``resolve_repo_add`` returns argv LISTS with the
   branch a discrete element and NEVER emits ``--force`` (D-13).
 """
@@ -31,7 +31,7 @@ from arduis.worktree import (
 )
 
 
-def task_dir_for(root: str, branch: str) -> str:
+def workspace_dir_for(root: str, branch: str) -> str:
     """Grouped sibling: ``<parent-of-root>/<root_base>-tasks/<sanitized-branch>`` (D-08).
 
     The leaf is ``sanitize_branch_for_dir(branch)`` so a malicious branch
@@ -42,19 +42,19 @@ def task_dir_for(root: str, branch: str) -> str:
     return os.path.join(parent, f"{base}-tasks", sanitize_branch_for_dir(branch))
 
 
-def repo_worktree_dir(task_dir: str, repo_name: str) -> str:
-    """A chosen repo's worktree dir inside the task folder (D-08 — repo dir names kept)."""
-    return os.path.join(task_dir, repo_name)
+def repo_worktree_dir(workspace_dir: str, repo_name: str) -> str:
+    """A chosen repo's worktree dir inside the workspace folder (D-08 — repo dir names kept)."""
+    return os.path.join(workspace_dir, repo_name)
 
 
-def symlink_plan(root: str, task_dir: str, chosen_repos: set[str]) -> list[tuple[str, str]]:
-    """``(src_abs_in_root, dst_in_task_dir)`` for every top-level root entry EXCEPT
+def symlink_plan(root: str, workspace_dir: str, chosen_repos: set[str]) -> list[tuple[str, str]]:
+    """``(src_abs_in_root, dst_in_workspace_dir)`` for every top-level root entry EXCEPT
     the chosen repos (real worktrees, materialized separately — D-09) and the
     meta-repo ``.git`` (NOT mirrored — D-05).
 
     Pure: lists root entries, returns ``(src, dst)`` pairs. The caller does the
-    ``os.symlink(os.path.relpath(src, task_dir), dst)`` with a RELATIVE target so
-    the task folder stays relocatable (Pattern 3, A1) — keeping this function
+    ``os.symlink(os.path.relpath(src, workspace_dir), dst)`` with a RELATIVE target so
+    the workspace folder stays relocatable (Pattern 3, A1) — keeping this function
     I/O-free and testable.
     """
     plan: list[tuple[str, str]] = []
@@ -63,7 +63,7 @@ def symlink_plan(root: str, task_dir: str, chosen_repos: set[str]) -> list[tuple
             continue  # real worktree, materialized separately (D-09)
         if name == ".git":
             continue  # meta-repo .git is NOT mirrored (D-05)
-        plan.append((os.path.join(root, name), os.path.join(task_dir, name)))
+        plan.append((os.path.join(root, name), os.path.join(workspace_dir, name)))
     return plan
 
 
