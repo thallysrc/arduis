@@ -1657,11 +1657,20 @@ class ArduisWindow(Adw.ApplicationWindow):
         spacer.set_hexpand(True)
         header.append(spacer)
 
-        split_btn = Gtk.Button(label="⊟")
-        split_btn.set_tooltip_text("Dividir painel")
-        split_btn.add_css_class("flat")
-        split_btn.connect("clicked", self._make_split_pane_cb(sid))
-        header.append(split_btn)
+        # Two split buttons so BOTH orientations are reachable from the UI
+        # (the C-Space -/= chords already do both). ⊟ = stacked top/bottom ("v"),
+        # ◫ = side-by-side columns ("h").
+        split_v_btn = Gtk.Button(label="⊟")
+        split_v_btn.set_tooltip_text("Dividir em cima/embaixo")
+        split_v_btn.add_css_class("flat")
+        split_v_btn.connect("clicked", self._make_split_pane_cb(sid, "v"))
+        header.append(split_v_btn)
+
+        split_h_btn = Gtk.Button(label="◫")
+        split_h_btn.set_tooltip_text("Dividir lado a lado")
+        split_h_btn.add_css_class("flat")
+        split_h_btn.connect("clicked", self._make_split_pane_cb(sid, "h"))
+        header.append(split_h_btn)
 
         zoom_btn = Gtk.Button(label="⊞")
         zoom_btn.set_tooltip_text("Zoom")
@@ -1701,16 +1710,17 @@ class ArduisWindow(Adw.ApplicationWindow):
             self._refresh_focus_ring(sid)
         return _on_enter
 
-    def _make_split_pane_cb(self, sid: str):
+    def _make_split_pane_cb(self, sid: str, orientation: str = "v"):
         def _split(_btn) -> None:
-            # ⊟ splits the active workspace, stacking a new agent terminal BELOW
-            # this one (orientation "v", top/bottom) — consistent with the default
-            # agent-over-shell pair. ``sid`` here is a TERMINAL id in the active tree.
+            # Split the active workspace, adding a new agent terminal beside this
+            # one. ``orientation`` "v" stacks top/bottom (consistent with the default
+            # agent-over-shell pair), "h" places side-by-side columns. ``sid`` here
+            # is a TERMINAL id in the active tree.
             model = self._active_layout()
             if model is None:
                 return
             model.focused_id = sid
-            self._split_active_pane(sid, "v")
+            self._split_active_pane(sid, orientation)
         return _split
 
     def _make_zoom_pane_cb(self, sid: str):
