@@ -14,6 +14,34 @@ libadwaita + VTE-3.91). It uses the distro's VTE — **never** a bundled or `pip
 one — and ships as **native packages only** in v1: a `.deb` for Ubuntu and an AUR
 `PKGBUILD` for Arch. There is **no Flatpak and no Snap** in v1 (Flatpak is deferred to v2).
 
+## Agente de voz (opcional)
+
+Botão de microfone no header (ou `C-Space v`): fale um prompt em inglês, fique em
+silêncio ~1,5s e o arduis transcreve localmente (whisper.cpp), **cria um pane novo no
+workspace ativo e roda `claude '<prompt>'` direto** (handsfree). Cada prompt falado fica
+num histórico persistente (popover ao lado do mic) com replay de um clique.
+
+Requisitos (a feature degrada com um toast se faltarem):
+
+- GStreamer plugins-good (captura de microfone) — `gstreamer1.0-plugins-good` (Ubuntu) /
+  `gst-plugins-good` (Arch)
+- `whisper-cli` + um modelo ggml — Arch: `pacman -S whisper.cpp`; Ubuntu: compile o
+  [whisper.cpp](https://github.com/ggml-org/whisper.cpp). Modelo:
+  `curl -Lo ~/.local/share/arduis/models/ggml-base.en.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin`
+
+Configuração (`~/.config/arduis/arduis.toml`, tudo opcional):
+
+```toml
+[voice]
+command = "whisper-cli"                                   # binário (pode embutir flags)
+model = "~/.local/share/arduis/models/ggml-base.en.bin"
+language = "en"
+silence_ms = 1500            # silêncio que encerra a fala
+silence_threshold_db = -40.0 # limiar RMS de "falando"
+max_seconds = 60             # teto de gravação
+history_max = 200            # tamanho do histórico
+```
+
 ## Packaging / Install
 
 Both packages are thin wrappers over a single [meson](https://mesonbuild.com) build

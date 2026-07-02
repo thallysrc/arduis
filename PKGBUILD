@@ -23,6 +23,8 @@ arch=('any')
 url="https://github.com/thallysrc/arduis"
 license=('MIT')
 depends=('python-gobject' 'gtk4' 'libadwaita' 'vte4' 'python')
+optdepends=('gst-plugins-good: captura de microfone para o agente de voz'
+            'whisper.cpp: transcrição local (whisper-cli) do agente de voz')
 makedepends=('meson')
 # Local source tarball (D-06: "builds locally"). Until a published GitHub
 # release tarball exists (publish deferred to v1.1, RESEARCH Open Q1), produce
