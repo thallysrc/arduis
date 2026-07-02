@@ -69,6 +69,12 @@ def test_default_keymap_alias():
         assert key in KEYMAP
 
 
+def test_dispatch_voice():
+    # Voice agent: C-Space v toggles listening.
+    assert dispatch("v") == ("voice", None)
+    assert KEYMAP["v"] == ("voice", None)
+
+
 def test_dispatch_unknown():
     # Closed action set: a genuinely-unmapped key dispatches to None.
     # (Was 'z' in Phase 3; 'z' is now zoom — the planned Phase-3->5 change.)

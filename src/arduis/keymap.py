@@ -29,6 +29,7 @@ KEYMAP: dict[str, tuple] = {
     "=": ("split", "h"),         # Phase 5 (UI-01) — horizontal split
     "z": ("zoom", None),         # Phase 5 (UI-01) — zoom/unzoom the focused pane
     "a": ("refeed", None),       # Phase 5 (AGENT-01) — re-feed the agent command
+    "v": ("voice", None),        # Voice agent — toggle mic listening
 }
 # Named default for keyconfig.resolve_keymap (UI-01); the same object as KEYMAP.
 DEFAULT_KEYMAP = KEYMAP

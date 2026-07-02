@@ -25,6 +25,7 @@ _ACTIONS: dict[str, tuple] = {
     "split_h": ("split", "h"),
     "zoom": ("zoom", None),
     "refeed_agent": ("refeed", None),
+    "voice_toggle": ("voice", None),
 }
 
 

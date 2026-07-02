@@ -96,6 +96,7 @@ from arduis.session import (  # noqa: E402
 )
 from arduis import agentconfig, appconfig, keyconfig, repoconfig, trust  # noqa: E402
 from arduis import voice, voice_store, voiceconfig  # noqa: E402  (voice agent)
+from arduis.voice_controller import VoiceController  # noqa: E402  (Gst is lazy inside)
 from arduis.themes import THEMES, Theme, get_theme  # noqa: E402
 from arduis.workspace_layout import (  # noqa: E402
     repo_worktree_dir,
@@ -350,6 +351,19 @@ dialog.alert dimming {{
 .arduis-footer-count {{
     color: {theme.dot_active};
     font-weight: 600;
+}}
+/* Voice agent: pulsing mic while recording, steady accent while transcribing. */
+.voice-recording {{
+    color: {theme.dot_waiting};
+    animation: arduis-voice-pulse 1.2s ease-in-out infinite;
+}}
+@keyframes arduis-voice-pulse {{
+    0%   {{ opacity: 1.0; }}
+    50%  {{ opacity: 0.35; }}
+    100% {{ opacity: 1.0; }}
+}}
+.voice-transcribing {{
+    color: {theme.accent};
 }}
 """
 
@@ -654,9 +668,16 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         self._voice_btn = Gtk.ToggleButton()
         self._voice_btn.set_icon_name("audio-input-microphone-symbolic")
-        self._voice_btn.set_tooltip_text("Gravar prompt por voz (em breve)")
-        self._voice_btn.set_sensitive(False)  # enabled when the capture controller lands
+        self._voice_btn.set_tooltip_text(
+            "Falar um prompt — roda num pane novo (C-Space v)"
+        )
+        # Programmatic set_active (state sync) must not re-trigger the toggle.
+        self._voice_btn_guard = False
+        self._voice_btn.connect("toggled", self._on_voice_btn_toggled)
         header.pack_end(self._voice_btn)
+        # Capture/transcription controller: created lazily on first use so Gst is
+        # only initialized when the mic is actually touched.
+        self._voice_controller: VoiceController | None = None
 
         # NOTE: the old "⌥ Layout" preset menu (grid 2×2 / columns) was a leftover
         # of the pre-pivot GLOBAL-layout model — it arranged worktrees-as-panes. Under
@@ -3053,6 +3074,8 @@ class ArduisWindow(Adw.ApplicationWindow):
                 self._zoom_pane(model.focused_id)
         elif kind == "refeed":
             self._refeed_focused_agent()
+        elif kind == "voice":
+            self._toggle_voice()
 
     def _zoom_pane(self, sid: str) -> None:
         """Toggle zoom on terminal ``sid`` in the active workspace (UI-01).
@@ -4425,6 +4448,45 @@ class ArduisWindow(Adw.ApplicationWindow):
             time.strftime("%Y-%m-%dT%H:%M:%S"),
             cap=self._voice_config.history_max,
         )
+
+    def _toggle_voice(self) -> None:
+        """Mic button / ``C-Space v``: start listening, or stop-and-transcribe.
+
+        Handsfree loop: recording ends on 1.5s of silence (or the manual toggle /
+        max cap), whisper transcribes, and the prompt runs straight into a new
+        agent pane via ``_run_voice_prompt``. Errors (Gst missing, whisper/model
+        missing, nothing recognized) surface as toasts and reset to idle.
+        """
+        if self._voice_controller is None:
+            self._voice_controller = VoiceController(
+                self._voice_config,
+                self._runner,
+                on_state=self._on_voice_state,
+                on_transcript=self._run_voice_prompt,
+                on_error=self._toast,
+            )
+        self._voice_controller.toggle()
+
+    def _on_voice_btn_toggled(self, _btn) -> None:
+        if self._voice_btn_guard:
+            return  # programmatic sync from _on_voice_state, not a user click
+        self._toggle_voice()
+
+    def _on_voice_state(self, state: str) -> None:
+        """Reflect the voice machine state on the mic button (active + CSS)."""
+        self._voice_btn_guard = True
+        try:
+            self._voice_btn.set_active(state == "recording")
+        finally:
+            self._voice_btn_guard = False
+        for css, on in (
+            ("voice-recording", state == "recording"),
+            ("voice-transcribing", state == "transcribing"),
+        ):
+            if on:
+                self._voice_btn.add_css_class(css)
+            else:
+                self._voice_btn.remove_css_class(css)
 
     def _refresh_voice_history(self) -> None:
         """Rebuild the history popover rows from ``voice_history.json`` (newest first)."""

@@ -84,6 +84,11 @@ def test_keymap_non_str_action_dropped():
     assert result["z"] == ("zoom", None)
 
 
+def test_keymap_voice_action():
+    # Voice agent: voice_toggle is rebindable through the closed set.
+    assert resolve_keymap({"m": "voice_toggle"})["m"] == ("voice", None)
+
+
 def test_keymap_refeed_split_zoom_actions():
     assert resolve_keymap({"a": "refeed_agent"})["a"] == ("refeed", None)
     assert resolve_keymap({"=": "split_h"})["="] == ("split", "h")
