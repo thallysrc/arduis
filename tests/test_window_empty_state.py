@@ -59,7 +59,7 @@ def _bare_window(monkeypatch, model, workspace):
     spawn_calls = []
     monkeypatch.setattr(
         win, "_spawn_into",
-        lambda terminal, cwd, ws, tid, kind="agent", resume=False:
+        lambda terminal, cwd, ws, tid, kind="agent", resume=False, feed_override=None:
             spawn_calls.append({"tid": tid, "kind": kind, "cwd": cwd}),
     )
     return win, calls, spawn_calls

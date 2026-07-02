@@ -99,6 +99,18 @@ def test_write_preserves_other_sections(tmp_path):
     assert data["theme"]["name"] == "nord"
 
 
+def test_write_preserves_voice_section(tmp_path):
+    seed = "[voice]\nsilence_ms = 900\n" 'command = "whisper-cli -t 8"\n'
+    p = _write(tmp_path, seed)
+    write_theme(p, "nord")
+
+    with open(p, "rb") as fh:
+        data = tomllib.load(fh)
+    assert data["voice"]["silence_ms"] == 900
+    assert data["voice"]["command"] == "whisper-cli -t 8"
+    assert data["theme"]["name"] == "nord"
+
+
 def test_rewritten_file_readable_by_attention_loader(tmp_path):
     seed = "[attention]\nauto_suspend_minutes = 5\nidle_minutes = 7\n"
     p = _write(tmp_path, seed)

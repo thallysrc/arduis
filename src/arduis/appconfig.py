@@ -15,7 +15,7 @@ import tomllib
 
 _DEFAULT_THEME = "parallel-dark"
 # Deterministic top-level table order (others appended after, sorted, for stability).
-_SECTION_ORDER = ("attention", "agent", "keys", "theme")
+_SECTION_ORDER = ("attention", "agent", "keys", "theme", "voice")
 
 
 def load_theme_name(path: str) -> str:

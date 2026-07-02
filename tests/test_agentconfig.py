@@ -114,6 +114,31 @@ def test_resume_claude_absolute_path_appends_continue():
     assert shlex.split(feed) == ["/usr/bin/claude", "--continue"]
 
 
+# --- prompt_feed_bytes (voice agent) --------------------------------------------
+def test_prompt_feed_simple():
+    assert agentconfig.prompt_feed_bytes("claude", "fix the login bug") == (
+        b"claude 'fix the login bug'\n"
+    )
+
+
+def test_prompt_feed_shell_parses_same_argv():
+    prompt = "it's \"quoted\" and has $(date) `backticks` & ; | metachars"
+    feed = agentconfig.prompt_feed_bytes("claude --model opus", prompt)
+    line = feed.decode("utf-8")
+    assert line.endswith("\n") and line.count("\n") == 1
+    assert shlex.split(line) == ["claude", "--model", "opus", prompt]
+
+
+def test_prompt_feed_unicode():
+    feed = agentconfig.prompt_feed_bytes("claude", "corrigir acentuação çãé")
+    assert shlex.split(feed.decode("utf-8")) == ["claude", "corrigir acentuação çãé"]
+
+
+def test_prompt_feed_empty_command_degrades_to_claude():
+    feed = agentconfig.prompt_feed_bytes("", "hello")
+    assert shlex.split(feed.decode("utf-8")) == ["claude", "hello"]
+
+
 # --- GTK-free ------------------------------------------------------------------
 def test_agentconfig_is_gtk_free():
     with open(agentconfig.__file__, encoding="utf-8") as fh:

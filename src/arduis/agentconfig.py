@@ -58,6 +58,17 @@ def agent_feed_bytes(command: str) -> bytes:
     return (shlex.join(agent_argv(command)) + "\n").encode("utf-8")
 
 
+def prompt_feed_bytes(command: str, prompt: str) -> bytes:
+    """Feed ``<agent argv> '<prompt>'`` into the durable shell (voice agent).
+
+    The spoken prompt becomes ONE extra argv element; ``shlex.join`` keeps quotes,
+    ``$(...)`` and other metachars inert so the shell passes the prompt literally to
+    the agent (Pitfall 4). Ends in ``\\n`` — exactly one line is fed.
+    """
+    argv = agent_argv(command) + [prompt]
+    return (shlex.join(argv) + "\n").encode("utf-8")
+
+
 def resume_feed_bytes(command: str) -> bytes:
     """D-03: claude-family argv[0] -> append ``--continue``; else feed the bare command.
 

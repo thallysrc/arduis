@@ -95,6 +95,7 @@ from arduis.session import (  # noqa: E402
     hibernate_fields,
 )
 from arduis import agentconfig, appconfig, keyconfig, repoconfig, trust  # noqa: E402
+from arduis import voice, voice_store, voiceconfig  # noqa: E402  (voice agent)
 from arduis.themes import THEMES, Theme, get_theme  # noqa: E402
 from arduis.workspace_layout import (  # noqa: E402
     repo_worktree_dir,
@@ -450,6 +451,12 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._layouts_json = os.path.join(
             GLib.get_user_config_dir(), "arduis", "layouts.json"
         )
+        # Spoken-prompt history (voice agent): same app-state dir, same atomic-JSON
+        # discipline (voice_store mirrors projects_store; path resolved here so the
+        # store stays gi-free).
+        self._voice_history_path = os.path.join(
+            GLib.get_user_config_dir(), "arduis", "voice_history.json"
+        )
         # Debounced structural-change save source (crash-resilience); removed on close.
         self._layout_save_source = None
         # Docker-on-PATH is a MACHINE fact, not per-project — kept a plain field.
@@ -555,6 +562,9 @@ class ArduisWindow(Adw.ApplicationWindow):
         # AGENT-01 (D-01/D-03): the fed agent command (default "claude"); drives
         # create/split/resume/refeed feeds via agentconfig.*_feed_bytes.
         self._agent_config = agentconfig.load_agent_config(self._config_path)
+        # Voice agent: [voice] section (whisper command/model, silence tuning,
+        # history cap). Tolerant load — every key optional (voiceconfig defaults).
+        self._voice_config = voiceconfig.load_voice_config(self._config_path)
         # UI-01 (D-04/D-05): the configurable prefix tuple + the resolved keymap
         # merged over the defaults through a closed action set. Their USE is wired
         # in _on_key/_run_action (Workspace 2); loaded here so __init__ has one region.
@@ -616,6 +626,37 @@ class ArduisWindow(Adw.ApplicationWindow):
         menu_btn = Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu)
         menu_btn.set_tooltip_text("Menu")
         header.pack_end(menu_btn)
+
+        # Voice agent (headerbar pair): history popover + mic toggle. The mic is a
+        # placeholder until the capture controller lands (step 5) — insensitive so
+        # the affordance is visible but inert. The history popover is live already:
+        # any persisted spoken prompt can be re-run into a fresh agent pane.
+        self._voice_history_list = Gtk.ListBox()
+        self._voice_history_list.set_selection_mode(Gtk.SelectionMode.NONE)
+        self._voice_history_list.add_css_class("boxed-list")
+        _hist_scroll = Gtk.ScrolledWindow()
+        _hist_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        _hist_scroll.set_max_content_height(360)
+        _hist_scroll.set_propagate_natural_height(True)
+        _hist_scroll.set_propagate_natural_width(True)
+        _hist_scroll.set_child(self._voice_history_list)
+        self._voice_history_popover = Gtk.Popover()
+        self._voice_history_popover.set_child(_hist_scroll)
+        self._voice_history_popover.connect(
+            "show", lambda *_: self._refresh_voice_history()
+        )
+        self._voice_history_btn = Gtk.MenuButton(
+            icon_name="document-open-recent-symbolic",
+            popover=self._voice_history_popover,
+        )
+        self._voice_history_btn.set_tooltip_text("Prompts falados")
+        header.pack_end(self._voice_history_btn)
+
+        self._voice_btn = Gtk.ToggleButton()
+        self._voice_btn.set_icon_name("audio-input-microphone-symbolic")
+        self._voice_btn.set_tooltip_text("Gravar prompt por voz (em breve)")
+        self._voice_btn.set_sensitive(False)  # enabled when the capture controller lands
+        header.pack_end(self._voice_btn)
 
         # NOTE: the old "⌥ Layout" preset menu (grid 2×2 / columns) was a leftover
         # of the pre-pivot GLOBAL-layout model — it arranged worktrees-as-panes. Under
@@ -4288,7 +4329,12 @@ class ArduisWindow(Adw.ApplicationWindow):
         dialog.connect("response", _on_response)
         dialog.present(self)
 
-    def _split_active_pane(self, focused_tid: str | None, orientation: str = "h") -> None:
+    def _split_active_pane(
+        self,
+        focused_tid: str | None,
+        orientation: str = "h",
+        feed: bytes | None = None,
+    ) -> None:
         """Split the active workspace, spawning a new agent terminal beside ``focused_tid`` (D-05).
 
         Every split is an agent terminal by default (D-05) — Ctrl+C drops to the
@@ -4343,11 +4389,82 @@ class ArduisWindow(Adw.ApplicationWindow):
         if workspace is not None:
             # Track the split as a workspace-level terminal so RAM/teardown see it.
             workspace.terminals.append(TerminalRecord(new_tid, "agent"))
-            self._spawn_into(terminal, cwd, workspace, new_tid, kind="agent")
+            self._spawn_into(
+                terminal, cwd, workspace, new_tid, kind="agent", feed_override=feed
+            )
         else:
             # main workspace has no store workspace — spawn plain, no record to write.
-            self._spawn_into(terminal, cwd, None, new_tid, kind="agent")
+            self._spawn_into(
+                terminal, cwd, None, new_tid, kind="agent", feed_override=feed
+            )
         self._schedule_layout_save()
+
+    # --- voice agent: spoken prompt → new agent pane --------------------------
+
+    def _run_voice_prompt(self, prompt: str) -> None:
+        """Run a dictated ``prompt`` in a NEW agent pane of the active workspace.
+
+        Handsfree flow (voice design): normalize the transcript, build the feed
+        line ``<agent argv> '<prompt>'`` (shlex-quoted — quotes/metachars in the
+        prompt stay literal), split the focused pane exactly like ``+`` does, and
+        persist the prompt at the top of the history so it can be re-run later.
+        A blank transcript is a strict no-op (toast, no pane, no history entry).
+        """
+        normalized = voice.normalize_transcript(prompt)
+        if not normalized:
+            self._toast("Nada reconhecido — tente de novo")
+            return
+        feed = agentconfig.prompt_feed_bytes(self._agent_config.command, normalized)
+        model = self._active_layout()
+        self._split_active_pane(
+            model.focused_id if model is not None else None, "h", feed=feed
+        )
+        voice_store.append_entry(
+            self._voice_history_path,
+            normalized,
+            time.strftime("%Y-%m-%dT%H:%M:%S"),
+            cap=self._voice_config.history_max,
+        )
+
+    def _refresh_voice_history(self) -> None:
+        """Rebuild the history popover rows from ``voice_history.json`` (newest first)."""
+        listbox = self._voice_history_list
+        while (child := listbox.get_first_child()) is not None:
+            listbox.remove(child)
+        entries = voice_store.load_history(self._voice_history_path)
+        if not entries:
+            empty = Gtk.Label(label="Nenhum prompt falado ainda")
+            empty.add_css_class("dim-label")
+            empty.set_margin_top(12)
+            empty.set_margin_bottom(12)
+            empty.set_margin_start(12)
+            empty.set_margin_end(12)
+            listbox.append(empty)
+            return
+        for entry in entries:
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            row.set_margin_top(4)
+            row.set_margin_bottom(4)
+            row.set_margin_start(8)
+            row.set_margin_end(8)
+            label = Gtk.Label(label=entry["text"], xalign=0)
+            label.set_ellipsize(Pango.EllipsizeMode.END)
+            label.set_max_width_chars(48)
+            label.set_hexpand(True)
+            label.set_tooltip_text(entry["text"])
+            row.append(label)
+            run_btn = Gtk.Button(icon_name="media-playback-start-symbolic")
+            run_btn.add_css_class("flat")
+            run_btn.set_tooltip_text("Rodar de novo")
+            run_btn.connect(
+                "clicked",
+                (lambda text: lambda *_: (
+                    self._voice_history_popover.popdown(),
+                    self._run_voice_prompt(text),
+                ))(entry["text"]),
+            )
+            row.append(run_btn)
+            listbox.append(row)
 
     def _all_workspace_terminals(self, workspace: Workspace) -> list[TerminalRecord]:
         """Every TerminalRecord owned by ``workspace``: workspace-level pair + any per-repo splits.
@@ -4870,8 +4987,13 @@ class ArduisWindow(Adw.ApplicationWindow):
         term_id: str,
         kind: str = "agent",
         resume: bool = False,
+        feed_override: bytes | None = None,
     ) -> None:
         """Spawn zsh -l -i in ``cwd``; feed the configured agent only when ``kind == "agent"``.
+
+        ``feed_override`` (voice agent) replaces the default agent feed bytes with a
+        caller-built line (e.g. ``claude '<spoken prompt>'``); ``None`` keeps the
+        legacy behavior byte-identical.
 
         Writes the spawned ``pid``/``pgid`` onto the matching ``TerminalRecord``
         found across the workspace's terminals (workspace-level ``workspace.terminals`` first, then
@@ -4954,11 +5076,18 @@ class ArduisWindow(Adw.ApplicationWindow):
             None,                 # child_setup_data
             -1,                   # timeout (-1 = none)
             None,                 # cancellable
-            self._make_wt_spawn_cb(workspace, term_id, kind, resume),
+            self._make_wt_spawn_cb(workspace, term_id, kind, resume, feed_override),
         )
         terminal.grab_focus()
 
-    def _make_wt_spawn_cb(self, workspace: Workspace | None, term_id: str, kind: str, resume: bool = False):
+    def _make_wt_spawn_cb(
+        self,
+        workspace: Workspace | None,
+        term_id: str,
+        kind: str,
+        resume: bool = False,
+        feed_override: bytes | None = None,
+    ):
         # AGENT-01 (D-01/D-03): the fed agent is the CONFIGURED command (default
         # "claude"), built from agentconfig — not a hardcoded literal. An AUTO-
         # suspended workspace OR an explicit ``resume`` (layout restore) resumes with
@@ -4969,11 +5098,14 @@ class ArduisWindow(Adw.ApplicationWindow):
         # spawning without leaking the flag.
         cmd = self._agent_config.command
         use_resume = resume or (workspace is not None and workspace.auto_suspended)
-        agent_feed = (
-            agentconfig.resume_feed_bytes(cmd)
-            if use_resume
-            else agentconfig.agent_feed_bytes(cmd)
-        )
+        if feed_override is not None:
+            agent_feed = feed_override  # voice agent: pre-built `claude '<prompt>'` line
+        else:
+            agent_feed = (
+                agentconfig.resume_feed_bytes(cmd)
+                if use_resume
+                else agentconfig.agent_feed_bytes(cmd)
+            )
 
         def _on_wt_spawned(terminal, pid, error):
             if error is not None or pid == -1:
