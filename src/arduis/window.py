@@ -84,6 +84,7 @@ from arduis.project import (  # noqa: E402
     project_term_id,
 )
 from arduis import projects_store  # noqa: E402
+from arduis import layout_store  # noqa: E402
 from arduis.session import (  # noqa: E402
     RepoCheckout,
     SessionState,
@@ -410,6 +411,14 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._projects_json = os.path.join(
             GLib.get_user_config_dir(), "arduis", "projects.json"
         )
+        # The persisted pane-layouts app-state file (companion to projects.json):
+        # the split tree + per-pane kind/cwd + ratios per workspace, so the grid
+        # returns identical after a restart. Loaded once before _open_shell_leaf.
+        self._layouts_json = os.path.join(
+            GLib.get_user_config_dir(), "arduis", "layouts.json"
+        )
+        # Debounced structural-change save source (crash-resilience); removed on close.
+        self._layout_save_source = None
         # Docker-on-PATH is a MACHINE fact, not per-project — kept a plain field.
         self._docker_available = False
         # workspace_ids with an in-flight compose op (toggle disabled + spinner shown).
@@ -1807,6 +1816,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         # Empty workspace -> fall back to main so the canvas isn't blank.
         if not model.visible_ids():
             self._swap_workspace(_MAIN_SID)
+            self._schedule_layout_save()
             return
 
         self._reflect_layout()
@@ -1814,6 +1824,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         term = self._term_by_sid.get(model.focused_id)
         if term is not None:
             term.grab_focus()
+        self._schedule_layout_save()
         return
 
     # --- per-worktree layout lookup (D-04, rebuild-on-switch) ----------------
@@ -4055,6 +4066,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         else:
             # main workspace has no store workspace — spawn plain, no record to write.
             self._spawn_into(terminal, cwd, None, new_tid, kind="agent")
+        self._schedule_layout_save()
 
     def _all_workspace_terminals(self, workspace: Workspace) -> list[TerminalRecord]:
         """Every TerminalRecord owned by ``workspace``: workspace-level pair + any per-repo splits.
@@ -4933,6 +4945,77 @@ class ArduisWindow(Adw.ApplicationWindow):
             f" · {total_str} RAM"
         )
 
+    # --- layout persistence: snapshot -> layouts.json -----------------------
+
+    def _leaf_kind_cwd(self, proj, sid: str, tid: str):
+        """Return ``(kind, cwd)`` for one leaf, or None if it can't be resolved.
+
+        Real workspaces read kind from the TerminalRecord and cwd from
+        ``_workspace_root_cwd``. The main workspace derives kind (``main:t0`` is the
+        pinned shell, every other split is an agent per D-05) and roots at the
+        project root.
+        """
+        workspace = proj.store.get(sid)
+        if workspace is not None:
+            record = next(
+                (t for t in self._all_workspace_terminals(workspace) if t.term_id == tid),
+                None,
+            )
+            if record is None:
+                return None
+            return (record.kind, self._workspace_root_cwd(workspace))
+        if sid == _MAIN_SID:
+            cwd = proj.root or GLib.get_home_dir()
+            kind = "shell" if tid == f"{_MAIN_SID}:t0" else "agent"
+            return (kind, cwd)
+        return None
+
+    def _snapshot_layouts(self) -> dict:
+        """Build the serializable layouts snapshot across every open project.
+
+        A workspace is skipped if its tree is empty or any visible leaf can't be
+        resolved to a (kind, cwd) — never persist a half-known layout.
+        """
+        projects: dict = {}
+        for proj in self._registry.all():
+            bundle = self._bundle_for(proj)
+            workspaces: dict = {}
+            for sid, model in bundle["layouts"].items():
+                if model is None or model.root is None:
+                    continue
+                ids = model.visible_ids()
+                if not ids:
+                    continue
+                leaves: dict = {}
+                ok = True
+                for tid in ids:
+                    kc = self._leaf_kind_cwd(proj, sid, tid)
+                    if kc is None:
+                        ok = False
+                        break
+                    leaves[tid] = {"kind": kc[0], "cwd": kc[1]}
+                if not ok:
+                    continue
+                workspaces[sid] = {
+                    "focused_id": model.focused_id,
+                    "tree": layout_store.tree_to_dict(model.root),
+                    "leaves": leaves,
+                }
+            if workspaces:
+                projects[proj.root] = {"workspaces": workspaces}
+        return {"version": 1, "projects": projects}
+
+    def _schedule_layout_save(self) -> None:
+        """Debounce a layouts save ~500ms after a structural change (crash-safety)."""
+        if self._layout_save_source is not None:
+            GLib.source_remove(self._layout_save_source)
+        self._layout_save_source = GLib.timeout_add(500, self._do_layout_save)
+
+    def _do_layout_save(self) -> bool:
+        self._layout_save_source = None
+        layout_store.save_layouts(self._layouts_json, self._snapshot_layouts())
+        return GLib.SOURCE_REMOVE
+
     # --- canvas reflection: model tree -> Gtk.Paned widgets (D-01) ----------
 
     def _reflect_layout(self) -> None:
@@ -5537,6 +5620,15 @@ class ArduisWindow(Adw.ApplicationWindow):
         if self._ram_source is not None:
             GLib.source_remove(self._ram_source)
             self._ram_source = None
+        # Persist the live pane layouts BEFORE the no-orphans teardown (teardown only
+        # kills pids; the layout tree + records it snapshots are still intact here).
+        # getattr-guarded so a bare-__new__ test window (no __init__) skips it safely.
+        save_source = getattr(self, "_layout_save_source", None)
+        if save_source is not None:
+            GLib.source_remove(save_source)
+            self._layout_save_source = None
+        if getattr(self, "_layouts_json", None) is not None:
+            layout_store.save_layouts(self._layouts_json, self._snapshot_layouts())
         # Cancel the status-dir watcher so no inotify source outlives the window
         # (Phase 4 / D-05).
         if self._status_monitor is not None:
