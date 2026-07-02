@@ -38,6 +38,7 @@ class SplitNode:
     orientation: str
     start: "LeafNode | SplitNode"
     end: "LeafNode | SplitNode"
+    ratio: float = 0.5   # split fraction (start-child share); learned on drag, persisted
 
 
 Node = "LeafNode | SplitNode"

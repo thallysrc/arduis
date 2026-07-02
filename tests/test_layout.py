@@ -150,6 +150,25 @@ def test_close_last_leaf_clears_focus_and_mru():
     assert model.visible_ids() == []
 
 
+def test_splitnode_ratio_defaults_to_half():
+    node = SplitNode("h", LeafNode("a"), LeafNode("b"))
+    assert node.ratio == 0.5
+
+
+def test_splitnode_ratio_is_settable():
+    node = SplitNode("v", LeafNode("a"), LeafNode("b"), ratio=0.3)
+    assert node.ratio == 0.3
+
+
+def test_split_produces_default_ratio():
+    model = LayoutModel()
+    model.root = LeafNode("a")
+    model.focused_id = "a"
+    model.split("a", "b", "h")
+    assert isinstance(model.root, SplitNode)
+    assert model.root.ratio == 0.5
+
+
 def test_layout_is_gtk_free():
     # the domain module must not import gi (mirror test_session pattern).
     with open(layout.__file__, encoding="utf-8") as fh:
