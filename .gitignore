@@ -23,3 +23,7 @@ debian/arduis.substvars
 debian/debhelper-build-stamp
 debian/files
 obj-*-linux-gnu/
+
+# Stamps do hook de testes (Claude Code Stop hook)
+.claude/.pytest-green.stamp
+.claude/.pytest-red.stamp
