@@ -1882,6 +1882,13 @@ class ArduisWindow(Adw.ApplicationWindow):
             self._active_workspace_sid = _MAIN_SID
             self._reflect_layout()
 
+        # Boot does NOT go through _swap_workspace: both branches above set
+        # _active_workspace_sid via _reflect_layout, and the only _rebuild_sidebar
+        # so far ran (in _init_projects) while _active_workspace_sid was still None.
+        # Sync the highlight now so the pinned main row boots selected (else a stale
+        # row stays visually "active" — the sidebar-highlight-wrong-item bug).
+        self._sync_sidebar_selection()
+
         main_cwd = self._repo_root or GLib.get_home_dir()
         argv, envv = build_spawn_command(self._runner)
         terminal.spawn_async(
@@ -2109,10 +2116,7 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         # Rebuilding discards the old selection; restore it to the visible
         # workspace so C-Space n/p/number stay anchored to what's on screen.
-        if self._active_workspace_sid is not None:
-            row = self._row_by_sid.get(self._active_workspace_sid)
-            if row is not None:
-                self._listbox.select_row(row)
+        self._sync_sidebar_selection()
 
         # The dots were just recreated as plain active/hibernated — re-apply each
         # workspace's live aggregate status so dots survive a rebuild (D-06), and the
@@ -2120,6 +2124,27 @@ class ArduisWindow(Adw.ApplicationWindow):
         for workspace in self._store.all():
             self._refresh_status_ui(workspace)
         self._refresh_main_row_attention()
+
+    def _sync_sidebar_selection(self) -> None:
+        """Highlight the sidebar row for ``_active_workspace_sid`` (the highlight's
+        single source of truth).
+
+        The ListBox SINGLE-selection background (``.arduis-sidebar row:selected``)
+        IS the "active workspace" highlight. Any path that sets
+        ``_active_workspace_sid`` WITHOUT going through ``_swap_workspace`` — the
+        boot ``_open_shell_leaf`` and layout restore — must call this, or the
+        highlight drifts off the actually-active workspace (boot bug: the pinned
+        main row was set active via ``_reflect_layout`` while the only prior
+        ``_rebuild_sidebar`` ran with ``_active_workspace_sid`` still None, so the
+        row was never selected and a stale row stayed prominent).
+        """
+        sid = self._active_workspace_sid
+        row = self._row_by_sid.get(sid) if sid is not None else None
+        if row is not None:
+            if self._listbox.get_selected_row() is not row:
+                self._listbox.select_row(row)
+        else:
+            self._listbox.unselect_all()
 
     def _make_row(self, sid: str, branch: str, subline: str, active: bool) -> Gtk.ListBoxRow:
         """One sidebar row: dot (8px) + branch (13/600) + RAM sub-line (11/400)."""
