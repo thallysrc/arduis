@@ -14,8 +14,6 @@ import sys
 import time
 from pathlib import Path
 
-import pytest
-
 # Source of truth: the script lives in the app package (Plan 03 installs a copy at a
 # stable path; here we exercise the package copy directly).
 SCRIPT = Path(__file__).resolve().parents[1] / "src" / "arduis" / "hooks" / "arduis_hook.py"
@@ -25,11 +23,15 @@ def run_hook(
     payload: dict | bytes | None,
     state_file: str | None,
     tmp: Path,
+    directive: str | None = None,
 ) -> subprocess.CompletedProcess:
     """Run the hook as claude would: stdin JSON + a copied env.
 
     ``payload`` may be a dict (json-encoded), raw bytes (garbage stdin), or None
     (empty stdin). ``state_file`` None drops ARDUIS_STATE_FILE entirely (no-env case).
+    ``directive`` is the Notification argv word arduis registers per settings
+    matcher (attention.NOTIFICATION_MATCHERS) — the payload carries NO
+    notification-type field.
     """
     env = {
         "PATH": os.environ.get("PATH", ""),
@@ -45,8 +47,11 @@ def run_hook(
     else:
         stdin = json.dumps(payload).encode()
 
+    argv = [sys.executable, str(SCRIPT)]
+    if directive is not None:
+        argv.append(directive)
     return subprocess.run(
-        [sys.executable, str(SCRIPT)],
+        argv,
         input=stdin,
         env=env,
         capture_output=True,
@@ -88,36 +93,35 @@ def test_user_prompt_submit_maps_to_running(tmp_path):
     assert _read(sf)["state"] == "running"
 
 
-def test_notification_permission_prompt_maps_to_waiting(tmp_path):
+def test_notification_waiting_directive_maps_to_waiting(tmp_path):
+    """The permission_prompt/elicitation_dialog matchers register the 'waiting'
+    argv directive — that is what flips the orange dot."""
     sf = tmp_path / "x.json"
     cp = run_hook(
-        {"hook_event_name": "Notification", "notification_type": "permission_prompt"},
-        str(sf),
-        tmp_path,
+        {"hook_event_name": "Notification"}, str(sf), tmp_path, directive="waiting"
     )
     assert cp.returncode == 0
     assert _read(sf)["state"] == "waiting"
 
 
-def test_notification_elicitation_dialog_maps_to_waiting(tmp_path):
+def test_notification_without_directive_writes_nothing(tmp_path):
+    """A matcher-less Notification registration (the pre-matcher arduis shape, or
+    a foreign one) carries no directive → the hook must write NOTHING: the
+    payload has no notification-type field to decide from."""
     sf = tmp_path / "x.json"
-    cp = run_hook(
-        {"hook_event_name": "Notification", "notification_type": "elicitation_dialog"},
-        str(sf),
-        tmp_path,
-    )
+    cp = run_hook({"hook_event_name": "Notification"}, str(sf), tmp_path)
     assert cp.returncode == 0
-    assert _read(sf)["state"] == "waiting"
+    assert not sf.exists()
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_idle_prompt_upgrades_running_to_ready(tmp_path):
-    """Pitfall 7 self-heal: idle_prompt over an existing 'running' → 'ready'."""
+    """Pitfall 7 self-heal: the idle_prompt matcher ('ready' directive) over an
+    existing 'running' → 'ready'."""
     sf = tmp_path / "x.json"
     sf.write_text(json.dumps({"state": "running"}))
     cp = run_hook(
-        {"hook_event_name": "Notification", "notification_type": "idle_prompt"},
-        str(sf),
-        tmp_path,
+        {"hook_event_name": "Notification"}, str(sf), tmp_path, directive="ready"
     )
     assert cp.returncode == 0
     assert _read(sf)["state"] == "ready"
@@ -128,9 +132,7 @@ def test_idle_prompt_never_downgrades_waiting(tmp_path):
     sf = tmp_path / "x.json"
     sf.write_text(json.dumps({"state": "waiting", "message": "approve?"}))
     cp = run_hook(
-        {"hook_event_name": "Notification", "notification_type": "idle_prompt"},
-        str(sf),
-        tmp_path,
+        {"hook_event_name": "Notification"}, str(sf), tmp_path, directive="ready"
     )
     assert cp.returncode == 0
     # File UNCHANGED — still waiting.
@@ -141,13 +143,19 @@ def test_idle_prompt_with_no_existing_file_writes_nothing(tmp_path):
     """idle_prompt with NO prior file → exit 0, no file written (nothing to upgrade)."""
     sf = tmp_path / "x.json"
     cp = run_hook(
-        {"hook_event_name": "Notification", "notification_type": "idle_prompt"},
-        str(sf),
-        tmp_path,
+        {"hook_event_name": "Notification"}, str(sf), tmp_path, directive="ready"
     )
     assert cp.returncode == 0
     assert not sf.exists()
     assert list(tmp_path.iterdir()) == []
+
+
+def test_directive_does_not_leak_into_other_events(tmp_path):
+    """A stray directive on a non-Notification event must not change its state."""
+    sf = tmp_path / "x.json"
+    cp = run_hook({"hook_event_name": "Stop"}, str(sf), tmp_path, directive="waiting")
+    assert cp.returncode == 0
+    assert _read(sf)["state"] == "ready"
 
 
 def test_post_tool_use_maps_to_running(tmp_path):
@@ -228,11 +236,11 @@ def test_notification_message_lands_in_file(tmp_path):
     cp = run_hook(
         {
             "hook_event_name": "Notification",
-            "notification_type": "permission_prompt",
             "message": "Allow Bash to run?",
         },
         str(sf),
         tmp_path,
+        directive="waiting",
     )
     assert cp.returncode == 0
     assert _read(sf)["message"] == "Allow Bash to run?"

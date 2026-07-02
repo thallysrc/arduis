@@ -18,6 +18,7 @@ from arduis import attention
 from arduis.attention import (
     HOOK_EVENTS,
     MATCHER_EVENTS,
+    NOTIFICATION_MATCHERS,
     AgentStatus,
     AttentionConfig,
     StateDoc,
@@ -31,7 +32,9 @@ from arduis.attention import (
     is_installed,
     load_config,
     merged_settings,
+    preserve_scan_status,
     read_state,
+    references_script,
     sanitize_term_id,
     should_autosuspend,
     should_notify,
@@ -269,6 +272,130 @@ def test_aggregate_all_none_or_empty_is_none():
     assert aggregate_workspace([_shell("waiting")]) is None  # only shells -> no opinion
 
 
+# --- Scanner status vs state-file re-read (Pitfall 2 corollary) ----------------
+def test_preserve_scan_status_survives_stale_reread():
+    # scanner escalated at t=100; the poll re-reads the SAME doc (ts=90, says
+    # running) → the orange must survive.
+    assert preserve_scan_status("waiting", 100.0, 90.0, AgentStatus.RUNNING, True) is True
+
+
+def test_preserve_scan_status_protects_busy_running_too():
+    # busy-banner running set at t=100; the stale doc still says ready (Stop
+    # fired before the banner) → the green must survive.
+    assert preserve_scan_status("running", 100.0, 90.0, AgentStatus.READY, True) is True
+    assert preserve_scan_status("running", 100.0, 90.0, AgentStatus.IDLE, True) is True
+
+
+def test_preserve_scan_status_yields_to_newer_hook_event():
+    # a hook event NEWER than the escalation is authoritative.
+    assert preserve_scan_status("waiting", 100.0, 101.0, AgentStatus.RUNNING, True) is False
+    assert preserve_scan_status("running", 100.0, 101.0, AgentStatus.READY, True) is False
+
+
+def test_preserve_scan_status_yields_to_death():
+    # a dead pid retires even the cardinal orange.
+    assert preserve_scan_status("waiting", 100.0, 90.0, AgentStatus.ENDED, False) is False
+
+
+def test_preserve_scan_status_hook_written_status_still_degrades():
+    # a hook-written status has current_ts == doc_ts (STRICT < fails) so the
+    # time-based degradations (ready→idle, 2h phantom-running ceiling) apply.
+    assert preserve_scan_status("running", 100.0, 100.0, AgentStatus.READY, True) is False
+
+
+def test_preserve_scan_status_noop_for_calm_statuses():
+    assert preserve_scan_status("ready", 100.0, 90.0, AgentStatus.IDLE, True) is False
+    assert preserve_scan_status(None, 100.0, 90.0, AgentStatus.READY, True) is False
+
+
+def test_preserve_scan_status_noop_when_computed_matches():
+    # same opinion — applying refreshes ts, nothing to preserve.
+    assert preserve_scan_status("waiting", 100.0, 100.0, AgentStatus.WAITING, True) is False
+
+
+def test_preserve_scan_status_without_ts_applies_doc():
+    # a record with no status_ts has no escalation moment — the doc wins.
+    assert preserve_scan_status("waiting", None, 90.0, AgentStatus.RUNNING, True) is False
+
+
+# --- Background-busy banner (scanner secondary channel) ------------------------
+def test_busy_banner_detected_singular_and_plural():
+    assert attention.looks_like_background_busy(
+        "✻ Waiting for 1 background agent to finish\n"
+    ) is True
+    assert attention.looks_like_background_busy(
+        "✽ Waiting for 3 background agents to finish\n"
+    ) is True
+
+
+def test_busy_banner_ignores_lookalike_prose():
+    assert attention.looks_like_background_busy("") is False
+    assert attention.looks_like_background_busy(
+        "estou waiting for background agents por aqui\n"
+    ) is False  # no count — not the chrome row
+
+
+# Real tail captured from a user screenshot (2026-07-02): the banner FREEZES
+# into the transcript when the wait ends; the completion marker prints below
+# it, wrapped at the pane width.
+_STALE_BANNER_TAIL = """\
+✻ Waiting for 1 background agent to finish
+
+● Agent "Agente de teste que dorme 20s em
+background" finished · 42s
+
+● Confirmado: o sleep 20 terminou com
+  sucesso — "done sleeping".
+
+✻ Sautéed for 53s
+"""
+
+
+def test_busy_banner_frozen_above_finished_marker_is_not_live():
+    # banner ABOVE the "Agent … finished" line = history, not a wait — the dot
+    # must go blue after the agent completes (user report 2026-07-02).
+    assert attention.looks_like_background_busy(_STALE_BANNER_TAIL) is False
+
+
+def test_busy_banner_after_finished_marker_is_live():
+    # an EARLIER agent finished, then a NEW background wait started below it.
+    text = (
+        '● Agent "primeiro agente" finished · 10s\n'
+        "\n"
+        "✻ Waiting for 1 background agent to finish\n"
+    )
+    assert attention.looks_like_background_busy(text) is True
+
+
+def test_agent_working_marker():
+    assert attention.looks_like_agent_working(
+        "✻ Brewed for 23s (esc to interrupt)\n"
+    ) is True
+    assert attention.looks_like_agent_working("→ arduis (master) ✗\n") is False
+
+
+def test_busy_action_flips_calm_to_running():
+    assert attention.next_busy_action(False, True, False, "ready") == "busy"
+    assert attention.next_busy_action(False, True, False, "idle") == "busy"
+    assert attention.next_busy_action(False, True, False, None) == "busy"
+
+
+def test_busy_action_never_touches_waiting_or_running():
+    assert attention.next_busy_action(False, True, False, "waiting") is None
+    assert attention.next_busy_action(True, True, False, "running") is None
+
+
+def test_busy_action_unbusy_only_after_seen_and_not_working():
+    # banner gone, no spinner, still running -> the user interrupted (Esc fires
+    # no hook event) -> back to ready.
+    assert attention.next_busy_action(True, False, False, "running") == "unbusy"
+    # spinner visible -> claude RESUMED; hooks own it -> leave running.
+    assert attention.next_busy_action(True, False, True, "running") is None
+    # never saw the banner here -> a hook-set running is not the scanner's to clear.
+    assert attention.next_busy_action(False, False, False, "running") is None
+    assert attention.next_busy_action(True, False, False, "ready") is None
+
+
 # --- Hook install helpers + settings merge (Pattern 3, Pitfall 9, T-04-08) -----
 SCRIPT = "/home/u/.local/share/arduis/hooks/arduis_status_hook.py"
 
@@ -348,8 +475,9 @@ def test_merge_additive_preserves_everything():
     # the user's existing hook entries are preserved as the FIRST entry per event.
     assert out["hooks"]["Notification"][0] == RICH_SETTINGS["hooks"]["Notification"][0]
     assert out["hooks"]["PostToolUse"][0] == RICH_SETTINGS["hooks"]["PostToolUse"][0]
-    # arduis appended exactly one group per event.
-    assert len(out["hooks"]["Notification"]) == 2
+    # arduis appended one group per event — except Notification, which gets one
+    # group per NOTIFICATION_MATCHERS pair (the payload has no type field).
+    assert len(out["hooks"]["Notification"]) == 1 + len(NOTIFICATION_MATCHERS)
     assert len(out["hooks"]["PostToolUse"]) == 2
     assert all(event in out["hooks"] for event in HOOK_EVENTS)
 
@@ -368,9 +496,59 @@ def test_merge_matcher_placement():
         # the appended arduis group for a matcher event carries "matcher": "*".
         group = out["hooks"][event][-1]
         assert group.get("matcher") == "*"
-    for event in set(HOOK_EVENTS) - set(MATCHER_EVENTS):
+    for event in set(HOOK_EVENTS) - set(MATCHER_EVENTS) - {"Notification"}:
         group = out["hooks"][event][-1]
         assert "matcher" not in group
+
+
+def test_merge_notification_matcher_split():
+    """Notification → one group per matcher, state as an argv directive: the
+    payload has NO notification-type field (docs verified 2026-07-02), so the
+    matcher is the ONLY thing selecting waiting vs ready."""
+    out, _ = merged_settings({}, SCRIPT)
+    groups = out["hooks"]["Notification"]
+    assert [(g["matcher"], g["hooks"][0]["command"]) for g in groups] == [
+        (matcher, hook_command(SCRIPT, directive))
+        for matcher, directive in NOTIFICATION_MATCHERS
+    ]
+
+
+def test_merge_migrates_stale_arduis_notification_group():
+    """An OLD arduis install (single matcher-less Notification group) must be
+    replaced by the matcher-split groups — while a user's own group survives."""
+    old_shape = {
+        "hooks": {
+            "Notification": [
+                {"hooks": [{"type": "command", "command": "notify-send claude"}]},
+                {"hooks": [{"type": "command", "command": hook_command(SCRIPT), "timeout": 5}]},
+            ]
+        }
+    }
+    assert is_installed(old_shape, SCRIPT) is False
+    assert references_script(old_shape, SCRIPT) is True
+    out, changed = merged_settings(old_shape, SCRIPT)
+    assert changed is True
+    groups = out["hooks"]["Notification"]
+    # user group intact and FIRST; the stale arduis group is gone.
+    assert groups[0]["hooks"][0]["command"] == "notify-send claude"
+    assert not any(
+        g["hooks"][0]["command"] == hook_command(SCRIPT) for g in groups
+    )
+    assert {g.get("matcher") for g in groups[1:]} == {
+        matcher for matcher, _ in NOTIFICATION_MATCHERS
+    }
+    # and the migration is idempotent.
+    again, changed2 = merged_settings(out, SCRIPT)
+    assert changed2 is False and again == out
+
+
+def test_references_script_false_when_absent():
+    assert references_script({}, SCRIPT) is False
+    assert references_script(RICH_SETTINGS, SCRIPT) is False
+
+
+def test_hook_command_with_directive():
+    assert hook_command(SCRIPT, "waiting") == f"/usr/bin/env python3 {SCRIPT} waiting"
 
 
 def test_merge_entry_shape():

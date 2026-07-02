@@ -19,6 +19,17 @@ install_data(
   install_dir: datadir / 'icons' / 'hicolor' / 'scalable' / 'apps',
 )
 
+# App-bundled symbolic action icons (split-pane glyphs Adwaita lacks) → hicolor
+# scalable/actions (hicolor's index.theme lists scalable/actions but NOT
+# symbolic/actions; GTK still recolors them via the -symbolic name suffix).
+# XDG_DATA_DIRS puts them on the default icon search path for installed builds
+# (the dev run adds data/icons to the path from window.py instead).
+install_data(
+  'icons/hicolor/scalable/actions/arduis-split-h-symbolic.svg',
+  'icons/hicolor/scalable/actions/arduis-split-v-symbolic.svg',
+  install_dir: datadir / 'icons' / 'hicolor' / 'scalable' / 'actions',
+)
+
 # DEV CONVENIENCE ONLY: refresh the icon/desktop caches after a bare
 # `meson install` on a developer box. These scripts are SKIPPED when DESTDIR is
 # set (RESEARCH Pitfall 2), so the .deb (dh triggers) and the AUR PKGBUILD

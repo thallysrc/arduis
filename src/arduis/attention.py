@@ -260,26 +260,38 @@ def aggregate_workspace(records) -> AgentStatus | None:
 
 
 # --- Instant-waiting accelerator: terminal-text prompt detection ---------------
-# Claude Code fires the permission Notification only ~6s AFTER the prompt renders
-# (measured 2026-07-01; no bell, no config to shorten it). The visible terminal
-# text is the only instant signal. This is the sanctioned SECONDARY channel
-# (RESEARCH Pattern 5): escalate-only — hook events stay authoritative and
-# overwrite whatever this detects. A marker alone is not enough (claude may echo
-# the phrase in prose); the real dialog always renders a numbered option list.
-_PROMPT_MARKERS = (
+# Claude Code fires the Notification event only seconds AFTER a dialog renders
+# (~6s measured for permission prompts 2026-07-01; 3-4s observed for the option-
+# select dialog 2026-07-02; no bell, no config to shorten it). The visible
+# terminal text is the only instant signal. This is the sanctioned SECONDARY
+# channel (RESEARCH Pattern 5): escalate-only — hook events stay authoritative
+# and overwrite whatever this detects.
+#
+# Two dialog families are recognized:
+# - APPROVAL (permission/trust): the question phrase may be ECHOED by claude in
+#   prose, so it only counts together with the numbered "1. Yes" option row the
+#   real dialog always renders.
+# - OPTION-SELECT (AskUserQuestion / MCP elicitation): question and options are
+#   model-generated (nothing stable to match), but the footer key-hint row is
+#   Claude Code TUI chrome and is only on screen while the selector is live.
+_APPROVAL_MARKERS = (
     "Do you want to proceed?",
     "Do you trust the files in this folder?",
 )
-_PROMPT_OPTION_SIGNATURE = "1. Yes"
+_APPROVAL_OPTION_SIGNATURE = "1. Yes"
+_SELECT_DIALOG_FOOTER = "Enter to select · ↑/↓ to navigate · Esc to cancel"
 
 
-def looks_like_permission_prompt(text: str) -> bool:
-    """True iff ``text`` (a terminal tail snapshot) shows a live approval dialog."""
+def looks_like_pending_dialog(text: str) -> bool:
+    """True iff ``text`` (a terminal tail snapshot) shows a live dialog blocking
+    on the user — an approval prompt or an option-select dialog."""
     if not text:
         return False
-    if _PROMPT_OPTION_SIGNATURE not in text:
+    if _SELECT_DIALOG_FOOTER in text:
+        return True
+    if _APPROVAL_OPTION_SIGNATURE not in text:
         return False
-    return any(marker in text for marker in _PROMPT_MARKERS)
+    return any(marker in text for marker in _APPROVAL_MARKERS)
 
 
 def next_scan_action(
@@ -302,10 +314,115 @@ def next_scan_action(
     return None
 
 
+def preserve_scan_status(
+    current_status: str | None,
+    current_ts: float | None,
+    doc_ts: float,
+    computed: AgentStatus,
+    pid_alive: bool,
+) -> bool:
+    """Should a state-file RE-READ keep a SCANNER-set status? (Pitfall 2)
+
+    The tail scanner flips a terminal to WAITING (approval/select dialog) or
+    RUNNING (background-busy banner) BEFORE any hook event lands, so the
+    periodic re-read (the ~2s poll tick) of the still-older state file must not
+    stomp the scanner's opinion back to the file's stale one. A scanner status
+    survives any doc STRICTLY OLDER than the flip (``doc_ts < current_ts`` —
+    the scanner stamps ``time.time()``, always newer than the doc it outran)
+    while the process lives. A hook-written status has ``current_ts == doc_ts``
+    and is never preserved, so time-based degradations (ready→idle, the 2h
+    phantom-running ceiling) still apply to it. A genuinely newer event or a
+    dead pid always wins — hooks stay authoritative and death retires even the
+    cardinal orange.
+    """
+    if current_status not in (AgentStatus.WAITING.value, AgentStatus.RUNNING.value):
+        return False
+    if computed.value == current_status:
+        return False  # same opinion — applying it is harmless and refreshes ts
+    if not pid_alive:
+        return False
+    return current_ts is not None and doc_ts < current_ts
+
+
+# --- Background-busy accelerator: "Waiting for N background agents" banner -----
+# When a turn ends while background agents still run, claude fires Stop (the
+# hook channel says READY) yet the TUI shows a wait banner — and the BACKGROUND
+# AGENT's own hook events write to the SAME state file (env inheritance), so the
+# hook channel is both wrong and noisy here (verified empirically 2026-07-02).
+# The banner text is the reliable signal: busy → the terminal deserves the green
+# running dot (and, via the calm-set, immunity from auto-suspend — T-04-09).
+#
+# CAVEAT (user screenshot 2026-07-02): unlike the select dialog, the banner is
+# NOT erased when the wait ends — it freezes into the transcript, still inside
+# the ±20-row scan window. The TUI prints an ``Agent "…" finished`` line BELOW
+# it on completion, and terminal text is chronological, so the banner is LIVE
+# iff it is more recent than the last finished-marker. Both lines wrap at the
+# pane width, so matching runs on whitespace-flattened text.
+_BUSY_BANNER_RE = re.compile(r"Waiting for \d+ background agents? to finish")
+_AGENT_FINISHED_RE = re.compile(r'Agent ".+?" finished')
+# Generic "claude is actively working" chrome (the spinner row) — used to tell
+# "banner vanished because claude RESUMED" from "banner vanished because the
+# user interrupted" (no hook event fires on an interrupt).
+_WORKING_MARKER = "esc to interrupt"
+
+
+def _last_match(regex: re.Pattern, text: str) -> re.Match | None:
+    last = None
+    for last in regex.finditer(text):
+        pass
+    return last
+
+
+def looks_like_background_busy(text: str) -> bool:
+    """True iff ``text`` shows a LIVE background-agent wait banner.
+
+    Live = the last banner occurrence is more recent (further down the
+    transcript) than the last ``Agent "…" finished`` completion marker; a
+    banner above a completion line is frozen history, not a wait.
+    """
+    if not text:
+        return False
+    flat = " ".join(text.split())
+    banner = _last_match(_BUSY_BANNER_RE, flat)
+    if banner is None:
+        return False
+    finished = _last_match(_AGENT_FINISHED_RE, flat)
+    return finished is None or finished.start() < banner.start()
+
+
+def looks_like_agent_working(text: str) -> bool:
+    """True iff ``text`` shows the active-work spinner chrome."""
+    return bool(text) and _WORKING_MARKER in text
+
+
+def next_busy_action(
+    saw_busy: bool, has_busy: bool, working: bool, status: str | None
+) -> str | None:
+    """Decide the busy-scanner's move: "busy", "unbusy" or None.
+
+    - Banner visible over a CALM status (ready/idle, or no opinion yet) →
+      "busy" (flip to running). Never over waiting (the orange always wins) and
+      an already-running terminal needs no flip.
+    - Banner VANISHED after this terminal showed it, while still running and
+      with NO working spinner → "unbusy" back to ready: the user interrupted
+      (Esc fires no hook event, so nothing else would ever clear the green).
+      With the spinner visible claude RESUMED — leave running, hooks own it.
+    """
+    if has_busy:
+        return "busy" if status in (None, AgentStatus.READY.value, AgentStatus.IDLE.value) else None
+    if saw_busy and not working and status == AgentStatus.RUNNING.value:
+        return "unbusy"
+    return None
+
+
 # --- Hook install: settings merge builder (Pattern 3, Pitfall 9, T-04-08) ------
-# The 7 events arduis subscribes to (Pattern 1 event->state map). Matcher events
-# carry a "matcher": "*" group; the other 5 omit the matcher key (Pitfall 9 /
-# settings shape).
+# The 7 events arduis subscribes to (Pattern 1 event->state map). PostToolUse/
+# PostToolUseFailure carry a tool "matcher": "*" group; the plain events omit the
+# matcher key (Pitfall 9 / settings shape). Notification is special: its PAYLOAD
+# has NO notification-type field — the type is selected by the group's "matcher"
+# (official hooks docs, verified 2026-07-02) — so arduis registers one group per
+# notification matcher and hands the state to write to the hook as an argv
+# directive appended to the command.
 HOOK_EVENTS = (
     "SessionStart",
     "UserPromptSubmit",
@@ -317,6 +434,14 @@ HOOK_EVENTS = (
 )
 MATCHER_EVENTS = ("PostToolUse", "PostToolUseFailure")
 
+# Notification matcher → argv directive. "waiting" writes the orange state;
+# "ready" upgrades ONLY running → ready (Pitfall 2 lives in the hook script).
+NOTIFICATION_MATCHERS = (
+    ("permission_prompt", "waiting"),
+    ("elicitation_dialog", "waiting"),
+    ("idle_prompt", "ready"),
+)
+
 # Stable install location for the env-guarded hook script (Pattern 2). The packaged
 # source lives in the arduis.hooks package; arduis writes a refreshed copy here and
 # registers it by ABSOLUTE path.
@@ -326,18 +451,20 @@ _DECLINED_REL = (".local", "share", "arduis", "hooks_declined")
 HOOK_TIMEOUT_S = 5  # pinned (T-04-01): a misbehaving hook must not stall claude
 
 
-def hook_command(script_path: str) -> str:
+def hook_command(script_path: str, directive: str | None = None) -> str:
     """The exec-form ``command`` string for a settings hook entry (Pitfall 9).
 
     Returns ``/usr/bin/env python3 <abs-script>`` with a fully expanded ABSOLUTE
     path: a ``~`` is expanded, and the result must contain no ``~`` and no ``$`` —
     settings hook commands do NOT reliably expand tilde/vars across shells, so the
-    path is resolved at merge time.
+    path is resolved at merge time. ``directive`` (the Notification argv word from
+    ``NOTIFICATION_MATCHERS``) is appended verbatim when given.
     """
     expanded = os.path.expanduser(os.path.expandvars(script_path))
     if not os.path.isabs(expanded) or "~" in expanded or "$" in expanded:
         raise ValueError(f"hook script path must be absolute and expansion-free: {script_path!r}")
-    return f"/usr/bin/env python3 {expanded}"
+    command = f"/usr/bin/env python3 {expanded}"
+    return f"{command} {directive}" if directive else command
 
 
 def install_target_path(home: str) -> str:
@@ -367,20 +494,93 @@ def hook_script_source() -> str:
     return files("arduis.hooks").joinpath("arduis_hook.py").read_text(encoding="utf-8")
 
 
-def is_installed(settings: dict, script_path: str) -> bool:
-    """True iff EVERY ``HOOK_EVENTS`` event already has an arduis hook for the path.
+def _desired_groups(script_path: str) -> dict[str, list[dict]]:
+    """The exact hook groups arduis must own, per event (install/verify spec).
 
-    A partial install (e.g. 5 of 7 events present) returns False so the next merge
-    completes it. Matches by ``script_path in hook["command"]`` across each event's
-    existing groups.
+    Plain events get a matcher-less group; ``MATCHER_EVENTS`` get ``"matcher": "*"``;
+    ``Notification`` gets one group per ``NOTIFICATION_MATCHERS`` pair with the
+    directive appended to the command (the payload carries no notification type).
+    """
+    def entry(directive: str | None = None) -> dict:
+        return {
+            "type": "command",
+            "command": hook_command(script_path, directive),
+            "timeout": HOOK_TIMEOUT_S,
+        }
+
+    groups: dict[str, list[dict]] = {}
+    for event in HOOK_EVENTS:
+        if event == "Notification":
+            groups[event] = [
+                {"matcher": matcher, "hooks": [entry(directive)]}
+                for matcher, directive in NOTIFICATION_MATCHERS
+            ]
+        elif event in MATCHER_EVENTS:
+            groups[event] = [{"matcher": "*", "hooks": [entry()]}]
+        else:
+            groups[event] = [{"hooks": [entry()]}]
+    return groups
+
+
+def _group_satisfies(group, want: dict) -> bool:
+    """True iff ``group`` has ``want``'s matcher and carries all its commands."""
+    if not isinstance(group, dict) or group.get("matcher") != want.get("matcher"):
+        return False
+    have = {
+        str(hook.get("command", ""))
+        for hook in group.get("hooks", []) or []
+        if isinstance(hook, dict)
+    }
+    return {hook["command"] for hook in want["hooks"]} <= have
+
+
+def _owned_by_script(group, script_path: str) -> bool:
+    """True iff EVERY hook in ``group`` runs ``script_path`` (purely ours).
+
+    A mixed group (user hooks alongside ours) is treated as user-owned and never
+    dropped by the migration path in ``merged_settings``.
+    """
+    if not isinstance(group, dict):
+        return False
+    hooks = group.get("hooks", []) or []
+    if not hooks:
+        return False
+    return all(
+        isinstance(hook, dict) and script_path in str(hook.get("command", ""))
+        for hook in hooks
+    )
+
+
+def is_installed(settings: dict, script_path: str) -> bool:
+    """True iff EVERY desired arduis group (``_desired_groups``) is present.
+
+    A partial install (missing event) AND an outdated shape (e.g. the pre-matcher
+    ``Notification`` registration) both return False so the next merge repairs it.
     """
     hooks = settings.get("hooks")
     if not isinstance(hooks, dict):
         return False
-    for event in HOOK_EVENTS:
-        if not _event_has_script(hooks.get(event), script_path):
+    for event, want_groups in _desired_groups(script_path).items():
+        groups = hooks.get(event)
+        if not isinstance(groups, list):
             return False
+        for want in want_groups:
+            if not any(_group_satisfies(group, want) for group in groups):
+                return False
     return True
+
+
+def references_script(settings: dict, script_path: str) -> bool:
+    """True iff ANY registered hook (any event) runs ``script_path``.
+
+    Distinguishes an OUTDATED arduis install (consent was already given → the
+    caller may re-merge silently) from a never-installed state (consent dialog
+    first — D-02).
+    """
+    hooks = settings.get("hooks")
+    if not isinstance(hooks, dict):
+        return False
+    return any(_event_has_script(groups, script_path) for groups in hooks.values())
 
 
 def _event_has_script(groups, script_path: str) -> bool:
@@ -397,15 +597,15 @@ def _event_has_script(groups, script_path: str) -> bool:
 
 
 def merged_settings(settings: dict, script_path: str) -> tuple[dict, bool]:
-    """Build an ADDITIVE, idempotent, dedupe-by-path merge of arduis hooks (T-04-08).
+    """Build an idempotent merge of the arduis hook groups (T-04-08).
 
     Returns ``(new_settings, changed)``. NEVER mutates the input (deepcopy). Every
-    existing entry and unrelated top-level key (``permissions``/``model``/
-    ``statusLine``/...) is preserved byte-identical; arduis APPENDS one group per
-    missing event. Re-running on the result yields ``changed == False``. The
-    appended ``PostToolUse``/``PostToolUseFailure`` groups carry ``"matcher": "*"``;
-    the other 5 omit the matcher key. Each appended hook is exactly
-    ``{"type": "command", "command": hook_command(path), "timeout": HOOK_TIMEOUT_S}``.
+    USER entry and unrelated top-level key (``permissions``/``model``/
+    ``statusLine``/...) is preserved byte-identical. Groups arduis OWNS (every
+    hook in the group runs ``script_path``) that no longer match the desired spec
+    are DROPPED — that is how registration-shape migrations (e.g. the
+    ``Notification`` matcher split) roll out — and every missing desired group is
+    appended. Re-running on the result yields ``changed == False``.
     """
     out = copy.deepcopy(settings)
     hooks = out.setdefault("hooks", {})
@@ -414,21 +614,24 @@ def merged_settings(settings: dict, script_path: str) -> tuple[dict, bool]:
         # touch and report unchanged (Plan 03's WRITE backs up first regardless).
         return out, False
     changed = False
-    command = hook_command(script_path)
-    for event in HOOK_EVENTS:
+    for event, want_groups in _desired_groups(script_path).items():
         groups = hooks.get(event)
         if not isinstance(groups, list):
             groups = []
             hooks[event] = groups
-        if _event_has_script(groups, script_path):
-            continue
-        entry = {"type": "command", "command": command, "timeout": HOOK_TIMEOUT_S}
-        if event in MATCHER_EVENTS:
-            group: dict = {"matcher": "*", "hooks": [entry]}
-        else:
-            group = {"hooks": [entry]}
-        groups.append(group)
-        changed = True
+        kept = []
+        for group in groups:
+            if _owned_by_script(group, script_path) and not any(
+                _group_satisfies(group, want) for want in want_groups
+            ):
+                changed = True  # stale arduis shape from an older version — drop
+                continue
+            kept.append(group)
+        groups[:] = kept
+        for want in want_groups:
+            if not any(_group_satisfies(group, want) for group in groups):
+                groups.append(copy.deepcopy(want))
+                changed = True
     return out, changed
 
 

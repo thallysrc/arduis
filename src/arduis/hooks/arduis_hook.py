@@ -40,11 +40,16 @@ def main() -> None:
     }
     state = simple.get(event)
     if event == "Notification":
-        ntype = payload.get("notification_type", "")
-        if ntype in ("permission_prompt", "elicitation_dialog"):
-            state = "waiting"              # THE orange dot (Pitfall 1: not every Notification)
-        elif ntype == "idle_prompt":
-            # Pitfall 2: upgrade ONLY running -> ready; never touch waiting.
+        # The Notification payload carries NO type field — the type is selected
+        # by the settings-group "matcher" (hooks docs, verified 2026-07-02), so
+        # arduis registers one group per matcher and the state to write arrives
+        # as the argv directive (attention.NOTIFICATION_MATCHERS).
+        directive = sys.argv[1] if len(sys.argv) > 1 else ""
+        if directive == "waiting":
+            state = "waiting"              # permission_prompt / elicitation_dialog
+        elif directive == "ready":
+            # idle_prompt — Pitfall 2: upgrade ONLY running -> ready; never
+            # touch waiting.
             try:
                 with open(state_file) as f:
                     if json.load(f).get("state") == "running":
