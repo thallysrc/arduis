@@ -2,8 +2,8 @@
 
 The 03.4 corrective makes "one arduis = one launch-dir project" obsolete: the topbar
 lists multiple PROJECTS and must REMEMBER them across launches. This module owns the
-``projects.json`` app-state file — the FIRST persisted app state in arduis (tasks stay
-disk-discovered per project via ``_scan_tasks``; only the arbitrary project ROOTS, which
+``projects.json`` app-state file — the FIRST persisted app state in arduis (workspaces stay
+disk-discovered per project via ``_scan_workspaces``; only the arbitrary project ROOTS, which
 can't be rediscovered, are persisted, plus ``last_active_project`` so relaunch restores
 focus).
 

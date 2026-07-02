@@ -28,9 +28,9 @@ def test_argv_diff_stat_is_verified_listform():
 def test_argv_diff_repo_is_a_discrete_element():
     # the repo path is a discrete argv element, never joined into a string
     # (T-08-01: no shell, no flag injection surface)
-    argv = review.argv_diff("/tasks/feat/-weird dir")
-    assert "/tasks/feat/-weird dir" in argv
-    assert argv[2] == "/tasks/feat/-weird dir"
+    argv = review.argv_diff("/workspaces/feat/-weird dir")
+    assert "/workspaces/feat/-weird dir" in argv
+    assert argv[2] == "/workspaces/feat/-weird dir"
 
 
 # --- REVIEW-03: porcelain status argv + the dirty-tree clean gate ------------
@@ -66,8 +66,8 @@ def test_parse_porcelain_clean_staged_is_dirty():
 
 def test_argv_worktree_remove_is_verified_listform():
     assert review.argv_worktree_remove(
-        "/src/backend", "/tasks/feat/backend"
-    ) == ["git", "-C", "/src/backend", "worktree", "remove", "/tasks/feat/backend"]
+        "/src/backend", "/workspaces/feat/backend"
+    ) == ["git", "-C", "/src/backend", "worktree", "remove", "/workspaces/feat/backend"]
 
 
 def test_argv_worktree_remove_never_emits_force():
@@ -76,11 +76,11 @@ def test_argv_worktree_remove_never_emits_force():
     # The non-force refusal IS the feature — assert no --force/-f for any input,
     # including a worktree dir whose leaf starts with a dash.
     cases = [
-        ("/src/backend", "/tasks/feat/backend"),
-        ("/repo", "/repo-tasks/x/repo"),
+        ("/src/backend", "/workspaces/feat/backend"),
+        ("/repo", "/repo-workspaces/x/repo"),
         ("/a", "-rf"),
-        ("/b", "/tasks/--force/b"),
-        ("/c", "/tasks/-f/c"),
+        ("/b", "/workspaces/--force/b"),
+        ("/c", "/workspaces/-f/c"),
     ]
     for source, wt in cases:
         argv = review.argv_worktree_remove(source, wt)

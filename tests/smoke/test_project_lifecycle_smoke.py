@@ -10,7 +10,7 @@ agents/docker reliably):
       `_init_projects` loads A + B from disk and renders TWO project tabs.
   (b) MISSING-ROOT SKIP (D-06): a projects.json listing a non-existent root + a real
       one → a new window loads ONLY the real one (no crash, the missing one dropped).
-  (c) REMOVE-NO-LIVE SILENT (D-10): with two registered projects and no live tasks,
+  (c) REMOVE-NO-LIVE SILENT (D-10): with two registered projects and no live workspaces,
       `_remove_project(rootB)` drops B from the registry and rewrites projects.json to
       A only — no dialog constructed.
 
@@ -155,7 +155,7 @@ def main():
         # ============================================================
         # (c) REMOVE-NO-LIVE SILENT (D-10)
         # ============================================================
-        # Two registered projects, no live (ACTIVE) tasks → _remove_project drops
+        # Two registered projects, no live (ACTIVE) workspaces → _remove_project drops
         # B silently (no Adw.AlertDialog) and rewrites projects.json to A only.
         projects_store.save_projects(projects_json, [root_a, root_b], root_a)
         os.chdir(sandbox)
