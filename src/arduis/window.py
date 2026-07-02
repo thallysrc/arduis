@@ -649,6 +649,10 @@ class ArduisWindow(Adw.ApplicationWindow):
         # (the hint button was built hidden before _setup_attention set _degraded).
         self._refresh_degraded_hint()
 
+        # Load the persisted pane layouts once (used by _open_shell_leaf +
+        # _resume_workspace to restore grids). Tolerant: missing/corrupt -> empty.
+        self._saved_layouts = layout_store.load_layouts(self._layouts_json)
+
         # Seed the canvas with the main checkout scratch shell as the pinned leaf.
         self._open_shell_leaf()
 
@@ -1861,14 +1865,22 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._leaf_by_sid[main_tid] = leaf
         self._term_by_sid[main_tid] = terminal
 
-        # Build the main workspace's OWN LayoutModel (D-04/D-07) — no special-casing;
-        # it goes through the same swap/reflect path as any worktree.
+        # Build the main workspace's OWN LayoutModel (D-04/D-07). If a saved grid
+        # exists, restore it (main:t0 stays the pinned primary shell, spawned below);
+        # otherwise seed the single pinned leaf as before.
         model = self._workspace_layout(_MAIN_SID)
-        model.root = LeafNode(main_tid)
-        model.focused_id = main_tid
-        model.touch(main_tid)
-        self._active_workspace_sid = _MAIN_SID
-        self._reflect_layout()
+        saved = self._saved_layout_for(_MAIN_SID)
+        restored = False
+        if saved is not None:
+            restored = self._restore_layout(
+                self._active_or_bootstrap(), _MAIN_SID, saved, primary_tid=main_tid
+            )
+        if not restored:
+            model.root = LeafNode(main_tid)
+            model.focused_id = main_tid
+            model.touch(main_tid)
+            self._active_workspace_sid = _MAIN_SID
+            self._reflect_layout()
 
         main_cwd = self._repo_root or GLib.get_home_dir()
         argv, envv = build_spawn_command(self._runner)
@@ -1896,6 +1908,75 @@ class ArduisWindow(Adw.ApplicationWindow):
         """The scratch shell exiting closes the window (the primary shell)."""
         self._last_exit = decode_exit(status)
         self.close()
+
+    # --- layout restore: layouts.json -> live panes -------------------------
+
+    def _saved_layout_for(self, sid: str) -> dict | None:
+        """The saved layout dict for the ACTIVE project's workspace ``sid``, or None."""
+        proj = self._active_or_bootstrap()
+        saved = getattr(self, "_saved_layouts", None) or {}
+        return (
+            saved.get("projects", {})
+            .get(proj.root, {})
+            .get("workspaces", {})
+            .get(sid)
+        )
+
+    def _restore_layout(self, proj, sid: str, saved: dict, primary_tid: str | None = None) -> bool:
+        """Rebuild ``sid``'s pane tree from ``saved``; spawn every non-primary leaf.
+
+        Returns False (caller falls back to the default layout) if the tree is
+        unusable: not deserializable, missing the primary leaf, or any non-primary
+        leaf lacks a descriptor / points at a vanished cwd (D-06 tolerance).
+        The primary leaf (``primary_tid``, the pre-built pinned main shell) is left
+        for the caller to spawn. Ordering mirrors create/resume: build every
+        non-primary leaf widget, reflect (parents them), then spawn (agents resume).
+        """
+        tree = layout_store.tree_from_dict(saved.get("tree"))
+        if tree is None:
+            return False
+        ids = layout_store.leaf_ids(tree)
+        if not ids:
+            return False
+        if primary_tid is not None and primary_tid not in ids:
+            return False
+        leaves = saved.get("leaves") or {}
+        for tid in ids:
+            if tid == primary_tid:
+                continue
+            desc = leaves.get(tid)
+            if not isinstance(desc, dict) or not os.path.isdir(desc.get("cwd", "")):
+                return False
+
+        workspace = proj.store.get(sid)
+        model = self._bundle_for(proj)["layouts"].setdefault(sid, LayoutModel())
+        model.root = tree
+        focused = saved.get("focused_id")
+        model.focused_id = focused if focused in ids else (primary_tid or ids[0])
+        model.touch(model.focused_id)
+        self._active_workspace_sid = sid
+        pending = []
+        for tid in ids:
+            if tid == primary_tid:
+                continue
+            desc = leaves[tid]
+            label = workspace.branch if workspace is not None else (self._repo_name or "main")
+            terminal = self._make_terminal()
+            terminal.connect("child-exited", self._on_worktree_term_exited)
+            badge = "zsh" if desc["kind"] == "shell" else "claude"
+            leaf = self._make_leaf(tid, label, terminal, badge_label=badge)
+            self._leaf_by_sid[tid] = leaf
+            self._term_by_sid[tid] = terminal
+            if workspace is not None:
+                workspace.terminals.append(TerminalRecord(tid, desc["kind"]))
+            pending.append((terminal, tid, desc))
+        self._reflect_layout()
+        for terminal, tid, desc in pending:
+            self._spawn_into(
+                terminal, desc["cwd"], workspace, tid,
+                kind=desc["kind"], resume=(desc["kind"] == "agent"),
+            )
+        return True
 
     # --- sidebar (PAR-02, D-05/D-06/D-07/D-08) ------------------------------
 
@@ -4588,6 +4669,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         workspace: Workspace | None,
         term_id: str,
         kind: str = "agent",
+        resume: bool = False,
     ) -> None:
         """Spawn zsh -l -i in ``cwd``; feed the configured agent only when ``kind == "agent"``.
 
@@ -4670,22 +4752,24 @@ class ArduisWindow(Adw.ApplicationWindow):
             None,                 # child_setup_data
             -1,                   # timeout (-1 = none)
             None,                 # cancellable
-            self._make_wt_spawn_cb(workspace, term_id, kind),
+            self._make_wt_spawn_cb(workspace, term_id, kind, resume),
         )
         terminal.grab_focus()
 
-    def _make_wt_spawn_cb(self, workspace: Workspace | None, term_id: str, kind: str):
+    def _make_wt_spawn_cb(self, workspace: Workspace | None, term_id: str, kind: str, resume: bool = False):
         # AGENT-01 (D-01/D-03): the fed agent is the CONFIGURED command (default
         # "claude"), built from agentconfig — not a hardcoded literal. An AUTO-
-        # suspended workspace resumes with resume_feed_bytes (appends ``--continue`` ONLY
-        # for a claude-family command, D-03) so the conversation survives; a normal
-        # create / manual resume / split feeds the bare configured command. Capture
-        # the decision HERE (at callback-creation time) so ``_resume_workspace`` can clear
-        # ``workspace.auto_suspended`` immediately after spawning without leaking the flag.
+        # suspended workspace OR an explicit ``resume`` (layout restore) resumes with
+        # resume_feed_bytes (appends ``--continue`` ONLY for a claude-family command,
+        # D-03) so the conversation survives; a normal create / split feeds the bare
+        # configured command. Capture the decision HERE (at callback-creation time) so
+        # ``_resume_workspace`` can clear ``workspace.auto_suspended`` immediately after
+        # spawning without leaking the flag.
         cmd = self._agent_config.command
+        use_resume = resume or (workspace is not None and workspace.auto_suspended)
         agent_feed = (
             agentconfig.resume_feed_bytes(cmd)
-            if (workspace is not None and workspace.auto_suspended)
+            if use_resume
             else agentconfig.agent_feed_bytes(cmd)
         )
 
@@ -5388,7 +5472,21 @@ class ArduisWindow(Adw.ApplicationWindow):
         # does not cover it) so a resumed workspace does not reuse a closed notification.
         self._notif_by_tid.pop(f"suspend:{workspace.workspace_id}", None)
 
-        # Rebuild the DEFAULT 2-terminal workspace (shared with create, UX pivot).
+        # Restore the saved custom grid if one exists (agents resume with
+        # ``--continue``); otherwise rebuild the DEFAULT 2-terminal workspace.
+        saved = self._saved_layout_for(workspace.workspace_id)
+        restored = False
+        if saved is not None:
+            workspace.terminals = []  # _restore_layout appends a record per leaf
+            proj = self._project_for_workspace(workspace) or self._active_or_bootstrap()
+            restored = self._restore_layout(proj, workspace.workspace_id, saved)
+        if restored:
+            self._rebuild_sidebar()
+            workspace.auto_suspended = False
+            return
+
+        # Fallback: no usable saved grid -> default 2-terminal workspace (as before).
+        workspace.terminals = default_workspace_terminals(branch)
         self._build_workspace_terminals(workspace, [r.repo_name for r in workspace.repos])
         self._rebuild_sidebar()
 
