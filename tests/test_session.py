@@ -1,10 +1,10 @@
-"""Tests for the GTK-free serializable SessionStore over Tasks (03.2 pivot).
+"""Tests for the GTK-free serializable SessionStore over Workspaces (03.2 pivot).
 
 Contract: ``AGENT_FEED`` is the bytes literal ``b"claude\\n"`` (D-08, Pitfall 1 —
-``feed_child`` rejects str at the 0.76 floor); the unit of work is a ``Task`` that
+``feed_child`` rejects str at the 0.76 floor); the unit of work is a ``Workspace`` that
 owns N ``RepoCheckout``s, each owning its own LIST of terminals (default 2 — one
-``agent``, one ``shell`` — D-01) with OQ1 structured ids ``{task}:{repo}:tN`` plus
-a ``repo_name`` field; a 1-repo project is a Task with ONE RepoCheckout through
+``agent``, one ``shell`` — D-01) with OQ1 structured ids ``{workspace}:{repo}:tN`` plus
+a ``repo_name`` field; a 1-repo project is a Workspace with ONE RepoCheckout through
 the identical shape (criterion 5); the store is JSON-serializable via ``asdict``
 recursing repos → terminals (D-13/A2); hibernate clears EVERY terminal's pid/pgid
 across EVERY repo while KEEPING every dir (D-08/D-11, Pitfall 3 — no group
@@ -19,20 +19,20 @@ from arduis.session import (
     RepoCheckout,
     SessionState,
     SessionStore,
-    Task,
     TerminalRecord,
+    Workspace,
     default_repo_terminals,
-    default_task_terminals,
+    default_workspace_terminals,
     hibernate_fields,
 )
 
 
-def _repo(task_id: str, repo_name: str, branch: str = "feat") -> RepoCheckout:
+def _repo(workspace_id: str, repo_name: str, branch: str = "feat") -> RepoCheckout:
     return RepoCheckout(
         repo_name=repo_name,
-        worktree_dir=f"/home/u/livon-tasks/{task_id}/{repo_name}",
+        worktree_dir=f"/home/u/livon-workspaces/{workspace_id}/{repo_name}",
         branch=branch,
-        terminals=default_repo_terminals(task_id, repo_name),
+        terminals=default_repo_terminals(workspace_id, repo_name),
     )
 
 
@@ -44,7 +44,7 @@ def test_agent_feed_is_bytes():
 
 def test_default_repo_terminals():
     # D-01 + OQ1: exactly 2 terminals per repo (agent + shell) with structured
-    # ids {task}:{repo}:tN and the repo_name field set.
+    # ids {workspace}:{repo}:tN and the repo_name field set.
     terms = default_repo_terminals("feat", "backend")
     assert len(terms) == 2
     assert terms[0].term_id == "feat:backend:t0"
@@ -55,56 +55,56 @@ def test_default_repo_terminals():
     assert terms[1].repo_name == "backend"
 
 
-def test_default_task_terminals():
-    # UX pivot (supersedes D-01/D-02): a task's DEFAULT workspace is exactly TWO
-    # task-level terminals — agent (claude, t0) + shell (zsh, t1) — regardless of
-    # how many repos the task spans. Both open at the task folder root. The
-    # terminal ids are {task_id}:tN (NO repo segment — they are task-scoped).
-    terms = default_task_terminals("feat")
+def test_default_workspace_terminals():
+    # UX pivot (supersedes D-01/D-02): a workspace's DEFAULT workspace is exactly TWO
+    # workspace-level terminals — agent (claude, t0) + shell (zsh, t1) — regardless of
+    # how many repos the workspace spans. Both open at the workspace folder root. The
+    # terminal ids are {workspace_id}:tN (NO repo segment — they are workspace-scoped).
+    terms = default_workspace_terminals("feat")
     assert len(terms) == 2
     assert terms[0].term_id == "feat:t0"
     assert terms[0].kind == "agent"
-    assert terms[0].repo_name is None  # task-level, not bound to a repo
+    assert terms[0].repo_name is None  # workspace-level, not bound to a repo
     assert terms[1].term_id == "feat:t1"
     assert terms[1].kind == "shell"
     assert terms[1].repo_name is None
 
 
-def test_task_has_terminals_list():
-    # The Task carries its own task-level terminal records (the default PAIR plus
+def test_workspace_has_terminals_list():
+    # The Workspace carries its own workspace-level terminal records (the default PAIR plus
     # any user splits) distinct from per-repo worktree metadata.
-    task = Task(
-        task_id="feat",
+    workspace = Workspace(
+        workspace_id="feat",
         branch="feat",
-        task_dir="/home/u/livon-tasks/feat",
+        workspace_dir="/home/u/livon-workspaces/feat",
         repos=[_repo("feat", "backend")],
-        terminals=default_task_terminals("feat"),
+        terminals=default_workspace_terminals("feat"),
     )
-    assert len(task.terminals) == 2
-    assert task.terminals[0].term_id == "feat:t0"
-    # serializes (asdict recurses task.terminals too).
-    d = task.to_dict()
+    assert len(workspace.terminals) == 2
+    assert workspace.terminals[0].term_id == "feat:t0"
+    # serializes (asdict recurses workspace.terminals too).
+    d = workspace.to_dict()
     assert d["terminals"][0]["term_id"] == "feat:t0"
     json.dumps(d)
 
 
-def test_hibernate_clears_task_level_terminals():
-    # Pitfall 3 re-targeted: hibernate must clear the TASK-level terminals' pid/pgid
+def test_hibernate_clears_workspace_level_terminals():
+    # Pitfall 3 re-targeted: hibernate must clear the WORKSPACE-level terminals' pid/pgid
     # too (no orphan), not only per-repo ones.
-    task = Task(
-        task_id="feat",
+    workspace = Workspace(
+        workspace_id="feat",
         branch="feat",
-        task_dir="/home/u/livon-tasks/feat",
+        workspace_dir="/home/u/livon-workspaces/feat",
         repos=[_repo("feat", "backend")],
-        terminals=default_task_terminals("feat"),
+        terminals=default_workspace_terminals("feat"),
     )
-    for i, t in enumerate(task.terminals):
+    for i, t in enumerate(workspace.terminals):
         t.pid = 5000 + i
         t.pgid = 5000 + i
         t.rss_kb = 4321
-    hibernate_fields(task)
-    assert task.state == SessionState.HIBERNATED
-    for t in task.terminals:
+    hibernate_fields(workspace)
+    assert workspace.state == SessionState.HIBERNATED
+    for t in workspace.terminals:
         assert t.pid is None
         assert t.pgid is None
         assert t.rss_kb == 4321  # untouched
@@ -120,36 +120,36 @@ def test_terminal_record_has_repo_name_field():
     assert t2.repo_name is None
 
 
-def test_multi_repo_task_serializable():
-    # A multi-repo Task: 2 RepoCheckouts × 2 terminals = 4 terminals total.
-    task = Task(
-        task_id="feat",
+def test_multi_repo_workspace_serializable():
+    # A multi-repo Workspace: 2 RepoCheckouts × 2 terminals = 4 terminals total.
+    workspace = Workspace(
+        workspace_id="feat",
         branch="feat",
-        task_dir="/home/u/livon-tasks/feat",
+        workspace_dir="/home/u/livon-workspaces/feat",
         repos=[_repo("feat", "backend"), _repo("feat", "frontend")],
     )
-    assert len(task.repos) == 2
-    total_terms = sum(len(r.terminals) for r in task.repos)
+    assert len(workspace.repos) == 2
+    total_terms = sum(len(r.terminals) for r in workspace.repos)
     assert total_terms == 4
-    d = task.to_dict()
+    d = workspace.to_dict()
     assert d["state"] == "active"  # str-Enum serializes to its value
     json.dumps(d)  # asdict recurses repos → terminals; must not raise
     # the repo_name field is present in the serialized terminals.
     assert d["repos"][0]["terminals"][0]["repo_name"] == "backend"
 
 
-def test_degenerate_single_repo_task_identical_shape():
-    # Criterion 5: a 1-repo project is a Task with exactly one RepoCheckout with
+def test_degenerate_single_repo_workspace_identical_shape():
+    # Criterion 5: a 1-repo project is a Workspace with exactly one RepoCheckout with
     # 2 terminals — identical structure, NO special branch.
-    task = Task(
-        task_id="solo",
+    workspace = Workspace(
+        workspace_id="solo",
         branch="solo",
-        task_dir="/home/u/livon-tasks/solo",
+        workspace_dir="/home/u/livon-workspaces/solo",
         repos=[_repo("solo", "livon")],
     )
-    assert len(task.repos) == 1
-    assert len(task.repos[0].terminals) == 2
-    json.dumps(task.to_dict())
+    assert len(workspace.repos) == 1
+    assert len(workspace.repos[0].terminals) == 2
+    json.dumps(workspace.to_dict())
 
 
 def test_hibernate_clears_all_repos_all_terminals():
@@ -162,16 +162,16 @@ def test_hibernate_clears_all_repos_all_terminals():
             t.pid = 4000 + i
             t.pgid = 4000 + i
             t.rss_kb = 1234
-    task = Task(
-        task_id="feat",
+    workspace = Workspace(
+        workspace_id="feat",
         branch="feat",
-        task_dir="/home/u/livon-tasks/feat",
+        workspace_dir="/home/u/livon-workspaces/feat",
         repos=[backend, frontend],
     )
-    hibernate_fields(task)
-    assert task.state == SessionState.HIBERNATED
+    hibernate_fields(workspace)
+    assert workspace.state == SessionState.HIBERNATED
     cleared = 0
-    for r in task.repos:
+    for r in workspace.repos:
         for t in r.terminals:
             assert t.pid is None
             assert t.pgid is None
@@ -179,43 +179,43 @@ def test_hibernate_clears_all_repos_all_terminals():
             cleared += 1
     assert cleared == 4
     # dirs kept on disk (D-08/D-11).
-    assert task.task_dir == "/home/u/livon-tasks/feat"
-    assert task.repos[0].worktree_dir == "/home/u/livon-tasks/feat/backend"
+    assert workspace.workspace_dir == "/home/u/livon-workspaces/feat"
+    assert workspace.repos[0].worktree_dir == "/home/u/livon-workspaces/feat/backend"
     # serializes cleanly post-hibernate.
-    assert task.to_dict()["state"] == "hibernated"
+    assert workspace.to_dict()["state"] == "hibernated"
 
 
 def test_store_crud_and_serializable():
     store = SessionStore()
-    task = Task(
-        task_id="feat",
+    workspace = Workspace(
+        workspace_id="feat",
         branch="feat",
-        task_dir="/home/u/livon-tasks/feat",
+        workspace_dir="/home/u/livon-workspaces/feat",
         repos=[_repo("feat", "backend")],
     )
-    store.add(task)
-    assert store.get("feat") is task
-    assert store.by_branch("feat") is task
+    store.add(workspace)
+    assert store.get("feat") is workspace
+    assert store.by_branch("feat") is workspace
     assert store.by_branch("absent") is None
-    assert store.all() == [task]
+    assert store.all() == [workspace]
     as_list = store.to_list()
     assert as_list[0]["state"] == "active"
-    assert as_list[0]["task_id"] == "feat"
+    assert as_list[0]["workspace_id"] == "feat"
     json.dumps(as_list)  # must not raise
 
 
-def test_store_remove_drops_task():
+def test_store_remove_drops_workspace():
     # GAP 2: a create where every repo aborts must be removable from the store
     # (no zombie row, not counted by caps). remove() touches memory only — never disk.
     store = SessionStore()
-    task = Task(
-        task_id="feat",
+    workspace = Workspace(
+        workspace_id="feat",
         branch="feat",
-        task_dir="/home/u/livon-tasks/feat",
+        workspace_dir="/home/u/livon-workspaces/feat",
         repos=[_repo("feat", "backend")],
     )
-    store.add(task)
-    assert store.get("feat") is task
+    store.add(workspace)
+    assert store.get("feat") is workspace
     store.remove("feat")
     assert store.get("feat") is None
     assert store.all() == []
@@ -255,7 +255,7 @@ def test_session_module_is_gtk_free():
 
 
 def test_worktree_session_removed():
-    # OQ3: WorktreeSession is fully replaced by Task — no parallel model.
+    # OQ3: WorktreeSession is fully replaced by Workspace — no parallel model.
     assert not hasattr(session, "WorktreeSession")
 
 
@@ -272,24 +272,24 @@ def test_agent_feed_unchanged():
     assert AGENT_FEED == b"claude\n"
 
 
-def test_task_auto_suspended_trailing_field_defaults_false():
-    # Plan 04 D-12: Task gains `auto_suspended: bool = False` as the LAST field so
-    # positional construction (task_id..terminals) keeps working and leaves it False.
-    task = Task("id", "br", "/d", [], SessionState.ACTIVE, [])
-    assert task.auto_suspended is False
+def test_workspace_auto_suspended_trailing_field_defaults_false():
+    # Plan 04 D-12: Workspace gains `auto_suspended: bool = False` as the LAST field so
+    # positional construction (workspace_id..terminals) keeps working and leaves it False.
+    workspace = Workspace("id", "br", "/d", [], SessionState.ACTIVE, [])
+    assert workspace.auto_suspended is False
 
 
-def test_task_auto_suspended_serializes():
+def test_workspace_auto_suspended_serializes():
     # to_dict()/asdict must include auto_suspended (JSON-serializable).
-    task = Task(
-        task_id="feat",
+    workspace = Workspace(
+        workspace_id="feat",
         branch="feat",
-        task_dir="/home/u/livon-tasks/feat",
+        workspace_dir="/home/u/livon-workspaces/feat",
         repos=[_repo("feat", "backend")],
-        terminals=default_task_terminals("feat"),
+        terminals=default_workspace_terminals("feat"),
     )
-    task.auto_suspended = True
-    d = task.to_dict()
+    workspace.auto_suspended = True
+    d = workspace.to_dict()
     assert d["auto_suspended"] is True
     json.dumps(d)
 
@@ -297,17 +297,17 @@ def test_task_auto_suspended_serializes():
 def test_hibernate_fields_does_not_touch_auto_suspended():
     # D-12: the WINDOW sets auto_suspended (True on auto-suspend); a MANUAL hibernate
     # must leave it False — hibernate_fields models the field transition only.
-    task = Task(
-        task_id="feat",
+    workspace = Workspace(
+        workspace_id="feat",
         branch="feat",
-        task_dir="/home/u/livon-tasks/feat",
+        workspace_dir="/home/u/livon-workspaces/feat",
         repos=[_repo("feat", "backend")],
-        terminals=default_task_terminals("feat"),
+        terminals=default_workspace_terminals("feat"),
     )
-    assert task.auto_suspended is False
-    hibernate_fields(task)
-    assert task.auto_suspended is False
+    assert workspace.auto_suspended is False
+    hibernate_fields(workspace)
+    assert workspace.auto_suspended is False
     # and it must not flip a pre-set True either (idempotent w.r.t. the flag).
-    task.auto_suspended = True
-    hibernate_fields(task)
-    assert task.auto_suspended is True
+    workspace.auto_suspended = True
+    hibernate_fields(workspace)
+    assert workspace.auto_suspended is True
