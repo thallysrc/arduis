@@ -4226,10 +4226,19 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._spawn_workspace_terminals(workspace)
 
         # Phase 7 (CONT-04): seed the in-memory container state for the fresh workspace
-        # (no file yet → ContainerState() default, toggle OFF). Never auto-enable.
+        # (no file yet → ContainerState() default, toggle OFF).
         self._container_state[workspace.workspace_id] = containerstate.load_container_state(
             workspace.workspace_dir
         )
+
+        # Pivot 2026-07-03 (supersedes CONT-04's "never auto-enable"): creating a
+        # workspace in a project with a root compose + docker brings its isolated
+        # stack up automatically — same gate as the menu item, and AFTER the
+        # terminals spawn so the agent pair never waits on a slow image pull.
+        # _enable_isolation keeps its own guards (busy / already enabled) and its
+        # failure path only toasts + persists enabled=False — creation never breaks.
+        if self._isolation_available():
+            self._enable_isolation(workspace)
 
         # ENV-02 / criterion 4: run each succeeded repo's trusted [setup] in its shell
         # pane. CREATE path ONLY — _resume_workspace never reaches here (Pitfall 3). Failure
