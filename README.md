@@ -9,6 +9,8 @@ BridgeMind/BridgeSpace.
 rodando numa worktree isolada em segundos** — gerenciando N agentes em paralelo e
 **sempre sabendo qual deles te espera**.
 
+![arduis — workspaces na sidebar, quatro terminais em grade com agentes Claude Code rodando em paralelo](docs/screenshot.png)
+
 O app é 100% Python puro sobre a stack GNOME do **sistema** (PyGObject + GTK4 +
 libadwaita + VTE-3.91). Usa o VTE da distro — **nunca** um bundlado ou instalado via
 `pip` — e é distribuído **só como pacote nativo** no v1: `.deb` para Ubuntu e `PKGBUILD`
