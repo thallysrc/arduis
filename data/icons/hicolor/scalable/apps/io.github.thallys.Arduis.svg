@@ -1,11 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!--
-  arduis app icon — pure static SVG, Dracula palette, GNOME 128px grid.
-  One repo (cyan commit) forking into three parallel agents (green/purple/pink):
-  the core value — N agents, each in its own worktree.
-  No external refs, no <script>, no raster — safe static artwork (threat T-09-03).
--->
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!--
+    arduis app icon — pure static SVG, Dracula palette, GNOME 128px grid.
+    One repo (cyan commit) forking into three parallel agents (green/purple/pink):
+    the core value — N agents, each in its own worktree.
+    No external refs, no script, no raster — safe static artwork (threat T-09-03).
+    NOTE: the comment lives INSIDE <svg> on purpose — a comment block between
+    the XML declaration and <svg> defeats gdk-pixbuf's format sniffing and the
+    icon silently renders as nothing (blank launcher tile).
+  -->
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#343746"/>
