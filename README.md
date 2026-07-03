@@ -2,8 +2,7 @@
 
 arduis é um app desktop GNOME **lightweight** (Linux: Ubuntu + Arch) que orquestra
 **vários agentes de IA (Claude Code) em paralelo** — cada um na sua **git worktree**, com
-**terminais reais embutidos (VTE)**. É a resposta Linux e terminal-cêntrica ao
-BridgeMind/BridgeSpace.
+**terminais reais embutidos (VTE)**. É a resposta Linux e terminal-cêntrica ao.
 
 **Core value:** tirar a ideia "quero começar uma branch nova" e ter um **agente de IA
 rodando numa worktree isolada em segundos** — gerenciando N agentes em paralelo e
