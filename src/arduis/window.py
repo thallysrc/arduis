@@ -375,6 +375,12 @@ def _rgba(spec: str) -> Gdk.RGBA:
     return color
 
 
+def _pointer(widget: Gtk.Widget) -> Gtk.Widget:
+    """Hand cursor on clickable chrome — GTK4 CSS has no ``cursor`` property."""
+    widget.set_cursor_from_name("pointer")
+    return widget
+
+
 def _read_keys_section(path: str) -> dict:
     """Tolerantly read ``[keys]`` (UI-01, D-04/D-05) -> ``{"prefix", "bindings"}``.
 
@@ -639,6 +645,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         menu.append_submenu("Tema", theme_menu)
         menu_btn = Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu)
         menu_btn.set_tooltip_text("Menu")
+        _pointer(menu_btn)
         header.pack_end(menu_btn)
 
         # Voice agent (headerbar pair): history popover + mic toggle. The mic is a
@@ -664,9 +671,11 @@ class ArduisWindow(Adw.ApplicationWindow):
             popover=self._voice_history_popover,
         )
         self._voice_history_btn.set_tooltip_text("Prompts falados")
+        _pointer(self._voice_history_btn)
         header.pack_end(self._voice_history_btn)
 
         self._voice_btn = Gtk.ToggleButton()
+        _pointer(self._voice_btn)
         self._voice_btn.set_icon_name("audio-input-microphone-symbolic")
         self._voice_btn.set_tooltip_text(
             "Falar um prompt — roda num pane novo (C-Space v)"
@@ -1898,12 +1907,14 @@ class ArduisWindow(Adw.ApplicationWindow):
         # these use app-bundled symbolics that literally draw the result: two rows
         # stacked = top/bottom ("v"); two columns = side-by-side ("h").
         split_v_btn = Gtk.Button(icon_name="arduis-split-v-symbolic")
+        _pointer(split_v_btn)
         split_v_btn.set_tooltip_text("Dividir em cima/embaixo")
         split_v_btn.add_css_class("flat")
         split_v_btn.connect("clicked", self._make_split_pane_cb(sid, "v"))
         header.append(split_v_btn)
 
         split_h_btn = Gtk.Button(icon_name="arduis-split-h-symbolic")
+        _pointer(split_h_btn)
         split_h_btn.set_tooltip_text("Dividir lado a lado")
         split_h_btn.add_css_class("flat")
         split_h_btn.connect("clicked", self._make_split_pane_cb(sid, "h"))
@@ -1913,12 +1924,14 @@ class ArduisWindow(Adw.ApplicationWindow):
         # Adwaita symbolic (diagonal arrows to the corners) — the freedesktop
         # standard for "fullscreen", no extra icon dependency (CLAUDE.md: system libs).
         zoom_btn = Gtk.Button(icon_name="view-fullscreen-symbolic")
+        _pointer(zoom_btn)
         zoom_btn.set_tooltip_text("Expandir painel")
         zoom_btn.add_css_class("flat")
         zoom_btn.connect("clicked", self._make_zoom_pane_cb(sid))
         header.append(zoom_btn)
 
         close_btn = Gtk.Button(icon_name="window-close-symbolic")
+        _pointer(close_btn)
         close_btn.set_tooltip_text("Fechar painel")
         close_btn.add_css_class("flat")
         close_btn.connect("clicked", self._make_close_pane_cb(sid))
@@ -2242,6 +2255,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         title.set_hexpand(True)
         projects_header.append(title)
         open_btn = Gtk.Button()
+        _pointer(open_btn)
         open_btn.set_icon_name("list-add-symbolic")
         open_btn.add_css_class("flat")
         open_btn.set_tooltip_text("Abrir projeto")
@@ -2268,6 +2282,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         # the sidebar (parallel-code layout). Same attribute + handler, so
         # _refresh_project_chrome keeps driving its sensitivity/tooltip.
         self._new_btn = Gtk.Button(label="+ Novo workspace")
+        _pointer(self._new_btn)
         self._new_btn.add_css_class("arduis-new-workspace-btn")
         self._new_btn.set_tooltip_text("Novo workspace")
         self._new_btn.set_sensitive(False)  # enabled once the project resolves
@@ -2370,6 +2385,7 @@ class ArduisWindow(Adw.ApplicationWindow):
     def _make_row(self, sid: str, branch: str, subline: str, active: bool) -> Gtk.ListBoxRow:
         """One sidebar row: dot (8px) + branch (13/600) + RAM sub-line (11/400)."""
         row = Gtk.ListBoxRow()
+        _pointer(row)
         outer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         outer.set_margin_top(8)
         outer.set_margin_bottom(8)
@@ -2985,6 +3001,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         label = Gtk.Label(label=f"{workspace.branch} está hibernado")
         label.add_css_class("dim-label")
         button = Gtk.Button(label="Retomar workspace")
+        _pointer(button)
         button.add_css_class("suggested-action")
         button.add_css_class("pill")
         button.connect("clicked", lambda *_: self._resume_gated(workspace))
@@ -3054,6 +3071,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         # Built hidden here (this runs before _setup_attention sets _degraded);
         # revealed by _refresh_degraded_hint after setup.
         self._degraded_hint_btn = Gtk.Button(label="status limitado — instalar hooks?")
+        _pointer(self._degraded_hint_btn)
         self._degraded_hint_btn.add_css_class("flat")
         self._degraded_hint_btn.add_css_class("arduis-degraded-hint")
         self._degraded_hint_btn.set_visible(False)
@@ -3414,6 +3432,7 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         for proj in projects:
             row = Gtk.ListBoxRow()
+            _pointer(row)
             row.add_css_class("arduis-project-row")
             outer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
             outer.set_margin_top(4)
@@ -3441,6 +3460,7 @@ class ArduisWindow(Adw.ApplicationWindow):
             # Inline close (parallel-code style) → the SAME remove flow as the
             # context menu (teardown + confirm live in _remove_project).
             close = Gtk.Button(icon_name="window-close-symbolic")
+            _pointer(close)
             close.add_css_class("flat")
             close.add_css_class("arduis-row-close")
             close.set_tooltip_text("Remover projeto")
@@ -4067,10 +4087,23 @@ class ArduisWindow(Adw.ApplicationWindow):
         repos_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         for repo in self._member_repos:
             check = Gtk.CheckButton(label=repo)
+            _pointer(check)
             check.set_active(repo in default)  # all member repos checked (D-12)
             repos_box.append(check)
             repo_checks[repo] = check
         extra.append(repos_box)
+
+        # 2026-07-03 follow-up to the auto-isolate pivot: the user chooses AT
+        # CREATION whether the isolated docker stack comes up (default ON).
+        # Shown only when the feature is available (root compose + docker) —
+        # same gate that hides the row-menu toggle.
+        isolate_check: Gtk.CheckButton | None = None
+        if self._isolation_available():
+            isolate_check = Gtk.CheckButton(label="Isolar containers (portas próprias)")
+            _pointer(isolate_check)
+            isolate_check.set_active(True)
+            isolate_check.set_margin_top(6)
+            extra.append(isolate_check)
 
         dialog.set_extra_child(extra)
         dialog.add_response("cancel", "Cancelar")
@@ -4662,6 +4695,7 @@ class ArduisWindow(Adw.ApplicationWindow):
             label.set_tooltip_text(entry["text"])
             row.append(label)
             run_btn = Gtk.Button(icon_name="media-playback-start-symbolic")
+            _pointer(run_btn)
             run_btn.add_css_class("flat")
             run_btn.set_tooltip_text("Rodar de novo")
             run_btn.connect(
@@ -5850,6 +5884,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         VTE floor — ``Adw.StatusPage``/``Adw.ButtonContent`` exist since libadwaita 1.0.
         """
         btn = Gtk.Button()
+        _pointer(btn)
         content = Adw.ButtonContent(
             icon_name="list-add-symbolic", label="Novo terminal"
         )
