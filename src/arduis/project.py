@@ -31,16 +31,20 @@ def detect_member_repos(root: str) -> list[str]:
     behavior that counted it via ``os.path.exists``. The PO's real ``Livon-Saude``
     root has ~20 ``backend-*``/``frontend-*`` worktrees (``.git`` is a FILE) that
     would otherwise flood the topbar chip bar. Symlinked subdirs are not followed
-    (``follow_symlinks=False`` — T-03.3-03 still guarded). Returns sorted names;
-    ``[]`` on error or when none (caller treats ``[]`` as the degenerate 1-repo
-    project).
+    (``follow_symlinks=False`` — T-03.3-03 still guarded). Hidden subdirs are
+    never members: dotdirs with a ``.git`` (``~/.oh-my-zsh``, ``~/.nvm``, …) are
+    tooling clones, and counting them made ``$HOME`` qualify as a project when
+    launched from the desktop icon (cwd=$HOME). Returns sorted names; ``[]`` on
+    error or when none (caller treats ``[]`` as the degenerate 1-repo project).
     """
     members: list[str] = []
     try:
         with os.scandir(root) as it:
             for e in it:
-                if e.is_dir(follow_symlinks=False) and os.path.isdir(
-                    os.path.join(e.path, ".git")
+                if (
+                    not e.name.startswith(".")
+                    and e.is_dir(follow_symlinks=False)
+                    and os.path.isdir(os.path.join(e.path, ".git"))
                 ):
                     members.append(e.name)
     except OSError:

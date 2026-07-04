@@ -88,6 +88,26 @@ def test_unreadable_root_returns_empty():
     assert detect_member_repos("/no/such/path/arduis-xyz-123") == []
 
 
+def test_hidden_subdirs_are_not_members(tmp_path):
+    # Dotdirs with a .git DIR (e.g. ~/.oh-my-zsh, ~/.nvm, ~/.zplug) are tooling
+    # clones, not project members. Without this exclusion $HOME qualifies as a
+    # "project" when arduis is launched from the desktop icon (cwd=$HOME) and a
+    # phantom project named after the user is auto-registered every start.
+    root = str(tmp_path)
+    _mk_repo(root, ".oh-my-zsh", git_as_file=False)
+    _mk_repo(root, ".nvm", git_as_file=False)
+    _mk_repo(root, "backend", git_as_file=False)
+    assert detect_member_repos(root) == ["backend"]
+
+
+def test_only_hidden_subdirs_means_no_members(tmp_path):
+    # A dir whose ONLY git subdirs are hidden (the typical $HOME) -> [] so the
+    # cwd does not resolve as a project.
+    root = str(tmp_path)
+    _mk_repo(root, ".zplug", git_as_file=False)
+    assert detect_member_repos(root) == []
+
+
 def test_symlinked_subdir_not_followed(tmp_path):
     # A symlinked subdir is NOT followed as a member
     # (is_dir(follow_symlinks=False)).
