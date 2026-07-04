@@ -182,7 +182,13 @@ espera**.
 
 ## Conventions
 
-Conventions not yet established. Will populate as patterns emerge during development.
+- **Rebuild the .deb after every finished change.** The app the user runs is the installed
+  package (`/usr/bin/arduis` → `/usr/lib/python3/dist-packages/arduis/`), NOT the repo tree —
+  editing `src/` alone changes nothing for the running app. As soon as a change is done (suite
+  green), run `dpkg-buildpackage -us -uc -b` at the repo root (output: `../arduis_1.0.0_all.deb`)
+  and tell the user to install it (`sudo dpkg -i ~/Projects/arduis_1.0.0_all.deb` — sudo is the
+  user's step). Verify the fix is inside the package with
+  `dpkg-deb --fsys-tarfile ../arduis_1.0.0_all.deb | tar -xO ./usr/lib/python3/dist-packages/arduis/<file>.py | grep <symbol>`.
 
 ## Architecture
 
