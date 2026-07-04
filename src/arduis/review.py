@@ -76,6 +76,33 @@ def argv_worktree_prune(source_repo: str) -> list[str]:
     return ["git", "-C", source_repo, "worktree", "prune"]
 
 
+# --- REVIEW-03: unmerged-commits gate (conclude warning) ---------------------
+
+def argv_log_unmerged(worktree_dir: str, base_branch: str) -> list[str]:
+    """``git -C <worktree> --no-pager log --oneline <base>..HEAD``.
+
+    Lists the commits on the workspace branch that are NOT reachable from the
+    source repo's default branch — the read-only probe behind the conclude
+    "commits não integrados" warning. ``--end-of-options`` precedes the range so
+    even a base name starting with a dash cannot inject a flag (T-08-01), and
+    ``--no-decorate`` keeps each line a plain ``<sha> <subject>`` pair.
+    """
+    return [
+        "git", "-C", worktree_dir, "--no-pager", "log", "--oneline",
+        "--no-decorate", "--end-of-options", f"{base_branch}..HEAD",
+    ]
+
+
+def parse_unmerged_commits(stdout: str) -> list[str]:
+    """Parse ``--oneline`` output into a list of commit lines; NEVER raises.
+
+    Empty/whitespace-only stdout (branch fully merged) => ``[]`` => no warning.
+    Tolerant by design like every parser here: junk lines pass through verbatim
+    (they are only ever DISPLAYED in the warning dialog, never executed).
+    """
+    return [line.strip() for line in stdout.splitlines() if line.strip()]
+
+
 # --- GIT-01: branch + ahead/behind reads -------------------------------------
 
 def argv_current_branch(repo: str) -> list[str]:

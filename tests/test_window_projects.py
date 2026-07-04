@@ -231,9 +231,20 @@ def test_remove_with_live_workspaces_tears_down_then_drops(monkeypatch):
                         lambda t: teardowns.append(t.workspace_id))
     monkeypatch.setattr(win, "_clear_workspace_state_files",
                         lambda t: cleared.append(t.workspace_id))
-    # capture the compose-down argv that would hit subprocess.run
-    monkeypatch.setattr(W.subprocess, "run",
-                        lambda argv, **k: downed.append(argv) or None)
+    # capture the compose-down argv — DETACHED fire-and-forget (2026-07-03: the
+    # old brief-sync subprocess.run blocked the GTK loop ~10s per workspace on
+    # close; teardown must not wait). A blocking run() here is a regression.
+    def _fake_popen(argv, **kwargs):
+        assert kwargs.get("start_new_session"), "down must detach from the app"
+        downed.append(argv)
+
+    monkeypatch.setattr(W.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(
+        W.subprocess, "run",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("blocking subprocess.run in container teardown")
+        ),
+    )
     # GTK chrome no-ops (no display). _open_shell_leaf: dropping the active project
     # switches to /Other, which (03.4 UAT fix) seeds its main shell — stub the spawn.
     for n in ("_refresh_project_chrome", "_rebuild_sidebar", "_build_project_tabs",
@@ -337,8 +348,20 @@ def test_close_request_tears_down_all_projects(monkeypatch):
     monkeypatch.setattr(win, "_teardown_session_terminals_now",
                         lambda t: teardowns.append(t.workspace_id) or [])
     monkeypatch.setattr(win, "_clear_workspace_state_files", lambda t: None)
-    monkeypatch.setattr(W.subprocess, "run",
-                        lambda argv, **k: down_argvs.append(argv) or None)
+
+    # Compose-down channel is a DETACHED Popen (2026-07-03 — close must not
+    # block on `down`); a blocking subprocess.run here is a regression.
+    def _fake_popen(argv, **kwargs):
+        assert kwargs.get("start_new_session"), "down must detach from the app"
+        down_argvs.append(argv)
+
+    monkeypatch.setattr(W.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(
+        W.subprocess, "run",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("blocking subprocess.run in container teardown")
+        ),
+    )
 
     win._on_close_request()
 
@@ -507,3 +530,26 @@ def test_apply_theme_recolors_terminals_in_all_projects():
     assert bg_term.colors_calls == 1, "background project's terminal was NOT recolored"
     assert bg_term.cursor_calls == 1
     assert win._current_theme.name == "nord"
+
+
+def test_resolve_cwd_project_never_resolves_home(monkeypatch):
+    """$HOME is never a project (guard before D-05/D-07 detection).
+
+    Launched from the desktop icon the cwd is $HOME; dotfile setups can make it
+    LOOK like a project (hidden tooling clones, or home itself being a git repo
+    for dotfiles). The guard returns (None, []) without even scanning, so no
+    phantom project named after the user is ever auto-registered.
+    """
+    win = W.ArduisWindow.__new__(W.ArduisWindow)
+
+    home = os.path.expanduser("~")
+    monkeypatch.setattr(W.os, "getcwd", lambda: home)
+    # If the guard is missing, detection WOULD qualify home as a project.
+    monkeypatch.setattr(W, "detect_member_repos", lambda root: ["backend"])
+
+    def _boom(*a, **k):
+        raise AssertionError("home must short-circuit before any git subprocess")
+
+    monkeypatch.setattr(W.subprocess, "run", _boom)
+
+    assert win._resolve_cwd_project() == (None, [])

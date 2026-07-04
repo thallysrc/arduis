@@ -64,6 +64,19 @@ def test_create_skips_isolation_when_unavailable(monkeypatch, tmp_path):
     assert ("_spawn_workspace_terminals",) in calls  # creation itself unaffected
 
 
+def test_create_respects_isolate_false(monkeypatch, tmp_path):
+    # 2026-07-03 follow-up: the "Novo workspace" dialog grew an "Isolar
+    # containers" check (default ON). Unchecking it must skip the auto-enable
+    # even when the feature is available; creation itself is unaffected.
+    win, calls = _bare_window(monkeypatch, available=True)
+    repos = [RepoCheckout(repo_name="backend", worktree_dir=str(tmp_path / "backend"), branch="feat")]
+
+    win._finalize_workspace_creation(_workspace(tmp_path, repos), ["backend"], [], isolate=False)
+
+    assert not any(c[0] == "_enable_isolation" for c in calls)
+    assert ("_spawn_workspace_terminals",) in calls
+
+
 def test_zombie_workspace_never_auto_enables(monkeypatch, tmp_path):
     # zero repos succeeded → workspace torn down; no containers for a zombie
     win, calls = _bare_window(monkeypatch, available=True)

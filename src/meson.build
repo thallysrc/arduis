@@ -15,6 +15,7 @@ py.install_sources(
     'arduis/appconfig.py',
     'arduis/attention.py',
     'arduis/caps.py',
+    'arduis/claude_trust.py',
     'arduis/compose.py',
     'arduis/containerstate.py',
     'arduis/docker_service.py',

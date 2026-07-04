@@ -138,6 +138,33 @@ def test_parse_ahead_behind_never_raises_on_junk():
         assert review.parse_ahead_behind(junk) == (0, 0)
 
 
+# --- unmerged-commits gate (conclude warning) --------------------------------
+
+def test_argv_log_unmerged_shape_and_range():
+    argv = review.argv_log_unmerged("/ws/feat/backend", "master")
+    assert argv[:3] == ["git", "-C", "/ws/feat/backend"]
+    assert "--no-pager" in argv and "log" in argv and "--oneline" in argv
+    assert argv[-1] == "master..HEAD"
+    # --end-of-options precedes the range so a dash-leading base can't inject a flag
+    assert argv[argv.index("--end-of-options") + 1] == "master..HEAD"
+
+
+def test_argv_log_unmerged_dash_base_cannot_inject_flag():
+    argv = review.argv_log_unmerged("/ws/x", "-evil")
+    assert argv.index("--end-of-options") < argv.index("-evil..HEAD")
+
+
+def test_parse_unmerged_commits_lines():
+    out = "abc1234 feat: a\ndef5678 fix: b\n"
+    assert review.parse_unmerged_commits(out) == [
+        "abc1234 feat: a", "def5678 fix: b"]
+
+
+def test_parse_unmerged_commits_empty_means_merged():
+    assert review.parse_unmerged_commits("") == []
+    assert review.parse_unmerged_commits("  \n\n") == []
+
+
 # --- the GTK-free domain discipline ------------------------------------------
 
 def test_review_module_is_gtk_free():

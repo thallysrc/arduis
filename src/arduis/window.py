@@ -94,7 +94,7 @@ from arduis.session import (  # noqa: E402
     default_workspace_terminals,
     hibernate_fields,
 )
-from arduis import agentconfig, appconfig, keyconfig, repoconfig, trust  # noqa: E402
+from arduis import agentconfig, appconfig, claude_trust, keyconfig, repoconfig, trust  # noqa: E402
 from arduis import voice, voice_store, voiceconfig  # noqa: E402  (voice agent)
 from arduis.voice_controller import VoiceController  # noqa: E402  (Gst is lazy inside)
 from arduis.themes import THEMES, Theme, get_theme  # noqa: E402
@@ -2398,32 +2398,19 @@ class ArduisWindow(Adw.ApplicationWindow):
         # Keep a handle so the ~2s RAM poll can refresh the sub-line in place.
         self._subline_by_sid[sid] = sub
 
-        # Phase 7 (CONT-04, D-10): when this workspace has isolated containers enabled,
-        # render the resolved host ports as `<service>:<host>` badges under the
-        # sub-line (read from the in-memory/persisted ContainerState — NOT a live
-        # docker query). While a compose op is in flight show a spinner instead.
-        if sid != _MAIN_SID:
-            if sid in self._compose_busy:
-                spinner = Gtk.Spinner()
-                spinner.start()
-                spinner.set_valign(Gtk.Align.CENTER)
-                text.append(spinner)
-            else:
-                state = self._container_state.get(sid)
-                if state is not None and state.enabled and state.ports:
-                    badges = Gtk.Box(
-                        orientation=Gtk.Orientation.HORIZONTAL, spacing=6
-                    )
-                    for service, entries in state.ports.items():
-                        for entry in entries:
-                            host = entry.get("host")
-                            if host is None:
-                                continue
-                            badge = Gtk.Label(label=f"{service}:{host}", xalign=0)
-                            badge.add_css_class("arduis-badge")
-                            badges.append(badge)
-                    if badges.get_first_child() is not None:
-                        text.append(badges)
+        # Phase 7 (CONT-04, D-10): while a compose op is in flight show a spinner
+        # at the row's TRAILING edge, vertically centered (UX 2026-07-03 — it used
+        # to sit under the sub-line, visually floating). The resolved host ports
+        # are NOT rendered in the sidebar anymore (same UX pass: the badge line
+        # cluttered the row); they still reach the user via the "Containers no
+        # ar" toast and the persisted arduis.container.toml.
+        if sid != _MAIN_SID and sid in self._compose_busy:
+            spinner = Gtk.Spinner()
+            spinner.start()
+            spinner.set_hexpand(True)
+            spinner.set_halign(Gtk.Align.END)
+            spinner.set_valign(Gtk.Align.CENTER)
+            outer.append(spinner)
 
         if not active:
             row.add_css_class("arduis-row-hibernated")
@@ -2451,22 +2438,6 @@ class ArduisWindow(Adw.ApplicationWindow):
             menu = Gio.Menu()
             if session is not None and session.state == SessionState.ACTIVE:
                 menu.append("Hibernar", "win.hibernate")  # D-08
-                # D-10: close-a-repository — only meaningful for a multi-repo workspace
-                # (closing the sole repo == hibernate). One entry per repo; the
-                # action target is the repo_name. NEVER deletes from disk.
-                if len(session.repos) > 1:
-                    repo_menu = Gio.Menu()
-                    for repo in session.repos:
-                        item = Gio.MenuItem.new(
-                            f"Fechar {repo.repo_name}",
-                            None,
-                        )
-                        item.set_action_and_target_value(
-                            "win.close_repo",
-                            GLib.Variant.new_string(repo.repo_name),
-                        )
-                        repo_menu.append_item(item)
-                    menu.append_submenu("Fechar repositório", repo_menu)
             else:
                 menu.append("Retomar", "win.resume")
             # Phase 7 (CONT-01, D-11): the per-workspace isolation toggle is appended
@@ -2501,7 +2472,7 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         - "Ver diff ▸ <repo>" (REVIEW-01, D-02): a submenu with one item per repo
           for a multi-repo workspace; a single "Ver diff" item for a 1-repo workspace. String
-          target = repo_name (mirrors win.close_repo).
+          target = repo_name.
         - "Atualizar status" (D-03): forces a TTL-bypassing status re-read.
         - "Abrir PR (web)" (D-05/REVIEW-02): the ONE allowed write, appended ONLY
           when gh is available.
@@ -2629,9 +2600,38 @@ class ArduisWindow(Adw.ApplicationWindow):
                 return
             # ALWAYS write an override (D-05): override_bytes({}) emits a minimal
             # empty-services override so the `-f override` path always resolves.
+            # CONT-07: fixed-name resources (container_name / network name /
+            # volume name) bypass COMPOSE_PROJECT_NAME and collide with the root
+            # stack — rename them with the project prefix in the same override.
+            try:
+                with open(
+                    os.path.join(workspace_dir, "docker-compose.yml"),
+                    "r", encoding="utf-8",
+                ) as fh:
+                    base_text = fh.read()
+            except OSError:
+                base_text = ""
+            names = compose.fixed_name_overrides(base_text, project)
+            # CONT-08: bind-mounting services run as the HOST user so the
+            # artifacts they write into the worktrees (__pycache__, node_modules)
+            # stay user-owned and conclude's `git worktree remove` never EACCESes.
+            users = compose.user_overrides(model, os.getuid(), os.getgid())
+            for svc, extra in users["services"].items():
+                names["services"].setdefault(svc, {}).update(extra)
+            # CONT-09: a CONT-08 service that also mounts a volume (anonymous
+            # node_modules shadow) EACCESes on the fresh root-owned volume —
+            # chown it via a one-shot init service gating the app service.
+            inits = compose.volume_init_overrides(
+                model, users, os.getuid(), os.getgid()
+            )
+            for svc, extra in inits["services"].items():
+                names["services"].setdefault(svc, {}).update(extra)
+            names["volumes"].update(inits["volumes"])
             override_path = os.path.join(workspace_dir, "docker-compose.override.yml")
             try:
-                self._write_override(override_path, compose.override_bytes(port_map))
+                self._write_override(
+                    override_path, compose.override_bytes(port_map, names)
+                )
             except OSError as exc:
                 self._finish_isolation_error(workspace, "override falhou", str(exc))
                 return
@@ -2639,9 +2639,73 @@ class ArduisWindow(Adw.ApplicationWindow):
                 "project": project,
                 "port_map": port_map,
             }
-            docker_service.run_compose_async(
-                compose.up_argv(project, workspace_dir), _on_up, runner=self._runner
-            )
+
+            # CONT-10: clone the root stack's volume DATA into the workspace
+            # volumes BEFORE `up` — duplicating the stack duplicates the
+            # databases, not just the containers. Best-effort per volume: dest
+            # already exists → keep it (re-isolation preserves data); source
+            # missing / any step failing → fall back to the empty volume
+            # compose would have created anyway. A failed copy removes the
+            # half-written dest so postgres never adopts partial data.
+            clone_plan = compose.volume_clone_plan(model, project)
+
+            def _start_up() -> None:
+                docker_service.run_compose_async(
+                    compose.up_argv(project, workspace_dir), _on_up,
+                    runner=self._runner,
+                )
+
+            def _clone_next(idx: int) -> None:
+                if idx >= len(clone_plan):
+                    _start_up()
+                    return
+                item = clone_plan[idx]
+
+                def _after_source(rc: int, _o: str, _e: str) -> None:
+                    if rc != 0:  # no root data to clone
+                        _clone_next(idx + 1)
+                        return
+                    docker_service.run_compose_async(
+                        compose.volume_create_argv(
+                            item["dest"], project, item["key"]
+                        ),
+                        _after_create, runner=self._runner,
+                    )
+
+                def _after_create(rc: int, _o: str, _e: str) -> None:
+                    if rc != 0:
+                        _clone_next(idx + 1)
+                        return
+                    docker_service.run_compose_async(
+                        compose.volume_clone_argv(item["source"], item["dest"]),
+                        _after_clone, runner=self._runner,
+                    )
+
+                def _after_clone(rc: int, _o: str, _e: str) -> None:
+                    if rc != 0:
+                        docker_service.run_compose_async(
+                            compose.volume_remove_argv(item["dest"]),
+                            lambda *_a: _clone_next(idx + 1),
+                            runner=self._runner,
+                        )
+                        return
+                    _clone_next(idx + 1)
+
+                def _after_dest(rc: int, _o: str, _e: str) -> None:
+                    if rc == 0:  # dest exists — re-isolation keeps its data
+                        _clone_next(idx + 1)
+                        return
+                    docker_service.run_compose_async(
+                        compose.volume_exists_argv(item["source"]),
+                        _after_source, runner=self._runner,
+                    )
+
+                docker_service.run_compose_async(
+                    compose.volume_exists_argv(item["dest"]), _after_dest,
+                    runner=self._runner,
+                )
+
+            _clone_next(0)
 
         def _on_up(rc: int, out: str, err: str) -> None:
             pending = self._compose_pending.pop(workspace_id, None)
@@ -2664,9 +2728,37 @@ class ArduisWindow(Adw.ApplicationWindow):
             self._toast(f"Containers no ar: {self._ports_summary(port_map)}")
             self._rebuild_sidebar()  # badges show
 
+        # CONT-06 (root cause 2026-07-03): fresh worktrees carry no gitignored
+        # files, so the env files the base compose points into member repos
+        # (env_file: ./backend/app/.env) don't exist yet and `config` exits 1
+        # before the chain starts. Materialize them from the root checkout first.
+        self._sync_env_files(workspace_dir)
+
         docker_service.run_compose_async(
             compose.config_argv(workspace_dir), _on_config, runner=self._runner
         )
+
+    def _sync_env_files(self, workspace_dir: str) -> None:
+        """Copy root-only ``env_file`` files into the workspace (CONT-06).
+
+        COPY, never symlink — a per-workspace edit must not leak back to the
+        root checkout. Best-effort: any failure just falls through to the
+        compose call, whose stderr already reaches the user via toast.
+        """
+        base = os.path.join(workspace_dir, "docker-compose.yml")
+        try:
+            with open(base, "r", encoding="utf-8") as fh:
+                text = fh.read()
+        except OSError:
+            return
+        root = os.path.dirname(os.path.realpath(base))
+        plan = compose.env_copy_plan(root, workspace_dir, compose.env_file_paths(text))
+        for src, dst in plan:
+            try:
+                os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+                shutil.copy2(src, dst)
+            except OSError:
+                continue
 
     def _disable_isolation(self, workspace: Workspace) -> None:
         """Async opt-out: ``down --remove-orphans --volumes``, KEEP the port map.
@@ -3220,8 +3312,15 @@ class ArduisWindow(Adw.ApplicationWindow):
         briefly at startup is acceptable (CLAUDE.md) — routed through the
         HostRunner seam. Returns ``(None, [])`` when the cwd is not a project.
         Does NOT mutate any state (the seeding is ``_init_projects``'s job).
+
+        ``$HOME`` is never a project: launched from the desktop icon the cwd is
+        the home dir, and dotfile setups can make it LOOK like one (hidden
+        tooling clones, or home itself being a git repo). Auto-registering it
+        creates a phantom project named after the user on every start.
         """
         cwd = os.getcwd()
+        if os.path.realpath(cwd) == os.path.realpath(os.path.expanduser("~")):
+            return None, []
         members = detect_member_repos(cwd)          # D-05 direct-subdir .git scan
         if members:
             return cwd, members
@@ -3516,13 +3615,20 @@ class ArduisWindow(Adw.ApplicationWindow):
         return proj.compose_path is not None and self._docker_available
 
     def _teardown_project_containers(self, proj) -> None:
-        """Brief-sync ``compose down -v`` for each enabled workspace of ``proj`` (D-10/D-11).
+        """DETACHED ``compose down -v`` for each enabled workspace of ``proj`` (D-10/D-11).
 
         Uses THIS project's OWN compose identity (``proj.container_state`` +
         per-workspace ``project_name``/``workspace_dir``) — never the active project's — so two
         projects produce two DISTINCT compose-down argv. argv is built as a LIST via
         ``compose.down_argv`` + ``HostRunner.wrap_argv`` (never a shell string), so a
-        crafted project/branch name cannot inject (T-03.4-11). Best-effort, capped.
+        crafted project/branch name cannot inject (T-03.4-11).
+
+        Fire-and-forget (2026-07-03; the old brief-sync ``subprocess.run(timeout=10)``
+        froze the close ~10s PER workspace — a 14-service stack eats the whole
+        timeout). The CLI only *asks* the daemon to tear down; nothing needs to
+        wait on it. ``start_new_session`` detaches it from the app's process
+        groups (the killpg sweep must not reap it; it must outlive the window)
+        and DEVNULL stdio means no pipe to a dead parent → no SIGPIPE mid-down.
         """
         if not self._project_isolation_available(proj):
             return
@@ -3537,8 +3643,14 @@ class ArduisWindow(Adw.ApplicationWindow):
                 compose.down_argv(project_name, workspace.workspace_dir)
             )
             try:
-                subprocess.run(argv, capture_output=True, timeout=10, check=False)
-            except (OSError, subprocess.SubprocessError):
+                subprocess.Popen(
+                    argv,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+            except OSError:
                 pass  # best-effort; the daemon outlives the app regardless
 
     def _drop_project(self, root: str) -> None:
@@ -3976,7 +4088,8 @@ class ArduisWindow(Adw.ApplicationWindow):
             chosen = [name for name, c in repo_checks.items() if c.get_active()]
             if not chosen:
                 return  # require at least one repo
-            self._create_workspace(branch, chosen, existing)
+            isolate = isolate_check.get_active() if isolate_check is not None else True
+            self._create_workspace(branch, chosen, existing, isolate=isolate)
 
         dialog.connect("response", _on_response)
         dialog.present(self)
@@ -3984,7 +4097,11 @@ class ArduisWindow(Adw.ApplicationWindow):
     # --- create flow: per-repo chained sequence (D-01/D-02/D-08/D-09/D-13) --
 
     def _create_workspace(
-        self, branch: str, chosen_repos: list[str], existing_in_primary: list[str]
+        self,
+        branch: str,
+        chosen_repos: list[str],
+        existing_in_primary: list[str],
+        isolate: bool = True,
     ) -> None:
         """Materialize the workspace folder, kick the per-repo chain, then open the PAIR.
 
@@ -4038,7 +4155,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         repo_errors: list[str] = list(symlink_errors)
 
         # Kick the per-repo chain (one repo at a time, fully async — Pattern 2).
-        self._add_repo(workspace, chosen_repos, 0, branch, repo_errors)
+        self._add_repo(workspace, chosen_repos, 0, branch, repo_errors, isolate)
 
     def _build_workspace_terminals(self, workspace: Workspace, repos: list[str]) -> LayoutModel:
         """Build the DEFAULT 2-terminal workspace for ``workspace`` (UX pivot 2026-06-11).
@@ -4097,6 +4214,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         i: int,
         branch: str,
         repo_errors: list[str],
+        isolate: bool = True,
     ) -> None:
         """Resolve + add ONE repo's worktree, then advance to repo ``i+1`` (D-13).
 
@@ -4114,7 +4232,7 @@ class ArduisWindow(Adw.ApplicationWindow):
             # a workspace where EVERY repo failed must NOT linger as a sidebar row that
             # counts toward the cap. Prune accordingly (NEVER deletes from disk —
             # D-10; the symlink-only folder may remain, startup scan rejects it).
-            self._finalize_workspace_creation(workspace, repos, repo_errors)
+            self._finalize_workspace_creation(workspace, repos, repo_errors, isolate)
             return
 
         name = repos[i]
@@ -4122,7 +4240,7 @@ class ArduisWindow(Adw.ApplicationWindow):
         wt_dir = repo_worktree_dir(workspace.workspace_dir, name)
 
         def _advance() -> None:
-            self._add_repo(workspace, repos, i + 1, branch, repo_errors)
+            self._add_repo(workspace, repos, i + 1, branch, repo_errors, isolate)
 
         def _has_commit_done(hstatus, _hout, _herr):
             if hstatus != 0:
@@ -4195,7 +4313,11 @@ class ArduisWindow(Adw.ApplicationWindow):
         run_git_async(argv_repo_has_commit(repo_path), _has_commit_done, self._runner)
 
     def _finalize_workspace_creation(
-        self, workspace: Workspace, chosen_repos: list[str], repo_errors: list[str]
+        self,
+        workspace: Workspace,
+        chosen_repos: list[str],
+        repo_errors: list[str],
+        isolate: bool = True,
     ) -> None:
         """Finalize the create chain: drop zombie workspaces, else open the workspace PAIR.
 
@@ -4233,11 +4355,13 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         # Pivot 2026-07-03 (supersedes CONT-04's "never auto-enable"): creating a
         # workspace in a project with a root compose + docker brings its isolated
-        # stack up automatically — same gate as the menu item, and AFTER the
-        # terminals spawn so the agent pair never waits on a slow image pull.
-        # _enable_isolation keeps its own guards (busy / already enabled) and its
-        # failure path only toasts + persists enabled=False — creation never breaks.
-        if self._isolation_available():
+        # stack up — gated by the dialog's "Isolar containers" check (default ON;
+        # ``isolate`` threads the choice through the create chain), same
+        # availability gate as the menu item, and AFTER the terminals spawn so
+        # the agent pair never waits on a slow image pull. _enable_isolation
+        # keeps its own guards (busy / already enabled) and its failure path
+        # only toasts + persists enabled=False — creation never breaks.
+        if isolate and self._isolation_available():
             self._enable_isolation(workspace)
 
         # ENV-02 / criterion 4: run each succeeded repo's trusted [setup] in its shell
@@ -4272,7 +4396,20 @@ class ArduisWindow(Adw.ApplicationWindow):
 
         Both root at ``_workspace_root_cwd(workspace)`` (the workspace folder, or the sole repo's
         worktree in the degenerate 1-repo case). pid/pgid land on ``workspace.terminals``.
+
+        Before spawning, propagate the project root's claude trust to the workspace
+        paths (claude_trust): the agent pane runs ``claude`` immediately, and without
+        a ``hasTrustDialogAccepted`` entry for the fresh folder it drops the repo's
+        ``settings.local.json`` permissions until the user re-accepts the dialog.
+        Shared create+resume hook point, so pre-fix workspaces heal on reopen.
         """
+        proj = self._project_for_workspace(workspace)
+        if proj is not None:
+            claude_trust.pretrust_paths(
+                claude_trust.default_claude_json_path(),
+                proj.root,
+                [workspace.workspace_dir, *(r.worktree_dir for r in workspace.repos)],
+            )
         cwd = self._workspace_root_cwd(workspace)
         agent_tid = f"{workspace.workspace_id}:t0"
         shell_tid = f"{workspace.workspace_id}:t1"
@@ -4632,9 +4769,9 @@ class ArduisWindow(Adw.ApplicationWindow):
     def _on_ver_diff(self, _action, param) -> None:
         """Row-menu ``win.ver_diff(repo_name)``: open the read-only diff for that repo.
 
-        Resolves the right-clicked workspace + the repo by the string target (mirrors
-        ``win.close_repo``). A hibernated workspace still has worktrees on disk, so the
-        diff is available there too.
+        Resolves the right-clicked workspace + the repo by the string target. A
+        hibernated workspace still has worktrees on disk, so the diff is
+        available there too.
         """
         if self._menu_target_sid is None:
             return
@@ -4827,44 +4964,65 @@ class ArduisWindow(Adw.ApplicationWindow):
         small async state machine driven by ``run_git_async`` callbacks because the
         git reads/removes are async. The ORDER is the security of this phase:
 
-          (a) ``_teardown_session_terminals`` (kill the workspace's agent/shell process
+          (a) CLEAN-GATE FIRST: per-repo ``git status --porcelain`` — ALL-OR-NOTHING,
+              READ-ONLY. If ANY repo is dirty the WHOLE conclude REFUSES **before
+              anything is touched**: agents keep running, containers stay up, state
+              files stay. NEVER ``--force`` (the cardinal-sin guard). The gate used
+              to run AFTER the kill — a refused conclude then left the workspace with
+              dead PTYs behind live VTE widgets (frozen, input-less terminals).
+          (a2) UNMERGED-COMMITS GATE, still READ-ONLY: per-repo default-branch
+              detection + ``git log <base>..HEAD``. Commits on the workspace
+              branch missing from the default branch surface a WARNING dialog
+              listing them; only an explicit "Concluir mesmo assim" proceeds,
+              and cancelling leaves the workspace fully alive (nothing was
+              touched yet).
+          (b) ``_teardown_session_terminals`` (kill the workspace's agent/shell process
               groups, killpg) then ``_clear_workspace_state_files`` (delete RUNTIME state
-              files — D-10-exempt arduis-owned data).
-          (b) ``_container_down`` (Phase-7 compose-down channel; no-op via its own
-              guards if isolation was OFF — a SEPARATE channel from killpg, T-07-13).
-          (c) CLEAN-GATE: per-repo ``git status --porcelain`` — ALL-OR-NOTHING. If
-              ANY repo is dirty the WHOLE conclude REFUSES; nothing is removed and a
-              pt-BR dialog/toast names the dirty repo(s). NEVER ``--force`` (the
-              cardinal-sin guard).
-          (d) ``git worktree remove`` (NO ``--force``) per repo, run with cwd=SOURCE
-              member repo (D-10), removing only the WORKTREE dir.
-          (e) ``git worktree prune`` per source repo.
-          (f) unlink the workspace folder's RELATIVE symlinks (``os.path.islink`` guard —
+              files — D-10-exempt arduis-owned data) then ``_container_down`` (Phase-7
+              compose-down channel; no-op via its own guards if isolation was OFF — a
+              SEPARATE channel from killpg, T-07-13). Runs ONLY once the gate passed.
+          (c) ``git worktree remove`` (NO ``--force``) per repo, run with cwd=SOURCE
+              member repo (D-10), removing only the WORKTREE dir. If git refuses here
+              (tree dirtied in the gate→remove race window) the workspace is
+              HIBERNATED — its terminals are already dead, so a resumable hibernated
+              row is the coherent state, never a zombie ACTIVE row.
+          (d) ``git worktree prune`` per source repo.
+          (e) unlink the workspace folder's RELATIVE symlinks (``os.path.islink`` guard —
               the LINK only, never the target/source/branch — D-10), rmdir if empty.
-          (g) drop the workspace from the store, rebuild the sidebar, fall back to main if
+          (f) drop the workspace from the store, rebuild the sidebar, fall back to main if
               it was the active workspace, and drop the ``{sid}:`` widget/handle maps
               the way ``_hibernate_workspace`` does.
         """
-        # (a) kill agents + clear runtime state files.
-        self._teardown_session_terminals(workspace)
-        self._clear_workspace_state_files(workspace)
-        # (b) compose down (its own guards no-op if isolation was off).
-        self._container_down(workspace)
-        # (c) clean-gate → on success continues to (d)..(g).
+        # (a) READ-ONLY clean-gate → only on ALL-CLEAN does anything destructive run.
         self._conclude_clean_gate(workspace)
 
+    def _conclude_teardown(self, workspace: Workspace) -> None:
+        """(b) The destructive teardown channels — ONLY after the gate passed.
+
+        Kills the workspace's agent/shell process groups, deletes its runtime state
+        files, and composes the container stack down. Must NEVER run before the
+        clean-gate: a refused conclude has to leave the workspace fully alive.
+        """
+        self._teardown_session_terminals(workspace)
+        self._clear_workspace_state_files(workspace)
+        self._container_down(workspace)
+
     def _conclude_clean_gate(self, workspace: Workspace) -> None:
-        """(c) Per-repo porcelain clean-gate — ALL-OR-NOTHING refusal (D-04, A2).
+        """(a) Per-repo porcelain clean-gate — ALL-OR-NOTHING refusal (D-04, A2).
 
         Reads ``git status --porcelain`` for EVERY repo (cwd=worktree). Collects all
         results, then if ANY repo is dirty (or any read failed rc!=0) REFUSES the
-        WHOLE conclude — ZERO worktree-remove argv is ever issued — and surfaces a
-        pt-BR dialog naming the dirty repo(s). Only when EVERY repo is clean does it
-        proceed to ``_conclude_remove_worktrees`` (T-08-12).
+        WHOLE conclude — ZERO worktree-remove argv is ever issued, NOTHING was
+        touched (the gate runs BEFORE any teardown, so agents/containers survive a
+        refusal) — and surfaces a pt-BR dialog naming the dirty repo(s). Only when
+        EVERY repo is clean does it tear down (``_conclude_teardown``) and proceed to
+        ``_conclude_remove_worktrees`` (T-08-12).
         """
         repos = list(workspace.repos)
         if not repos:
-            # No worktrees on disk to remove; go straight to store cleanup (f)+(g).
+            # No worktrees to gate/remove — still tear down terminals + containers
+            # before the store cleanup (e)+(f).
+            self._conclude_teardown(workspace)
             self._conclude_clean_workspace_folder(workspace)
             self._conclude_finalize(workspace)
             return
@@ -4885,8 +5043,9 @@ class ArduisWindow(Adw.ApplicationWindow):
                             f"commitadas — {names}. Conclua ou descarte antes."
                         )
                         self._conclude_refuse_dialog(names)
-                        return  # REFUSE — nothing removed (all-or-nothing)
-                    self._conclude_remove_worktrees(workspace)
+                        return  # REFUSE — nothing touched (all-or-nothing)
+                    # ALL clean → next READ-ONLY gate: unmerged-commits warning.
+                    self._conclude_unmerged_gate(workspace)
             return _on_status
 
         for repo in repos:
@@ -4916,15 +5075,142 @@ class ArduisWindow(Adw.ApplicationWindow):
         dialog.set_close_response("ok")
         dialog.present(self)
 
+    def _conclude_unmerged_gate(self, workspace: Workspace) -> None:
+        """(a2) READ-ONLY unmerged-commits gate — warn BEFORE anything destructive.
+
+        Runs only after the porcelain gate passed. For EVERY repo it resolves the
+        source repo's default branch (origin/HEAD → local HEAD fallback — the same
+        detection workspace creation uses) and lists the commits on the workspace
+        branch that are NOT on that default branch (``git log <base>..HEAD`` in
+        the worktree). All reads, nothing touched yet — so cancelling the warning
+        leaves the workspace fully alive (agents running, containers up).
+
+        - ANY repo with unmerged commits → ``_conclude_unmerged_dialog`` lists
+          them and asks explicit confirmation before ``_conclude_proceed``.
+        - None anywhere → ``_conclude_proceed`` directly (no extra click).
+        - Detection failures (no default branch, log rc!=0) degrade to "nothing
+          unmerged" for that repo: the warning is ADVISORY — conclude KEEPS the
+          branch and its commits either way (D-10); only the worktrees go.
+        """
+        repos = list(workspace.repos)
+        if not repos:
+            self._conclude_proceed(workspace)
+            return
+        pending = {"n": len(repos)}
+        findings: list[tuple[str, list[str]]] = []
+
+        def _done_one() -> None:
+            pending["n"] -= 1
+            if pending["n"] == 0:
+                if findings:
+                    findings.sort()
+                    self._conclude_unmerged_dialog(workspace, findings)
+                    return  # wait for the user's explicit "mesmo assim"
+                self._conclude_proceed(workspace)
+
+        def _check_repo(repo) -> None:
+            source = self._member_repo_path(repo.repo_name)
+
+            def _with_base(base: str) -> None:
+                if not base or base == repo.branch:
+                    # No usable base / workspace IS the default branch — nothing
+                    # to compare against; advisory gate passes for this repo.
+                    _done_one()
+                    return
+
+                def _on_log(rc: int, out: str, _err: str) -> None:
+                    commits = review.parse_unmerged_commits(out) if rc == 0 else []
+                    if commits:
+                        findings.append((repo.repo_name, commits))
+                    _done_one()
+
+                run_git_async(
+                    review.argv_log_unmerged(repo.worktree_dir, base),
+                    _on_log,
+                    runner=self._runner,
+                    cwd=repo.worktree_dir,
+                )
+
+            def _origin_done(rc: int, out: str, _err: str) -> None:
+                if rc == 0 and out.strip():
+                    _with_base(parse_default_branch(out))
+                    return
+
+                def _local_done(lrc: int, lout: str, _lerr: str) -> None:
+                    _with_base(lout.strip() if lrc == 0 else "")
+
+                run_git_async(
+                    argv_default_branch_local(source), _local_done, self._runner
+                )
+
+            run_git_async(
+                argv_default_branch_via_origin(source), _origin_done, self._runner
+            )
+
+        for repo in repos:
+            _check_repo(repo)
+
+    def _conclude_unmerged_dialog(
+        self, workspace: Workspace, findings: list[tuple[str, list[str]]]
+    ) -> None:
+        """Warn that the branch has commits missing from the default branch.
+
+        Lists the unmerged commits per repo (capped at 10 per repo so the dialog
+        stays readable) and asks for EXPLICIT confirmation. "Cancelar" is the
+        default/close response and aborts with the workspace fully alive — the
+        gate ran before any destructive channel. Only "Concluir mesmo assim"
+        (DESTRUCTIVE-styled) runs ``_conclude_proceed``.
+        """
+        lines: list[str] = []
+        for repo_name, commits in findings:
+            lines.append(f"{repo_name}:")
+            lines.extend(f"  • {c}" for c in commits[:10])
+            if len(commits) > 10:
+                lines.append(f"  … e mais {len(commits) - 10} commit(s)")
+        dialog = Adw.AlertDialog(
+            heading="Commits não integrados",
+            body=(
+                f"A branch “{workspace.branch}” tem commits que ainda não estão "
+                "na branch principal:\n\n" + "\n".join(lines) + "\n\n"
+                "A branch e os commits são mantidos no repositório fonte, mas as "
+                "worktrees serão removidas. Concluir mesmo assim?"
+            ),
+        )
+        dialog.add_response("cancel", "Cancelar")
+        dialog.add_response("ok", "Concluir mesmo assim")
+        dialog.set_response_appearance("ok", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+
+        def _on_response(_dlg, response):
+            if response == "ok":
+                self._conclude_proceed(workspace)
+
+        dialog.connect("response", _on_response)
+        dialog.present(self)
+
+    def _conclude_proceed(self, workspace: Workspace) -> None:
+        """Run the destructive channels — ONLY after every read-only gate passed.
+
+        The single entry point into (b)+(c): both the no-findings path of the
+        unmerged gate and the dialog's "Concluir mesmo assim" land here, so the
+        teardown→remove pairing can never diverge between the two paths.
+        """
+        self._conclude_teardown(workspace)
+        self._conclude_remove_worktrees(workspace)
+
     def _conclude_remove_worktrees(self, workspace: Workspace) -> None:
         """(d) Per-repo ``git worktree remove`` (NO ``--force``), cwd=SOURCE repo (D-10).
 
         Runs ``review.argv_worktree_remove(source_repo, worktree_dir)`` for EACH repo
         with cwd=the SOURCE member repo (never the worktree). The remove TARGET is
         always the worktree dir; the source repo and the branch are never touched. If
-        git itself refuses (rc!=0 — e.g. the tree went dirty/locked between (c) and
-        (d)) the chain STOPS and surfaces the stderr in pt-BR — it does NOT escalate
-        to ``--force`` (T-08-14, Pitfall 3/6). When every remove succeeds → prune (e).
+        git itself refuses (rc!=0 — e.g. the tree went dirty/locked in the gate→remove
+        race window) the chain STOPS, surfaces the stderr in pt-BR, and HIBERNATES the
+        workspace — its terminals were already killed by ``_conclude_teardown``, so
+        leaving the row ACTIVE would show live VTE widgets over dead PTYs (the
+        frozen-terminal bug). It does NOT escalate to ``--force`` (T-08-14, Pitfall
+        3/6). When every remove succeeds → prune (d).
         """
         repos = list(workspace.repos)
         pending = {"n": len(repos)}
@@ -4941,7 +5227,11 @@ class ArduisWindow(Adw.ApplicationWindow):
                     if failed:
                         self._toast(
                             "Falha ao remover worktree(s): " + "; ".join(failed)
+                            + ". O workspace foi hibernado — retome para continuar."
                         )
+                        # Terminals are already dead (teardown ran pre-remove) —
+                        # hibernate so the row is resumable, never a zombie.
+                        self._hibernate_workspace(workspace)
                         return  # STOP — no --force escalation
                     self._conclude_prune(workspace)
             return _on_remove
@@ -5785,12 +6075,6 @@ class ArduisWindow(Adw.ApplicationWindow):
         resume.connect("activate", self._on_resume)
         self.add_action(resume)
 
-        # D-10: close-a-repository — kills that repo's terminal groups only and
-        # NEVER deletes anything from disk. Parameter is the chosen repo_name.
-        close_repo = Gio.SimpleAction.new("close_repo", GLib.VariantType.new("s"))
-        close_repo.connect("activate", self._on_close_repo)
-        self.add_action(close_repo)
-
         # UI-02 (D-08): win.set_theme(slug) backs the header "Tema" submenu. The
         # string target is a theme slug; _on_set_theme switches + persists.
         set_theme = Gio.SimpleAction.new("set_theme", GLib.VariantType.new("s"))
@@ -5824,8 +6108,8 @@ class ArduisWindow(Adw.ApplicationWindow):
         self.add_action(toggle_isolation)
 
         # Phase 8 (REVIEW-01, D-02): win.ver_diff(repo_name) opens a read-only diff
-        # leaf for that repo's worktree (string target = repo_name, mirroring
-        # close_repo). win.refresh_status (D-03) forces a status re-read; win.open_pr
+        # leaf for that repo's worktree (string target = repo_name).
+        # win.refresh_status (D-03) forces a status re-read; win.open_pr
         # (D-05) runs the ONE allowed write `gh pr create --web`. Both no-target,
         # using _menu_target_sid like hibernate.
         ver_diff = Gio.SimpleAction.new("ver_diff", GLib.VariantType.new("s"))
@@ -6035,58 +6319,6 @@ class ArduisWindow(Adw.ApplicationWindow):
         self._spawn_workspace_terminals(workspace)
         workspace.auto_suspended = False
 
-    def _on_close_repo(self, _action, param) -> None:
-        """D-10: close ONE repo of the right-clicked workspace — kill its groups, KEEP the dir.
-
-        Closing a repository tears down ONLY that repo's terminal process groups
-        (no orphan, SIGHUP→SIGKILL via ``_teardown_pgid``), drops its leaves from
-        the active layout + widget maps, and clears its terminals' pid/pgid. The
-        ``RepoCheckout`` STAYS in ``workspace.repos`` and its worktree dir STAYS on disk
-        — arduis NEVER deletes anything (no filesystem-removal nor worktree-pruning
-        calls here or anywhere; D-10). If closing leaves the workspace with zero live
-        terminals, fall back to the pinned main workspace so the canvas isn't blank.
-        """
-        workspace = self._menu_session()
-        if workspace is None or workspace.state != SessionState.ACTIVE:
-            return
-        repo_name = param.get_string()
-        repo = next((r for r in workspace.repos if r.repo_name == repo_name), None)
-        if repo is None:
-            return
-
-        sid = workspace.workspace_id
-        model = self._layouts.get(sid)
-        # Kill each of this repo's terminal groups and drop their leaves/widgets.
-        # The RepoCheckout itself is KEPT (dir on disk untouched — D-10).
-        for t in repo.terminals:
-            if t.pid:
-                self._teardown_pgid(t.pid)  # SIGHUP→SIGKILL, no orphan
-            if model is not None:
-                model.close_leaf(t.term_id)
-            self._leaf_by_sid.pop(t.term_id, None)
-            self._term_by_sid.pop(t.term_id, None)
-            t.pid = None
-            t.pgid = None
-
-        # Delete ONLY this repo's terminal state files (Pitfall 5b); the workspace-level
-        # pair's agents keep running so their files stay live (NOT touched here).
-        self._clear_repo_state_files(repo)
-
-        # If the workspace has NO live terminals left at all (workspace-level pair + any
-        # per-repo split), fall back to main so the canvas isn't pointing at an
-        # empty tree. UX pivot: with the agent+shell at workspace level, closing a repo
-        # normally leaves the workspace-level pair live and the workspace stays put.
-        any_live = any(
-            self._term_by_sid.get(t.term_id) is not None
-            for t in self._all_workspace_terminals(workspace)
-        )
-        if self._active_workspace_sid == sid and (
-            model is None or not model.visible_ids() or not any_live
-        ):
-            self._swap_workspace(_MAIN_SID)
-        elif self._active_workspace_sid == sid:
-            self._reflect_layout()
-
     # --- teardown (RAM-01, D-11/D-13) ---------------------------------------
 
     def _teardown_pgid(self, pid: int) -> None:
@@ -6221,34 +6453,6 @@ class ArduisWindow(Adw.ApplicationWindow):
             notif_by_tid.pop(record.term_id, None)
             self._dialog_on_screen.discard(path)
 
-    def _clear_repo_state_files(self, repo, root: str | None = None) -> None:
-        """Delete ONLY a closed repo's terminal state files (D-10 scoped, Pitfall 5b).
-
-        Used by close-repo: the workspace-level pair's agents keep running (their state
-        files stay live), so only the repo's own ``terminals`` are cleared. Same
-        status-dir-only path composition as ``_clear_workspace_state_files`` (T-04-16).
-
-        260616-buk (finding #6): ``root`` lets the caller name the OWNING project's
-        root explicitly; it defaults to the active root (the only close-repo path
-        today acts on the active project's workspace — behavior unchanged).
-        """
-        if root is None:
-            root = self._project_root
-        for record in repo.terminals:
-            # A3: unlink + drop the SAME project-namespaced path registered at spawn.
-            path = attention.state_file_path(
-                self._status_dir, self._proj_term_id_for(root, record.term_id)
-            )
-            try:
-                os.unlink(path)
-            except FileNotFoundError:
-                pass
-            except OSError:
-                pass
-            self._record_by_state_file.pop(path, None)
-            self._notif_by_tid.pop(record.term_id, None)
-            self._dialog_on_screen.discard(path)
-
     def _on_close_request(self, *_):
         """No-orphan teardown across ALL panes (D-13): scratch shell + sessions."""
         # Stop the ~2s RAM poll first so no source outlives the window (RAM-03).
@@ -6298,11 +6502,10 @@ class ArduisWindow(Adw.ApplicationWindow):
         # compose-down uses ITS OWN project's compose identity (per-project
         # container_state + project_name) — NEVER the active project's name for all
         # (a bug that reused one name would leak the other project's containers).
-        # Async on_done may never fire because the window closes immediately, so here
-        # ONLY (app-exit, guaranteed-no-orphan) a brief SYNCHRONOUS subprocess.run is
-        # acceptable per CLAUDE.md ("blocking briefly is acceptable"). `down` can be
-        # slow → cap with a short timeout and swallow errors; the window still closes.
-        # The hibernate path stays async.
+        # The downs are DETACHED fire-and-forget Popens (2026-07-03): the old
+        # brief-sync run(timeout=10) froze the close ~10s per workspace. The
+        # detached CLI outlives the window and finishes the teardown against the
+        # daemon on its own. The hibernate path stays async.
         for project in self._registry.all():
             self._teardown_project_containers(project)
         return False  # allow the window to close

@@ -49,6 +49,16 @@ __all__ = [
     "down_argv",
     "config_argv",
     "ls_argv",
+    "env_file_paths",
+    "env_copy_plan",
+    "fixed_name_overrides",
+    "user_overrides",
+    "volume_init_overrides",
+    "volume_clone_plan",
+    "volume_exists_argv",
+    "volume_create_argv",
+    "volume_clone_argv",
+    "volume_remove_argv",
 ]
 
 
@@ -208,7 +218,7 @@ def _port_string(entry: dict) -> str:
     return f"{host}:{target}"
 
 
-def override_bytes(port_map: dict) -> bytes:
+def override_bytes(port_map: dict, name_overrides: dict | None = None) -> bytes:
     """Emit a ``docker-compose.override.yml`` byte payload (D-01 — load-bearing).
 
     For every service in ``port_map`` (the ``assign_ports`` shape) emit
@@ -217,17 +227,30 @@ def override_bytes(port_map: dict) -> bytes:
     ``"<ip>:<host>:<target>"``). Round-tripping the bytes through
     ``docker compose config`` yields ONLY the offset port — never the base port.
 
+    ``name_overrides`` (CONT-07, the ``fixed_name_overrides`` shape) is merged
+    in: per-service ``container_name`` renames plus top-level ``networks``/
+    ``volumes`` sections — scalar keys, so the plain compose merge REPLACES them
+    (no ``!override`` tag needed).
+
     Empty-map case (D-05): ``override_bytes({})`` returns a valid minimal override
     with an empty ``services: {}`` map, so the window can ALWAYS write an override
     file even when a stack has no published ports (``up_argv`` unconditionally
     passes ``-f <override>``).
     """
+    names = name_overrides or {}
     services: dict = {}
     for service, entries in port_map.items():
         services[service] = {"ports": _Override(_port_string(e) for e in entries)}
+    for service, extra in names.get("services", {}).items():
+        services.setdefault(service, {}).update(extra)
+
+    doc: dict = {"services": services}
+    for section in ("networks", "volumes"):
+        if names.get(section):
+            doc[section] = names[section]
 
     body = yaml.dump(
-        {"services": services},
+        doc,
         default_flow_style=False,
         sort_keys=False,
     )
@@ -292,3 +315,320 @@ def ls_argv() -> list[str]:
         "--format",
         "json",
     ]
+
+
+# --- root-only env files → workspace (CONT-06) --------------------------------
+#
+# Fresh worktrees carry NO gitignored files. When the base compose points
+# ``env_file:`` inside a member repo (``./backend/app/.env``) the file exists in
+# the ROOT checkout but not in a new worktree, and ``docker compose config``
+# exits 1 before the isolation chain even starts. These two pure helpers let the
+# window copy exactly the files compose will ask for — nothing else.
+
+def env_file_paths(base_text: str) -> list[str]:
+    """Relative ``env_file`` paths declared by ``services.*`` in the base compose.
+
+    Tolerant of all three Compose-spec forms (string, list of strings, list of
+    ``{path, required}`` maps) and of garbage input (broken YAML / non-mapping
+    services → ``[]``). Absolute paths are skipped — they resolve identically
+    from the workspace, so there is nothing to materialize. Deduped, in
+    declaration order.
+    """
+    try:
+        model = yaml.safe_load(base_text)
+    except yaml.YAMLError:
+        return []
+    if not isinstance(model, dict):
+        return []
+    services = model.get("services")
+    if not isinstance(services, dict):
+        return []
+    out: list[str] = []
+    for svc in services.values():
+        if not isinstance(svc, dict):
+            continue
+        raw = svc.get("env_file")
+        if raw is None:
+            continue
+        for item in raw if isinstance(raw, list) else [raw]:
+            if isinstance(item, dict):
+                item = item.get("path")
+            if not isinstance(item, str) or not item or os.path.isabs(item):
+                continue
+            if item not in out:
+                out.append(item)
+    return out
+
+
+def env_copy_plan(
+    root: str, workspace_dir: str, rel_paths: list[str]
+) -> list[tuple[str, str]]:
+    """``(src, dst)`` pairs for env files present in the root layout but missing
+    from the workspace.
+
+    Skips: traversal outside the roots (T-03.2-01 discipline — the rel path
+    comes from a user-editable compose file), missing sources, existing
+    destinations (a per-workspace edit wins), and any destination whose parent
+    resolves OUTSIDE the workspace dir — a non-chosen repo is a symlink into the
+    shared root (D-09) and must never be written through.
+    """
+    ws_real = os.path.realpath(workspace_dir)
+    root_real = os.path.realpath(root)
+    plan: list[tuple[str, str]] = []
+    for rel in rel_paths:
+        norm = os.path.normpath(rel)
+        if os.path.isabs(norm) or norm == ".." or norm.startswith(".." + os.sep):
+            continue
+        src = os.path.join(root_real, norm)
+        dst = os.path.join(workspace_dir, norm)
+        if not os.path.isfile(src):
+            continue
+        if os.path.lexists(dst):
+            continue
+        parent_real = os.path.realpath(os.path.dirname(dst))
+        if parent_real != ws_real and not parent_real.startswith(ws_real + os.sep):
+            continue
+        plan.append((src, dst))
+    return plan
+
+
+# --- bind-mounted services run as the HOST user (CONT-08) ---------------------
+#
+# App containers running as root write build artifacts (__pycache__, .venv,
+# node_modules) through the bind mounts into the worktrees. The conclude
+# clean-gate passes (all gitignored) but ``git worktree remove`` then hits
+# EACCES on the root-owned files — conclude blocked on every workspace whose
+# stack ever ran (reproduced live 2026-07-03, ``feat-teste``: 3042 root files).
+
+def user_overrides(config_model: dict, uid: int, gid: int) -> dict:
+    """``user: "<uid>:<gid>"`` override entries for every bind-mounting service.
+
+    Walks the AUTHORITATIVE ``docker compose config --format json`` model (the
+    ``parse_published_ports`` input — volumes already normalized to long form,
+    so bind detection is ``type == "bind"``, never short-syntax string parsing).
+    Only services that bind-mount get the override: they are the ones writing
+    into the worktree. Services on named volumes alone (e.g. postgres, whose
+    initdb breaks under an arbitrary uid) and services whose base already pins
+    ``user:`` are left untouched. Tolerant of garbage input (non-dict services/
+    volumes → skipped). The shape merges into ``fixed_name_overrides``'s
+    per-service dicts for a single ``override_bytes`` write.
+    """
+    out: dict = {"services": {}}
+    services = config_model.get("services")
+    if not isinstance(services, dict):
+        return out
+    for svc, body in services.items():
+        if not isinstance(body, dict):
+            continue
+        if body.get("user"):
+            continue  # base pinned a user — its call, never overridden
+        volumes = body.get("volumes")
+        if not isinstance(volumes, list):
+            continue
+        if any(
+            isinstance(v, dict) and v.get("type") == "bind" for v in volumes
+        ):
+            out["services"][svc] = {"user": f"{uid}:{gid}"}
+    return out
+
+
+# --- volume-init services: chown volumes for CONT-08 services (CONT-09) -------
+#
+# A CONT-08 service that ALSO mounts a volume (the anonymous ``node_modules``
+# shadow) EACCESes on a fresh workspace: the fresh volume is initialized with
+# the IMAGE's ownership (root) and the host-uid process cannot write into it
+# (reproduced live 2026-07-03, Livon frontend: 243 restarts on ``npm ERR!
+# EACCES``). Anonymous volumes are promoted to named ones (the Compose merge
+# keys service volumes by TARGET, so the override entry swaps in; the project
+# name keeps them per-workspace) so a one-shot init service can mount the same
+# volume, chown it as root, and gate the app service via ``depends_on``.
+
+def volume_init_overrides(
+    config_model: dict, users: dict, uid: int, gid: int
+) -> dict:
+    """Init-service override entries for every CONT-08 service mounting volumes.
+
+    For each service in ``users["services"]`` (the ``user_overrides`` output)
+    whose model entry mounts ``type == "volume"`` volumes, returns
+    ``{"services": {...}, "volumes": {...}}`` carrying: named-volume
+    declarations replacing anonymous mounts, a ``<svc>-arduis-init`` one-shot
+    running ``chown -R <uid>:<gid>`` as root over the targets, and a
+    ``service_completed_successfully`` ``depends_on`` on the service. The init
+    reuses the SERVICE'S OWN image so Docker's copy-from-image seeds the volume
+    with the right content before the chown. Build-only services (no ``image``
+    in the model) are skipped — there is no resolvable image to run the init
+    with. Tolerant of garbage input (non-dict services/volumes → skipped).
+    """
+    out: dict = {"services": {}, "volumes": {}}
+    services = config_model.get("services")
+    if not isinstance(services, dict):
+        return out
+    for svc in users.get("services", {}):
+        body = services.get(svc)
+        if not isinstance(body, dict):
+            continue
+        image = body.get("image")
+        if not image:
+            continue
+        volumes = body.get("volumes")
+        if not isinstance(volumes, list):
+            continue
+        mounts: list[str] = []       # "<key>:<target>" for the init service
+        replacements: list[str] = []  # anon → named swaps on the app service
+        for vol in volumes:
+            if not isinstance(vol, dict) or vol.get("type") != "volume":
+                continue
+            target = vol.get("target")
+            if not target:
+                continue
+            source = vol.get("source")
+            if not source:
+                # ordinal among the volume mounts — stable however many bind
+                # mounts precede it in the service's list
+                source = f"arduis-init-{svc}-{len(mounts)}"
+                out["volumes"][source] = {}
+                replacements.append(f"{source}:{target}")
+            mounts.append(f"{source}:{target}")
+        if not mounts:
+            continue
+        init = f"{svc}-arduis-init"
+        out["services"][init] = {
+            "image": image,
+            "user": "0:0",
+            "network_mode": "none",
+            "restart": "no",
+            "entrypoint": [
+                "chown", "-R", f"{uid}:{gid}",
+                *(m.split(":", 1)[1] for m in mounts),
+            ],
+            "volumes": mounts,
+        }
+        entry: dict = {
+            "depends_on": {
+                init: {"condition": "service_completed_successfully"}
+            },
+        }
+        if replacements:
+            entry = {"volumes": replacements, **entry}
+        out["services"][svc] = entry
+    return out
+
+
+# --- clone root-stack volume DATA into the workspace volumes (CONT-10) --------
+#
+# fixed_name_overrides / COMPOSE_PROJECT_NAME give each workspace its own named
+# volumes — isolated but EMPTY. Duplicating the stack must duplicate the data
+# (dogfooding 2026-07-03): a workspace postgres/mongo/keycloak-db starts as a
+# snapshot of the root stack's volume at creation time. The window runs the
+# plan BEFORE `up`: dest exists → skip (re-isolation keeps data); source
+# missing → skip; else create dest with compose-compatible labels and copy the
+# bytes via a throwaway alpine container. A failed copy removes the dest so
+# compose falls back to a fresh empty volume instead of adopting partial data.
+
+def volume_clone_plan(config_model: dict, project: str) -> list[dict]:
+    """``[{"key", "source", "dest"}]`` for every top-level named volume.
+
+    source: the root stack's volume — explicit ``name:`` when the base pins one,
+    else ``<root_project>_<key>`` (compose default naming; the model's top-level
+    ``name`` is the root project). dest: ``<project>_<key>``, matching what the
+    workspace override / ``COMPOSE_PROJECT_NAME`` produce. ``external: true``
+    volumes are shared by design and never cloned. Tolerant of garbage input.
+    """
+    plan: list[dict] = []
+    volumes = config_model.get("volumes")
+    if not isinstance(volumes, dict):
+        return plan
+    root = config_model.get("name")
+    for key, body in volumes.items():
+        if not isinstance(body, dict) or body.get("external"):
+            continue
+        source = body.get("name") or (root and f"{root}_{key}")
+        if not source:
+            continue  # no explicit name and no root project — underivable
+        plan.append({"key": key, "source": source, "dest": f"{project}_{key}"})
+    return plan
+
+
+def volume_exists_argv(name: str) -> list[str]:
+    """``docker volume inspect <name>`` — rc 0 iff the volume exists."""
+    return ["docker", "volume", "inspect", name]
+
+
+def volume_create_argv(name: str, project: str, key: str) -> list[str]:
+    """``docker volume create`` with the labels compose matches on at ``up``."""
+    return [
+        "docker", "volume", "create",
+        "--label", f"com.docker.compose.project={project}",
+        "--label", f"com.docker.compose.volume={key}",
+        name,
+    ]
+
+
+def volume_clone_argv(source: str, dest: str) -> list[str]:
+    """Copy every byte of ``source`` into ``dest`` via a throwaway container.
+
+    ``cp -a`` preserves ownership/permissions (postgres refuses a data dir with
+    the wrong owner); the source mounts read-only so a bug here can never touch
+    the root stack's data.
+    """
+    return [
+        "docker", "run", "--rm",
+        "-v", f"{source}:/from:ro",
+        "-v", f"{dest}:/to",
+        "alpine", "cp", "-a", "/from/.", "/to/",
+    ]
+
+
+def volume_remove_argv(name: str) -> list[str]:
+    """``docker volume rm -f`` — the failed-clone cleanup path."""
+    return ["docker", "volume", "rm", "-f", name]
+
+
+# --- fixed-name resources → per-workspace names (CONT-07) ----------------------
+#
+# ``COMPOSE_PROJECT_NAME`` isolates only DEFAULT-named resources. An explicit
+# ``container_name:`` / network ``name:`` / volume ``name:`` is used VERBATIM, so
+# the second workspace's ``up`` collides with the root stack ("network
+# keycloak_net exists but was not created for project ..."). Renaming them with
+# the project prefix restores isolation — and puts the workspace name in the
+# container names, which is also the wanted UX.
+
+def fixed_name_overrides(base_text: str, project: str) -> dict:
+    """Override entries renaming every fixed-name resource in the base compose.
+
+    Returns ``{"services": {svc: {"container_name": "<project>-<orig>"}},
+    "networks"/"volumes": {key: {"name": "<project>_<orig>"}}}`` — empty dicts
+    for anything absent. ``external: true`` resources are intentionally shared
+    and never renamed. Tolerant of garbage input (broken YAML → all empty).
+    """
+    out: dict = {"services": {}, "networks": {}, "volumes": {}}
+    try:
+        model = yaml.safe_load(base_text)
+    except yaml.YAMLError:
+        return out
+    if not isinstance(model, dict):
+        return out
+
+    services = model.get("services")
+    if isinstance(services, dict):
+        for svc, body in services.items():
+            if not isinstance(body, dict):
+                continue
+            orig = body.get("container_name")
+            if isinstance(orig, str) and orig:
+                out["services"][svc] = {"container_name": f"{project}-{orig}"}
+
+    for section, sep in (("networks", "_"), ("volumes", "_")):
+        entries = model.get(section)
+        if not isinstance(entries, dict):
+            continue
+        for key, body in entries.items():
+            if not isinstance(body, dict):
+                continue
+            if body.get("external"):
+                continue  # shared on purpose — never renamed
+            orig = body.get("name")
+            if isinstance(orig, str) and orig:
+                out[section][key] = {"name": f"{project}{sep}{orig}"}
+
+    return out
