@@ -54,6 +54,9 @@ def _bare_window(monkeypatch, repos, porcelain_out, remove_rc=0, log_out=""):
         if "status" in argv:
             calls.append("git:status")
             on_done(0, porcelain_out, "")
+        elif "fetch" in argv:  # best-effort refresh of origin/<default> (2026-07-04)
+            calls.append("git:fetch")
+            on_done(0, "", "")
         elif "symbolic-ref" in argv:  # default-branch detection (origin path answers)
             calls.append("git:base")
             on_done(0, "refs/remotes/origin/master\n", "")
@@ -83,11 +86,11 @@ def test_clean_conclude_gate_first_then_fixed_order_never_forces(monkeypatch):
 
     win._conclude_workspace(workspace)
 
-    # gates FIRST: only READ-ONLY calls (porcelain + base detection + unmerged
-    # log) happen BEFORE any destructive channel
+    # gates FIRST: only READ-ONLY calls (porcelain + fetch + base detection +
+    # unmerged log) happen BEFORE any destructive channel
     assert calls[0] == "git:status" and calls[1] == "git:status"
     gate_end = calls.index("_teardown_session_terminals")
-    assert set(calls[:gate_end]) == {"git:status", "git:base", "git:log"}
+    assert set(calls[:gate_end]) == {"git:status", "git:fetch", "git:base", "git:log"}
     # then: agents killed + state cleared + container down BEFORE any remove
     assert calls.index("_teardown_session_terminals") < calls.index("git:remove")
     assert calls.index("_clear_workspace_state_files") < calls.index("git:remove")

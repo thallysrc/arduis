@@ -7,7 +7,9 @@ argv and a safe sibling directory. It imports NO ``gi`` and touches no I/O:
 
 Decisions:
 - D-04: default branch is auto-detected (``origin/HEAD`` -> local ``HEAD``),
-  never the hardcoded literal ``main``.
+  never the hardcoded literal ``main``. Since 2026-07-04 the base is the
+  REMOTE-TRACKING ref (``origin/<default>``, after a best-effort fetch) so new
+  branches are born from the remote tip, not a possibly-stale local default.
 - D-05: the worktree dir is a sibling ``../<repo>-<sanitized-branch>``.
 - D-06: new-vs-existing is inferred from the local branch list.
 - D-07: the force flag is never emitted; already-checked-out branches are detected
@@ -52,6 +54,25 @@ def parse_default_branch(stdout: str) -> str:
     return name
 
 
+def parse_remote_base(stdout: str) -> str:
+    """``refs/remotes/origin/main`` -> ``origin/main`` — the remote-tracking base.
+
+    New workspace branches are born from the REMOTE tip (freshly fetched), not
+    the local default branch, so the user never has to keep local ``main`` in
+    sync just to start work (2026-07-04 decision).
+    """
+    return "origin/" + parse_default_branch(stdout)
+
+
+def argv_fetch_origin(repo: str) -> list[str]:
+    """Best-effort ``git fetch origin`` run before base detection.
+
+    Failure is non-fatal: offline / no remote just means the base falls back to
+    the local snapshot of ``origin/<default>`` (or local HEAD), same as before.
+    """
+    return ["git", "-C", repo, "fetch", "origin"]
+
+
 # --- born-HEAD guard (UAT: empty repo can't host a worktree) ----------------
 
 def argv_repo_has_commit(repo: str) -> list[str]:
@@ -69,8 +90,17 @@ def argv_repo_has_commit(repo: str) -> list[str]:
 # --- worktree add argv (D-07: never the force flag) -------------------------
 
 def argv_worktree_add_new(repo: str, branch: str, worktree_dir: str, base: str) -> list[str]:
-    """``git worktree add -b <branch> <dir> <base>`` — create a NEW branch."""
-    return ["git", "-C", repo, "worktree", "add", "-b", branch, worktree_dir, base]
+    """``git worktree add --no-track -b <branch> <dir> <base>`` — NEW branch.
+
+    ``--no-track``: the base is normally ``origin/<default>``; without it git
+    would set the new branch's upstream to origin's default branch, making
+    ``git push`` misdirect and ``git status`` count ahead/behind against the
+    wrong branch. The agent sets its own upstream on first push (``push -u``).
+    """
+    return [
+        "git", "-C", repo, "worktree", "add", "--no-track", "-b", branch,
+        worktree_dir, base,
+    ]
 
 
 def argv_worktree_add_existing(repo: str, worktree_dir: str, branch: str) -> list[str]:

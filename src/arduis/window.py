@@ -107,11 +107,13 @@ from arduis.workspace_layout import (  # noqa: E402
 from arduis.worktree import (  # noqa: E402
     argv_default_branch_local,
     argv_default_branch_via_origin,
+    argv_fetch_origin,
     argv_list_local_branches,
     argv_repo_has_commit,
     argv_worktree_list_porcelain,
     parse_default_branch,
     parse_local_branches,
+    parse_remote_base,
     parse_worktrees,
 )
 _SIGKILL_GRACE_MS = 1500  # time between SIGHUP and the SIGKILL sweep (D-13)
@@ -4321,11 +4323,15 @@ class ArduisWindow(Adw.ApplicationWindow):
 
                     run_git_async(payload, _add_done, self._runner)
 
-                # Base detection (origin/HEAD → local HEAD fallback) only matters
-                # for the "new" case, but resolve_repo_add ignores it otherwise.
+                # Base detection (2026-07-04): fetch origin first (best-effort —
+                # offline just means the local snapshot), then origin/HEAD → the
+                # new branch is born from origin/<default> (the REMOTE tip), so
+                # a stale local main never seeds a workspace. Local HEAD stays
+                # the last fallback for remoteless repos. Only the "new" case
+                # uses the base, but resolve_repo_add ignores it otherwise.
                 def _origin_done(ostatus, oout, _oerr):
                     if ostatus == 0 and oout.strip():
-                        _resolve_with_base(parse_default_branch(oout))
+                        _resolve_with_base(parse_remote_base(oout))
                         return
 
                     def _local_done(lstatus, lout, _lerr):
@@ -4335,9 +4341,14 @@ class ArduisWindow(Adw.ApplicationWindow):
                         argv_default_branch_local(repo_path), _local_done, self._runner
                     )
 
-                run_git_async(
-                    argv_default_branch_via_origin(repo_path), _origin_done, self._runner
-                )
+                def _fetch_done(_fstatus, _fout, _ferr):
+                    run_git_async(
+                        argv_default_branch_via_origin(repo_path),
+                        _origin_done,
+                        self._runner,
+                    )
+
+                run_git_async(argv_fetch_origin(repo_path), _fetch_done, self._runner)
 
             run_git_async(
                 argv_list_local_branches(repo_path), _branches_done, self._runner
@@ -5167,7 +5178,14 @@ class ArduisWindow(Adw.ApplicationWindow):
 
             def _origin_done(rc: int, out: str, _err: str) -> None:
                 if rc == 0 and out.strip():
-                    _with_base(parse_default_branch(out))
+                    # Compare against origin/<default> (freshly fetched), NOT the
+                    # local default branch: workspaces are born from the remote
+                    # tip (2026-07-04), so the stale local main would flag every
+                    # inherited commit as "unmerged". A branch already merged
+                    # remotely (PR flow) now correctly passes the gate. Keep the
+                    # skip when the workspace IS the default branch itself.
+                    name = parse_default_branch(out)
+                    _with_base("" if name == repo.branch else "origin/" + name)
                     return
 
                 def _local_done(lrc: int, lout: str, _lerr: str) -> None:
@@ -5177,9 +5195,12 @@ class ArduisWindow(Adw.ApplicationWindow):
                     argv_default_branch_local(source), _local_done, self._runner
                 )
 
-            run_git_async(
-                argv_default_branch_via_origin(source), _origin_done, self._runner
-            )
+            def _fetch_done(_frc: int, _fout: str, _ferr: str) -> None:
+                run_git_async(
+                    argv_default_branch_via_origin(source), _origin_done, self._runner
+                )
+
+            run_git_async(argv_fetch_origin(source), _fetch_done, self._runner)
 
         for repo in repos:
             _check_repo(repo)

@@ -23,6 +23,14 @@ def test_default_branch_fallback():
     assert worktree.parse_default_branch("master\n") == "master"
 
 
+def test_remote_base_and_fetch():
+    # 2026-07-04: new branches are born from the REMOTE tip — the base is the
+    # remote-tracking ref, refreshed by a best-effort fetch beforehand.
+    assert worktree.parse_remote_base("refs/remotes/origin/main\n") == "origin/main"
+    assert worktree.parse_remote_base("refs/remotes/origin/master\n") == "origin/master"
+    assert worktree.argv_fetch_origin("/r") == ["git", "-C", "/r", "fetch", "origin"]
+
+
 def test_repo_has_commit_argv():
     # born-HEAD guard: quiet rev-parse --verify so an empty repo is caught
     # before `worktree add` fails with the cryptic "invalid reference: HEAD".
@@ -34,9 +42,11 @@ def test_repo_has_commit_argv():
 
 
 def test_add_argv():
-    # NEW branch off the detected base
-    assert worktree.argv_worktree_add_new("/r", "feat", "/d", "main") == [
-        "git", "-C", "/r", "worktree", "add", "-b", "feat", "/d", "main"
+    # NEW branch off the detected base; --no-track so a remote-tracking base
+    # (origin/<default>) never becomes the new branch's upstream
+    assert worktree.argv_worktree_add_new("/r", "feat", "/d", "origin/main") == [
+        "git", "-C", "/r", "worktree", "add", "--no-track", "-b", "feat",
+        "/d", "origin/main",
     ]
     # EXISTING branch (checks it out)
     assert worktree.argv_worktree_add_existing("/r", "/d", "feat") == [

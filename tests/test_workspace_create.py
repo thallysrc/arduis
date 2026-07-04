@@ -30,7 +30,7 @@ def test_resolve_new():
     )
     assert kind == "new"
     assert argv == [
-        "git", "-C", "/r/backend", "worktree", "add", "-b", "feat",
+        "git", "-C", "/r/backend", "worktree", "add", "--no-track", "-b", "feat",
         "/r-workspaces/feat/backend", "master",
     ]
     assert "--force" not in argv  # D-13 / T-03.2-03
@@ -104,7 +104,7 @@ def test_resolve_slash_branch_still_works_without_conflict():
         base="master", worktree_dir="/r-workspaces/feat-MLK-1234-tarefa/backend",
     )
     assert kind == "new"
-    assert argv[:6] == ["git", "-C", "/r/backend", "worktree", "add", "-b"]
+    assert argv[:7] == ["git", "-C", "/r/backend", "worktree", "add", "--no-track", "-b"]
     assert "feat/MLK-1234-tarefa" in argv
     assert "--force" not in argv
 
@@ -156,7 +156,7 @@ def test_degenerate_single_repo_same_path():
         base="master", worktree_dir="/solo-workspaces/feat/solo",
     )
     assert kind == "new"
-    assert argv[:6] == ["git", "-C", "/solo", "worktree", "add", "-b"]
+    assert argv[:7] == ["git", "-C", "/solo", "worktree", "add", "--no-track", "-b"]
     assert "--force" not in argv
 
 
@@ -214,3 +214,46 @@ def test_integration_real_worktree_add_refusal(tmp_path):
     assert "--force" not in argv
     res = subprocess.run(argv, capture_output=True, text=True)
     assert res.returncode != 0  # git refuses without --force
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not on PATH")
+def test_integration_new_branch_born_from_remote_tip_no_upstream(tmp_path):
+    # 2026-07-04: the base is origin/<default>. Simulate "local master is stale":
+    # the clone's origin/master is AHEAD of local master. The new branch must be
+    # born at the REMOTE tip, and --no-track must leave it without an upstream.
+    from arduis import worktree
+
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e"}
+
+    def git(cwd, *args):
+        return subprocess.run(["git", "-C", str(cwd), *args], env=env,
+                              capture_output=True, text=True)
+
+    upstream = tmp_path / "upstream"
+    upstream.mkdir()
+    subprocess.run(["git", "init", "-b", "master", str(upstream)], capture_output=True)
+    (upstream / "f").write_text("v1")
+    git(upstream, "add", "f")
+    git(upstream, "commit", "-m", "c1")
+
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", str(upstream), str(clone)], capture_output=True)
+
+    # upstream advances; the clone fetches but its LOCAL master stays at c1
+    (upstream / "f").write_text("v2")
+    git(upstream, "commit", "-am", "c2")
+    git(clone, "fetch", "origin")
+    remote_tip = git(clone, "rev-parse", "origin/master").stdout.strip()
+    local_tip = git(clone, "rev-parse", "master").stdout.strip()
+    assert remote_tip != local_tip  # the stale-local premise holds
+
+    argv = worktree.argv_worktree_add_new(
+        str(clone), "feat", str(tmp_path / "wt-feat"), "origin/master")
+    res = subprocess.run(argv, capture_output=True, text=True)
+    assert res.returncode == 0, res.stderr
+    # born from the remote tip, not the stale local master
+    assert git(clone, "rev-parse", "feat").stdout.strip() == remote_tip
+    # --no-track: no upstream configured for the new branch
+    up = git(clone, "rev-parse", "--abbrev-ref", "feat@{upstream}")
+    assert up.returncode != 0
